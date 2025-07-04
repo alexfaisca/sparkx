@@ -1,1 +1,8 @@
 /target
+/cache
+*.txt
+*.lz4
+*.py
+*.fasta
+Cargo.lock
+
