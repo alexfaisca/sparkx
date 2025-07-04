@@ -1,0 +1,17 @@
+[package]
+name = "tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.23.0", features = ["derive"] }
+bitfield = "0.19.1"
+clap = { version = "4.5.39", features = ["derive"] }
+lz4 = "1.24.0"
+memmap = "0.7.0"
+rand = "0.9.1"
+rustworkx-core = "0.16.0"
+static_assertions = "1.1.0"
+zerocopy = { version = "0.8.25", features = ["derive"] }
+fst = "0.4"
+regex-automata = { version = "0.1.9", features = ["transducer"] }
