@@ -11,7 +11,7 @@ use regex::Regex;
 use static_assertions::const_assert;
 use std::{
     any::type_name,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fmt::{Debug, Display},
     fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
@@ -205,9 +205,9 @@ fn cleanup_cache() -> Result<(), Error> {
 }
 
 pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> {
-    pub graph_file: File,
-    pub index_file: File,
-    pub kmer_file: File,
+    pub graph_file: Arc<File>,
+    pub index_file: Arc<File>,
+    pub kmer_file: Arc<File>,
     pub graph_filename: String,
     pub index_filename: String,
     pub kmer_filename: String,
@@ -277,9 +277,9 @@ where
         };
 
         Ok(GraphCache::<T> {
-            graph_file,
-            index_file,
-            kmer_file,
+            graph_file: Arc::new(graph_file),
+            index_file: Arc::new(index_file),
+            kmer_file: Arc::new(kmer_file),
             graph_filename,
             index_filename,
             kmer_filename,
@@ -312,9 +312,9 @@ where
         let index_len = index_file.metadata().unwrap().len();
 
         Ok(GraphCache::<T> {
-            graph_file,
-            index_file,
-            kmer_file,
+            graph_file: Arc::new(graph_file),
+            index_file: Arc::new(index_file),
+            kmer_file: Arc::new(kmer_file),
             graph_filename,
             index_filename,
             kmer_filename,
@@ -355,7 +355,8 @@ where
     }
 
     fn build_fst_from_sorted_file(&self, sorted_file: File) -> Result<(), Error> {
-        let mut build = match MapBuilder::new(&self.kmer_file) {
+        // As reandonly is false, no clones exist -> safe to take file ownership from Arc
+        let mut build = match MapBuilder::new(&*self.kmer_file) {
             Ok(i) => i,
             Err(e) => panic!("error couldn't initialize builder: {}", e),
         };
@@ -407,7 +408,7 @@ where
         self.kmer_file = match File::create(fst_filename.clone()) {
             Ok(i) => {
                 self.kmer_filename = fst_filename;
-                i
+                Arc::new(i)
             }
             Err(e) => panic!("error couldn't create mer .fst file: {}", e),
         };
@@ -501,185 +502,20 @@ impl FindDisjointSetsEulerTrails {
     }
 }
 
-pub struct GraphMemoryMap<
+pub struct EulerTrail<
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
     U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
 > {
-    graph: Mmap,
-    index: Mmap,
-    kmers: Map<Mmap>,
-    graph_cache: GraphCache<T>,
-    edge_size: usize,
-    thread_count: u8,
-    _marker: PhantomData<U>,
+    graph: GraphMemoryMap<T, U>,
 }
 
-impl<T, U> GraphMemoryMap<T, U>
+impl<T, U> EulerTrail<T, U>
 where
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
     U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
 {
-    pub fn init(cache: GraphCache<T>, thread_count: u8) -> Result<GraphMemoryMap<T, U>, Error> {
-        if cache.readonly {
-            let mmap = unsafe {
-                match MmapOptions::new().map(&File::open(&cache.kmer_filename)?) {
-                    Ok(i) => i,
-                    Err(e) => panic!("error couldn't mmap k-mer fst: {}", e),
-                }
-            };
-            let thread_count = if thread_count == 0 { 1 } else { thread_count };
-            return Ok(GraphMemoryMap {
-                graph: unsafe { Mmap::map(&cache.graph_file)? },
-                index: unsafe { Mmap::map(&cache.index_file)? },
-                kmers: match Map::new(mmap) {
-                    Ok(i) => i,
-                    Err(e) => panic!("error couldn't map k-mer fst mmap: {}", e),
-                },
-                graph_cache: cache,
-                edge_size: std::mem::size_of::<T>(),
-                thread_count,
-                _marker: PhantomData,
-            });
-        }
-
-        panic!("error graph cache must be readonly to be memmapped");
-    }
-
-    #[inline(always)]
-    pub fn node_degree(&self, node_id: u64) -> u64 {
-        unsafe {
-            let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
-            let begin = ptr.read_unaligned();
-            ptr.add(1).read_unaligned() - begin
-        }
-    }
-
-    #[inline(always)]
-    pub fn node_id_from_kmer(&self, kmer: &str) -> Result<u64, Error> {
-        if let Some(val) = self.kmers.get(kmer) {
-            Ok(val)
-        } else {
-            panic!("error k-mer {} not found", kmer);
-        }
-    }
-
-    #[inline(always)]
-    pub fn index_node(&self, node_id: u64) -> std::ops::Range<u64> {
-        unsafe {
-            let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
-            ptr.read_unaligned()..ptr.add(1).read_unaligned()
-        }
-    }
-
-    pub fn neighbours(&self, node_id: u64) -> Result<NeighbourIter<T, U>, Error> {
-        if node_id >= self.size() {
-            panic!("error invalid range");
-        }
-
-        Ok(NeighbourIter::<T, U>::new(
-            self.graph.as_ptr() as *const T,
-            self.index.as_ptr() as *const u64,
-            node_id,
-        ))
-    }
-
-    pub fn edges(&self) -> Result<EdgeIter<T, U>, Error> {
-        Ok(EdgeIter::<T, U>::new(
-            self.graph.as_ptr() as *const T,
-            self.index.as_ptr() as *const u64,
-            0,
-            self.size(),
-        ))
-    }
-
-    pub fn edges_in_range(&self, start_node: u64, end_node: u64) -> Result<EdgeIter<T, U>, Error> {
-        if start_node > end_node {
-            panic!("error invalid range, beginning after end");
-        }
-        if start_node > self.size() || end_node > self.size() {
-            panic!("error invalid range");
-        }
-
-        Ok(EdgeIter::<T, U>::new(
-            self.graph.as_ptr() as *const T,
-            self.index.as_ptr() as *const u64,
-            start_node,
-            end_node,
-        ))
-    }
-
-    pub fn size(&self) -> u64 {
-        self.graph_cache.index_bytes / BYTES_U64 // index size stored as bits
-    }
-
-    pub fn width(&self) -> u64 {
-        self.graph_cache.graph_bytes // graph size stored as edges
-    }
-
-    // Linear only if DBG is Eurelian
-    fn merger_round(cycles: &mut Vec<Vec<u64>>) -> Vec<Vec<u64>> {
-        let unmerged = cycles.len();
-        let euler_cycle = &mut VecDeque::from(cycles.pop().unwrap());
-        let mut unmergeable = vec![];
-        while let Some(cycle) = cycles.pop() {
-            if cycle.is_empty() {
-                continue;
-            }
-
-            let entry_vertex = cycle[0];
-
-            // Search for a valid insertion point in euler_cycle
-            let positions: Vec<_> = euler_cycle
-                .iter()
-                .enumerate()
-                .filter(|&(_, &v)| v == entry_vertex)
-                .map(|(i, _)| i)
-                .collect();
-
-            if positions.is_empty() {
-                unmergeable.push(cycle);
-                continue;
-            }
-
-            // println!(
-            //     "Entry {} -> Match {}",
-            //     entry_vertex, euler_cycle[positions[0]]
-            // );
-            // Insert at the first match (could improve this if needed)
-            for node in cycle.iter().skip(1).rev() {
-                euler_cycle.insert(positions[0] + 1, *node);
-            }
-        }
-
-        if unmergeable.len() != unmerged && !unmergeable.is_empty() {
-            // println!("unmergeable: {:?}", unmergeable);
-            let mut recursion = Self::merger_round(unmergeable.as_mut());
-            recursion.push(euler_cycle.clone().into_iter().collect::<Vec<u64>>());
-            recursion
-        } else {
-            if !unmergeable.is_empty() {
-                let mut unmergeable = Self::merger_round(unmergeable.as_mut());
-                unmergeable.push(euler_cycle.clone().into_iter().collect::<Vec<u64>>());
-                // println!("unmergeable: {:?}", unmergeable);
-                return unmergeable;
-            }
-            // println!("unmergeable: {:?}", unmergeable);
-            vec![euler_cycle.clone().into_iter().collect::<Vec<u64>>()]
-        }
-    }
-
-    fn merge_cycles(cycles: Mutex<Vec<Vec<u64>>>) -> Vec<Vec<u64>> {
-        let mut cycles = cycles.into_inner().unwrap();
-        let mut len = cycles.len();
-        let euler_cycles = loop {
-            cycles = Self::merger_round(&mut cycles);
-            if len == cycles.len() {
-                break cycles;
-            }
-            len = cycles.len();
-        };
-        // println!("total cycles: {}", euler_cycles.len());
-        euler_cycles
+    pub fn new(graph: GraphMemoryMap<T, U>) -> Result<EulerTrail<T, U>, Error> {
+        Ok(EulerTrail { graph })
     }
 
     fn merge_euler_trails(&self, cycles: Mutex<Vec<Vec<u64>>>) -> Result<Vec<(u64, u64)>, Error> {
@@ -822,7 +658,7 @@ where
 
             // Open output file
             let output_filename = cache_file_name(
-                self.graph_cache.graph_filename.clone(),
+                self.graph.graph_cache.graph_filename.clone(),
                 FileType::EulerPath,
                 Some(idx as u64),
             )?;
@@ -845,9 +681,6 @@ where
                 let to_usize = *to as usize;
                 let slice = &cycles[*cycle as usize][from_usize..to_usize]; // Adjust if from/to are inclusive/exclusive
                 let byte_len = slice.as_bytes().len();
-                // println!("write {}", byte_len);
-
-                // SAFETY: Ensure we don't write past mmap bounds
                 unsafe {
                     let dest_ptr = output_mmap.as_mut_ptr().add(write_offset);
                     let src_ptr = slice.as_ptr() as *const u8;
@@ -868,16 +701,16 @@ where
 
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
-    /// returns path to file with Eulerian cycle.
-    pub fn find_eulerian_cycle(&self) -> Result<(), Error> {
-        let node_count = match (self.size() - 1) as usize {
+    /// returns vec of (euler path file sequence number, file size(vytes)).
+    pub fn find_eulerian_cycle(&self) -> Result<Vec<(u64, u64)>, Error> {
+        let node_count = match (self.graph.size() - 1) as usize {
             0 => panic!("Graph has no vertices"),
             i => i,
         };
 
-        let index_ptr = self.index.as_ptr() as *const u64;
-        let graph_ptr = Arc::new(SharedPtr(self.graph.as_ptr()));
-        let edge_size = self.edge_size;
+        let index_ptr = self.graph.index.as_ptr() as *const u64;
+        let graph_ptr = Arc::new(SharedPtr(self.graph.graph.as_ptr()));
+        let edge_size = self.graph.edge_size;
 
         // atomic next-edge index for each vertex and array of end offsets (non-atomic, read-only)
         let mut end_offsets = vec![0; node_count];
@@ -907,7 +740,7 @@ where
         let cycles_mutex = std::sync::Mutex::new(Vec::new());
 
         thread::scope(|scope| {
-            for _ in 0..self.thread_count {
+            for _ in 0..self.graph.thread_count {
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let next_edge = Arc::clone(&next_edge);
                 let end_offsets = Arc::clone(&end_offsets);
@@ -978,42 +811,124 @@ where
         })
         .unwrap(); // join all threads
 
-        self.merge_euler_trails(cycles_mutex)?;
-        // return Ok(());
-        // let mut cycles = Self::merge_cycles(cycles_mutex);
-        //
-        // // order by size
-        // cycles.sort_by_key(|t| std::cmp::Reverse(t.len()));
-        //
-        // for (i, c) in cycles.iter_mut().enumerate() {
-        //     // if c.len() < 10 {
-        //     //     println!("Cycles {} {:?}", i, c);
-        //     // }
-        //     let output_filename = cache_file_name(
-        //         self.graph_cache.graph_filename.clone(),
-        //         FileType::EulerPath,
-        //         Some(i as u64),
-        //     )?;
-        //     let output_file = OpenOptions::new()
-        //         .create(true)
-        //         .write(true)
-        //         .truncate(true)
-        //         .read(true)
-        //         .open(&output_filename)?;
-        //
-        //     let output_len = c.len() * std::mem::size_of::<u64>();
-        //     // output_file.set_len(output_len as u64)?;
-        //     // let mut output_mmap = unsafe { MmapOptions::new().map_mut(&output_file)? };
-        //     // {
-        //     //     let out_slice: &mut [u8] = &mut output_mmap[..];
-        //     //     out_slice.copy_from_slice(unsafe {
-        //     //         std::slice::from_raw_parts(c.as_ptr() as *const u8, output_len)
-        //     //     });
-        //     // }
-        //     // output_mmap.flush()?;
-        // }
+        self.merge_euler_trails(cycles_mutex)
+    }
+}
 
-        Ok(())
+#[derive(Clone)]
+pub struct GraphMemoryMap<
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+> {
+    graph: Arc<Mmap>,
+    index: Arc<Mmap>,
+    kmers: Arc<Map<Mmap>>,
+    graph_cache: GraphCache<T>,
+    edge_size: usize,
+    thread_count: u8,
+    _marker: PhantomData<U>,
+}
+
+impl<T, U> GraphMemoryMap<T, U>
+where
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+{
+    pub fn init(cache: GraphCache<T>, thread_count: u8) -> Result<GraphMemoryMap<T, U>, Error> {
+        if cache.readonly {
+            let mmap = unsafe {
+                match MmapOptions::new().map(&File::open(&cache.kmer_filename)?) {
+                    Ok(i) => i,
+                    Err(e) => panic!("error couldn't mmap k-mer fst: {}", e),
+                }
+            };
+            let thread_count = if thread_count == 0 { 1 } else { thread_count };
+            return Ok(GraphMemoryMap {
+                graph: unsafe { Arc::new(Mmap::map(&cache.graph_file)?) },
+                index: unsafe { Arc::new(Mmap::map(&cache.index_file)?) },
+                kmers: match Map::new(mmap) {
+                    Ok(i) => Arc::new(i),
+                    Err(e) => panic!("error couldn't map k-mer fst mmap: {}", e),
+                },
+                graph_cache: cache,
+                edge_size: std::mem::size_of::<T>(),
+                thread_count,
+                _marker: PhantomData,
+            });
+        }
+
+        panic!("error graph cache must be readonly to be memmapped");
+    }
+
+    #[inline(always)]
+    pub fn node_degree(&self, node_id: u64) -> u64 {
+        unsafe {
+            let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
+            let begin = ptr.read_unaligned();
+            ptr.add(1).read_unaligned() - begin
+        }
+    }
+
+    #[inline(always)]
+    pub fn node_id_from_kmer(&self, kmer: &str) -> Result<u64, Error> {
+        if let Some(val) = self.kmers.get(kmer) {
+            Ok(val)
+        } else {
+            panic!("error k-mer {} not found", kmer);
+        }
+    }
+
+    #[inline(always)]
+    pub fn index_node(&self, node_id: u64) -> std::ops::Range<u64> {
+        unsafe {
+            let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
+            ptr.read_unaligned()..ptr.add(1).read_unaligned()
+        }
+    }
+
+    pub fn neighbours(&self, node_id: u64) -> Result<NeighbourIter<T, U>, Error> {
+        if node_id >= self.size() {
+            panic!("error invalid range");
+        }
+
+        Ok(NeighbourIter::<T, U>::new(
+            self.graph.as_ptr() as *const T,
+            self.index.as_ptr() as *const u64,
+            node_id,
+        ))
+    }
+
+    pub fn edges(&self) -> Result<EdgeIter<T, U>, Error> {
+        Ok(EdgeIter::<T, U>::new(
+            self.graph.as_ptr() as *const T,
+            self.index.as_ptr() as *const u64,
+            0,
+            self.size(),
+        ))
+    }
+
+    pub fn edges_in_range(&self, start_node: u64, end_node: u64) -> Result<EdgeIter<T, U>, Error> {
+        if start_node > end_node {
+            panic!("error invalid range, beginning after end");
+        }
+        if start_node > self.size() || end_node > self.size() {
+            panic!("error invalid range");
+        }
+
+        Ok(EdgeIter::<T, U>::new(
+            self.graph.as_ptr() as *const T,
+            self.index.as_ptr() as *const u64,
+            start_node,
+            end_node,
+        ))
+    }
+
+    pub fn size(&self) -> u64 {
+        self.graph_cache.index_bytes / BYTES_U64 // index size stored as bits
+    }
+
+    pub fn width(&self) -> u64 {
+        self.graph_cache.graph_bytes // graph size stored as edges
     }
 }
 
@@ -1310,5 +1225,27 @@ impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> Debug for GraphCach
             "{{\n\tgraph filename: {}\n\tindex filename: {}\n\tkmer filename: {}\n}}",
             self.graph_filename, self.index_filename, self.kmer_filename
         )
+    }
+}
+
+impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> Clone for GraphCache<T> {
+    fn clone(&self) -> Self {
+        if !self.readonly {
+            panic!(
+                "can't clone GraphCache before it is readonly, fst needs file ownership to map kmers to node_ids"
+            );
+        }
+        Self {
+            graph_file: self.graph_file.clone(),
+            index_file: self.index_file.clone(),
+            kmer_file: self.kmer_file.clone(),
+            graph_filename: self.graph_filename.clone(),
+            index_filename: self.index_filename.clone(),
+            kmer_filename: self.kmer_filename.clone(),
+            graph_bytes: self.graph_bytes,
+            index_bytes: self.index_bytes,
+            readonly: true,
+            _marker: self._marker,
+        }
     }
 }

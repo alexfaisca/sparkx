@@ -4,7 +4,7 @@ mod node;
 
 use clap::Parser;
 use core::panic;
-use generic_memory_map::{DirectedEdge, GraphCache, GraphMemoryMap, OutEdgeRecord};
+use generic_memory_map::{DirectedEdge, EulerTrail, GraphCache, GraphMemoryMap, OutEdgeRecord};
 use node::EdgeType;
 use petgraph::graphmap::DiGraphMap;
 use rustworkx_core::petgraph::{self};
@@ -329,7 +329,8 @@ fn parse_bytes_mmaped(
     // End of lookup test
     /* ********************************************************************************* */
 
-    graph_mmaped.find_eulerian_cycle()?;
+    let euler_trail = EulerTrail::new(graph_mmaped.clone())?;
+    euler_trail.find_eulerian_cycle()?;
     Ok(graph_mmaped)
 }
 
