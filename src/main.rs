@@ -330,7 +330,7 @@ fn parse_bytes_mmaped(
     /* ********************************************************************************* */
 
     let euler_trail = EulerTrail::new(graph_mmaped.clone())?;
-    euler_trail.find_eulerian_cycle_no_mmap()?;
+    euler_trail.find_eulerian_cycle(0)?;
     Ok(graph_mmaped)
 }
 

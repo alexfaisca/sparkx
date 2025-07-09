@@ -937,20 +937,18 @@ where
         // atomic array for next unused edge index for each node and unread edge count
         let mut next_edge_vec: Vec<AtomicU64> = Vec::with_capacity(node_count);
         next_edge_vec.resize_with(node_count, || AtomicU64::new(0));
-        let mut end_offsets: Vec<AtomicU8> = Vec::with_capacity(node_count);
-        end_offsets.resize_with(node_count, || AtomicU8::new(0));
+        let mut end_offsets: Vec<u8> = Vec::with_capacity(node_count);
+        end_offsets.resize_with(node_count, || 0);
 
         unsafe {
             for i in 0..node_count {
                 next_edge_vec[i].store(*index_ptr.add(i), Ordering::Relaxed);
-                end_offsets[i].store(
-                    (*index_ptr.add(i + 1) - *index_ptr.add(i)) as u8,
-                    Ordering::Relaxed,
-                );
+                end_offsets[i] = (*index_ptr.add(i + 1) - *index_ptr.add(i)) as u8;
             }
         }
         let next_edge = Arc::new(next_edge_vec);
-        let end_offsets = Arc::new(end_offsets);
+        // mutex is needed to make sure a read isn't made between a successful check and a decrease
+        let end_offsets = Mutex::new(end_offsets);
 
         // Atomic counter to pick next starting vertex for a new cycle
         let start_vertex_counter = Arc::new(AtomicU64::new(0));
@@ -967,7 +965,7 @@ where
             for _ in 0..self.graph.thread_count {
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let next_edge = Arc::clone(&next_edge);
-                let end_offsets = Arc::clone(&end_offsets);
+                let end_offsets = &end_offsets;
                 let start_vertex_counter = Arc::clone(&start_vertex_counter);
                 let cycle_offsets = &cycle_offsets;
                 let mmap_offset = &mmap_offset;
@@ -990,14 +988,13 @@ where
                             if idx >= node_count as u64 {
                                 break None;
                             }
-                            if end_offsets[idx as usize].load(Ordering::Relaxed) != 0 {
+                            if end_offsets.lock().unwrap()[idx as usize] != 0 {
                                 break Some(idx);
                             }
                         };
                         let start_v = match start_v {
                             Some(v) => v,
                             None => {
-                                // all edges used
                                 break;
                             }
                         };
@@ -1008,8 +1005,9 @@ where
                         stack.push(start_v);
                         while let Some(&v) = stack.last() {
                             // Get the next unused edge from v
-                            if end_offsets[v as usize].load(Ordering::Relaxed) != 0 {
-                                end_offsets[v as usize].fetch_sub(1, Ordering::Relaxed);
+                            let mut end_offsets = end_offsets.lock().unwrap();
+                            if end_offsets[v as usize] != 0 {
+                                end_offsets[v as usize] -= 1;
                                 let edge_idx =
                                     next_edge[v as usize].fetch_add(1, Ordering::Relaxed);
                                 let neighbor: u64;
@@ -1042,24 +1040,7 @@ where
                             Err(e) => panic!("error mutex 1: {:?}", e),
                         };
                         mmap_guard[begin as usize..end as usize].copy_from_slice(cycle.as_bytes());
-
-                        // unsafe {
-                        //     println!("1 {}", offset);
-                        //     let ptr = Arc::as_ptr(&mmap.clone()) as *mut u8;
-                        //     println!("2");
-                        //     let slice = std::slice::from_raw_parts_mut(
-                        //         ptr.add(begin as usize),
-                        //         (end - begin) as usize,
-                        //     );
-                        //     println!("3");
-                        //     slice.copy_from_slice(cycle.as_bytes());
-                        //     println!("4 {}", offset);
-                        // };
                     }
-                    // match mmap.into_inner() {
-                    //     Ok(i) => i.flush().unwrap(),
-                    //     Err(e) => panic!("error mmap: {:?}", e),
-                    // };
                 });
             }
         })
@@ -1068,7 +1049,6 @@ where
             Ok(i) => i.flush()?,
             Err(e) => panic!("can't flush {}", e),
         };
-        println!("unmerged cycles {:?}", cycle_offsets);
         self.merge_euler_trails(cycle_offsets)
     }
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
