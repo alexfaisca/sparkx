@@ -6,7 +6,7 @@ use core::panic;
 use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
-use memmap::{Mmap, MmapOptions};
+use memmap::{Mmap, MmapMut, MmapOptions};
 use regex::Regex;
 use static_assertions::const_assert;
 use std::{
@@ -22,7 +22,7 @@ use std::{
     slice,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
 };
 use zerocopy::*; // Using crossbeam for scoped threads
@@ -139,6 +139,7 @@ enum FileType {
     Index,
     Fst,
     EulerPath,
+    EulerTmp,
     KmerTmp,
     KmerSortedTmp,
 }
@@ -178,6 +179,10 @@ fn cache_file_name(
         FileType::Edges => format!("{}_{}.{}", "edges", id, "mmap"),
         FileType::Index => format!("{}_{}.{}", "index", id, "mmap"),
         FileType::Fst => format!("{}_{}.{}", "fst", id, "fst"),
+        FileType::EulerTmp => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "mmap"),
+            None => format!("{}_{}.{}", "eulertmp", id, "mmap"),
+        },
         FileType::EulerPath => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
             None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
@@ -228,6 +233,7 @@ where
             FileType::Index => format!("{}{}_{}.{}", CACHE_DIR, "index", id, "mmap"),
             FileType::Fst => format!("{}{}_{}.{}", CACHE_DIR, "fst", id, "fst"),
             FileType::EulerPath => format!("{}{}_{}.{}", CACHE_DIR, "eulerpath", id, "mmap"),
+            FileType::EulerTmp => format!("{}{}_{}.{}", CACHE_DIR, "eulertmp", id, "tmp"),
             FileType::KmerTmp => format!("{}{}_{}.{}", CACHE_DIR, "kmertmpfile", id, "tmp"),
             FileType::KmerSortedTmp => {
                 format!("{}{}_{}.{}", CACHE_DIR, "kmersortedtmpfile", id, "tmp")
@@ -433,7 +439,7 @@ struct FindDisjointSetsEulerTrails {
 }
 
 impl FindDisjointSetsEulerTrails {
-    pub fn new(trails: &mut Vec<(u64, u64, u64)>) -> Self {
+    pub fn new(trails: &mut [(u64, u64, u64)]) -> Self {
         trails.sort_by_key(|(trail_id, _, _)| *trail_id);
         FindDisjointSetsEulerTrails {
             trails: trails
@@ -447,30 +453,17 @@ impl FindDisjointSetsEulerTrails {
     fn cycle_b(t: &mut [((u64, u64, u64), u64)], visited: &mut [bool], i: u64) -> u64 {
         let i_usize = i as usize;
         if t[i_usize].0.0 == t[i_usize].1 {
-            // println!(
-            //     "no need {} {} {}",
-            //     t[i_usize].0.0, t[i_usize].0.1, t[i_usize].1
-            // );
             return t[i_usize].1;
         }
 
         if visited[t[i_usize].0.0 as usize] {
-            // println!(
-            //     "found loop {} {} {}",
-            //     t[i_usize].0.0, t[i_usize].0.1, t[i_usize].1
-            // );
             t[i_usize].1 = i;
             t[i_usize].0.1 = i;
             t[i_usize].0.2 = 0;
             i
         } else {
             visited[t[i_usize].0.0 as usize] = true;
-            // let next = t[i_usize].1;
             t[i_usize].1 = Self::cycle_b(t, visited, t[i_usize].1);
-            // println!(
-            //     "parent change {} ({} -> {})",
-            //     t[i_usize].0.0, next, t[i_usize].1
-            // );
             t[i_usize].1
         }
     }
@@ -518,7 +511,221 @@ where
         Ok(EulerTrail { graph })
     }
 
-    fn merge_euler_trails(&self, cycles: Mutex<Vec<Vec<u64>>>) -> Result<Vec<(u64, u64)>, Error> {
+    fn next_mmapped_chunck_into_slice<'a>(
+        mmap_pointer: *const u8,
+        mmap_remaining: usize,
+    ) -> Option<&'a [u64]> {
+        if mmap_remaining == 0 {
+            return None;
+        }
+        if mmap_remaining > 4096 {
+            // in bytes it's equivalent to for pages of 4Kb
+            unsafe { Some(std::slice::from_raw_parts(mmap_pointer as *const u64, 4096)) }
+        } else {
+            unsafe {
+                Some(std::slice::from_raw_parts(
+                    mmap_pointer as *const u64,
+                    mmap_remaining,
+                ))
+            }
+        }
+    }
+
+    fn merge_euler_trails(
+        &self,
+        cycle_offsets: Mutex<Vec<(u64, u64, u64)>>,
+    ) -> Result<Vec<(u64, u64)>, Error> {
+        let mut trail_heads: HashMap<u64, Vec<(u64, u64, u64)>> = HashMap::new();
+        let mmap_filename = cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            FileType::EulerTmp,
+            Some(0),
+        )?;
+        let cycles = unsafe {
+            MmapOptions::new().map(
+                &OpenOptions::new()
+                    .read(true)
+                    .open(mmap_filename)
+                    .map_err(|e| e)?,
+            )?
+        };
+        let cycle_offsets = cycle_offsets.into_inner().unwrap();
+
+        cycle_offsets.iter().for_each(|(idx, begin, end)| {
+            if begin != end {
+                let first = unsafe {
+                    std::ptr::read_unaligned(
+                        cycles.as_ptr().clone().add(*begin as usize) as *const u64
+                    )
+                };
+                trail_heads.entry(first).or_default().push((*idx, *idx, 0));
+            }
+        });
+
+        // generate writing sets
+        for (t_idx, t_begin, t_end) in cycle_offsets.iter() {
+            let mmap_ptr = unsafe { cycles.as_ptr().clone().add(*t_begin as usize) };
+            let mmap_remaining_size = (*t_end - *t_begin) as usize / std::mem::size_of::<u64>();
+            let mut pos = 0; // pos in u64 terms
+            while let Some(next_slice) =
+                Self::next_mmapped_chunck_into_slice(mmap_ptr, mmap_remaining_size - pos)
+            {
+                for (pos_idx, node) in next_slice.iter().enumerate() {
+                    if let Some(head_v) = trail_heads.get_mut(node) {
+                        let c_idx = *t_idx;
+                        let p_idx = (pos_idx + pos + 1) as u64;
+                        for (vec_idx, (in_cyc, _, _)) in head_v.clone().iter().enumerate() {
+                            if *in_cyc == *t_idx {
+                                continue;
+                            }
+                            head_v[vec_idx] = (*in_cyc, c_idx, p_idx);
+                        }
+                    }
+                }
+                // Prepare to read next slice
+                unsafe { mmap_ptr.add(next_slice.len() * std::mem::size_of::<u64>()) };
+                pos += next_slice.len();
+            }
+        }
+
+        // break cycles
+        let mut v: Vec<_> = trail_heads
+            .values_mut()
+            .flat_map(|vec| vec.drain(..))
+            .collect();
+        let mut euler_trail_sets = FindDisjointSetsEulerTrails::new(v.as_mut());
+        euler_trail_sets.cycle_check();
+
+        // Union find and write
+        let mut trail_sets: HashMap<u64, Vec<(u64, u64, u64)>> = HashMap::new();
+
+        for ((trail, parent_trail, pos), grand_parent) in euler_trail_sets.trails {
+            trail_sets
+                .entry(grand_parent)
+                .or_default()
+                .push((trail, parent_trail, pos));
+        }
+
+        let mut output_len: HashMap<u64, (u64, u64)> = HashMap::new();
+        let cycles_length: Vec<u64> = cycle_offsets.iter().map(|(_, b, e)| e - b).collect();
+        for head_trail in trail_sets.keys() {
+            output_len.insert(
+                *head_trail,
+                (*head_trail, std::mem::size_of::<u64>() as u64),
+            );
+            for (trail, _, _) in trail_sets.get(head_trail).unwrap() {
+                output_len.get_mut(head_trail).unwrap().1 +=
+                    cycles_length[*trail as usize] - std::mem::size_of::<u64>() as u64;
+            }
+        }
+
+        println!("writing sets size built");
+        let mut keys_by_trail_size: Vec<(u64, u64)> =
+            output_len.values().map(|&(a, b)| (a, b)).collect();
+        keys_by_trail_size.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+
+        for (idx, (head_trail, output_len)) in keys_by_trail_size.iter().enumerate() {
+            // Initialize writing guide
+            let trail_guide = trail_sets.get(head_trail).unwrap();
+            let mut pos_map: HashMap<u64, Vec<(u64, u64)>> = HashMap::new();
+            for (trail, parent_trail, pos) in trail_guide {
+                pos_map
+                    .entry(*parent_trail)
+                    .or_default()
+                    .push((*pos, *trail));
+            }
+            // sort positions in ascending order for each trail
+            pos_map
+                .values_mut()
+                .for_each(|v| v.sort_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
+
+            // push beginning trail write onto stack
+            let mut stack: Vec<(u64, u64, u64)> = vec![];
+            let mut remaining: Vec<(u64, u64)> = vec![];
+            let mut expand = Some((*head_trail, 0));
+            while let Some((current_trail, pos)) = expand {
+                if let Some(nested_trails) = pos_map.get_mut(&current_trail) {
+                    if let Some((insert_pos, trail)) = nested_trails.pop() {
+                        if trail == current_trail {
+                            continue;
+                        }
+                        if insert_pos < pos {
+                            continue;
+                        }
+                        stack.push((current_trail, pos, insert_pos));
+                        remaining.push((current_trail, insert_pos));
+                        remaining.push((trail, 1)); // elipse repeated node
+                    } else {
+                        stack.push((current_trail, pos, cycles_length[current_trail as usize]));
+                    }
+                } else {
+                    stack.push((current_trail, pos, cycles_length[current_trail as usize]));
+                }
+                expand = remaining.pop()
+            }
+            let output_filename = cache_file_name(
+                self.graph.graph_cache.graph_filename.clone(),
+                FileType::EulerPath,
+                Some(idx as u64),
+            )?;
+            let output_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .read(true)
+                .open(&output_filename)?;
+            output_file.set_len(*output_len)?;
+
+            let mut output_mmap = unsafe { MmapOptions::new().map_mut(&output_file)? };
+            let mut write_offset = 0;
+
+            for (cycle, from, to) in stack.iter() {
+                if *to - *from == 0 {
+                    continue;
+                }
+                let (_, t_begin, _) = cycle_offsets[*cycle as usize];
+                let begin = t_begin + *from;
+                let end = t_begin + *to;
+
+                let slice_ptr = unsafe { cycles.as_ptr().clone().add(begin as usize) };
+                // in u64 nodes
+                let slice_remaining_size = (end - begin) as usize / std::mem::size_of::<u64>();
+                // in u64 nodes
+                let mut pos = 0;
+                while let Some(next_slice) =
+                    Self::next_mmapped_chunck_into_slice(slice_ptr, slice_remaining_size - pos)
+                {
+                    let byte_len = next_slice.as_bytes().len();
+                    unsafe {
+                        let dest_ptr = output_mmap.as_mut_ptr().add(write_offset);
+                        let src_ptr = next_slice.as_ptr() as *const u8;
+                        std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, byte_len);
+                    }
+                    write_offset += byte_len;
+                    // Prepare to read next slice
+                    unsafe { slice_ptr.add(byte_len) };
+                    pos += next_slice.len();
+                }
+
+                output_mmap.flush()?;
+                println!(
+                    "mmap for {} built, len: {}",
+                    idx,
+                    output_file.metadata()?.len()
+                );
+            }
+        }
+        Ok(keys_by_trail_size
+            .iter()
+            .enumerate()
+            .map(|(idx, (_, size))| (idx as u64, *size))
+            .collect())
+    }
+
+    fn merge_euler_trails_no_mmap(
+        &self,
+        cycles: Mutex<Vec<Vec<u64>>>,
+    ) -> Result<Vec<(u64, u64)>, Error> {
         let mut trail_heads: HashMap<u64, Vec<(u64, u64, u64)>> = HashMap::new();
         let cycles = cycles.into_inner().unwrap();
         cycles.iter().enumerate().for_each(|(idx, trail)| {
@@ -653,10 +860,6 @@ where
 
             // println!("cycle lengths {:?}", cycles_length);
             // println!("write stack {:?}", stack);
-
-            // map out writes in stack
-
-            // Open output file
             let output_filename = cache_file_name(
                 self.graph.graph_cache.graph_filename.clone(),
                 FileType::EulerPath,
@@ -677,9 +880,7 @@ where
                 if *to - *from == 0 {
                     continue;
                 }
-                let from_usize = *from as usize;
-                let to_usize = *to as usize;
-                let slice = &cycles[*cycle as usize][from_usize..to_usize]; // Adjust if from/to are inclusive/exclusive
+                let slice = &cycles[*cycle as usize][*from as usize..*to as usize];
                 let byte_len = slice.as_bytes().len();
                 unsafe {
                     let dest_ptr = output_mmap.as_mut_ptr().add(write_offset);
@@ -699,10 +900,31 @@ where
             .collect())
     }
 
+    fn create_mmap_for_concurrent_data_write(
+        &self,
+        size: u64,
+        id: Option<u64>,
+    ) -> Result<Mutex<MmapMut>, Error> {
+        let filename = cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            FileType::EulerTmp,
+            id,
+        )?;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .read(true)
+            .open(filename)?;
+        file.set_len((self.graph.width() * 2) * std::mem::size_of::<u64>() as u64)?;
+        Ok(Mutex::new(unsafe { MmapMut::map_mut(&file)? }))
+    }
+
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn find_eulerian_cycle(&self) -> Result<Vec<(u64, u64)>, Error> {
+    pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
         let node_count = match (self.graph.size() - 1) as usize {
             0 => panic!("Graph has no vertices"),
             i => i,
@@ -712,31 +934,176 @@ where
         let graph_ptr = Arc::new(SharedPtr(self.graph.graph.as_ptr()));
         let edge_size = self.graph.edge_size;
 
-        // atomic next-edge index for each vertex and array of end offsets (non-atomic, read-only)
-        let mut end_offsets = vec![0; node_count];
-        // atomic array for next unused edge index for each node
+        // atomic array for next unused edge index for each node and unread edge count
         let mut next_edge_vec: Vec<AtomicU64> = Vec::with_capacity(node_count);
         next_edge_vec.resize_with(node_count, || AtomicU64::new(0));
-        // Initialize the arrays from the index mmapped data
+        let mut end_offsets: Vec<AtomicU8> = Vec::with_capacity(node_count);
+        end_offsets.resize_with(node_count, || AtomicU8::new(0));
+
         unsafe {
             for i in 0..node_count {
                 next_edge_vec[i].store(*index_ptr.add(i), Ordering::Relaxed);
-                end_offsets[i] = *index_ptr.add(i + 1);
-                // if i < 10 {
-                //     println!(
-                //         "Offset next_edge {:?} end {}",
-                //         next_edge_vec[i], end_offsets[i]
-                //     );
-                // }
+                end_offsets[i].store(
+                    (*index_ptr.add(i + 1) - *index_ptr.add(i)) as u8,
+                    Ordering::Relaxed,
+                );
             }
         }
-        let next_edge = Arc::new(next_edge_vec); // Arc for sharing with threads
-        let end_offsets = Arc::new(end_offsets); // Arc for read-only sharing
+        let next_edge = Arc::new(next_edge_vec);
+        let end_offsets = Arc::new(end_offsets);
 
         // Atomic counter to pick next starting vertex for a new cycle
         let start_vertex_counter = Arc::new(AtomicU64::new(0));
 
-        // Vector to collect cycles (each cycle is a Vec<u64> of vertex IDs) from threads
+        let mmap_write = self.create_mmap_for_concurrent_data_write(
+            (self.graph.width() * 2) * std::mem::size_of::<u64>() as u64,
+            Some(0),
+        )?;
+
+        let cycle_offsets: Mutex<Vec<(u64, u64, u64)>> = std::sync::Mutex::new(vec![]);
+        let mmap_offset: Mutex<u64> = Mutex::new(0);
+
+        thread::scope(|scope| {
+            for _ in 0..self.graph.thread_count {
+                let graph_ptr = Arc::clone(&graph_ptr);
+                let next_edge = Arc::clone(&next_edge);
+                let end_offsets = Arc::clone(&end_offsets);
+                let start_vertex_counter = Arc::clone(&start_vertex_counter);
+                let cycle_offsets = &cycle_offsets;
+                let mmap_offset = &mmap_offset;
+                let mmap = &mmap_write;
+
+                // Spawn a thread
+                scope.spawn(move |_| {
+                    // find cycles until no unused edges remain
+                    loop {
+                        let start_v = loop {
+                            let idx = start_vertex_counter
+                                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                                    if x >= node_count as u64 {
+                                        Some(0)
+                                    } else {
+                                        Some(x + 1)
+                                    }
+                                })
+                                .unwrap_or(0);
+                            if idx >= node_count as u64 {
+                                break None;
+                            }
+                            if end_offsets[idx as usize].load(Ordering::Relaxed) != 0 {
+                                break Some(idx);
+                            }
+                        };
+                        let start_v = match start_v {
+                            Some(v) => v,
+                            None => {
+                                // all edges used
+                                break;
+                            }
+                        };
+
+                        // Hierholzer's DFS
+                        let mut stack: Vec<u64> = Vec::new();
+                        let mut cycle: Vec<u64> = Vec::new();
+                        stack.push(start_v);
+                        while let Some(&v) = stack.last() {
+                            // Get the next unused edge from v
+                            if end_offsets[v as usize].load(Ordering::Relaxed) != 0 {
+                                end_offsets[v as usize].fetch_sub(1, Ordering::Relaxed);
+                                let edge_idx =
+                                    next_edge[v as usize].fetch_add(1, Ordering::Relaxed);
+                                let neighbor: u64;
+                                unsafe {
+                                    neighbor = std::ptr::read_unaligned(
+                                        graph_ptr.0.add((edge_idx * (edge_size as u64)) as usize)
+                                            as *const T,
+                                    )
+                                    .dest();
+                                }
+                                stack.push(neighbor);
+                            } else {
+                                // No more unused edges from v -> backtrack
+                                stack.pop();
+                                cycle.push(v);
+                            }
+                        }
+                        cycle.reverse();
+                        let mut cycle_stack = cycle_offsets.lock().unwrap();
+                        let mut offset = mmap_offset.lock().unwrap();
+                        let begin = *offset;
+                        *offset += (cycle.len() as u64 * edge_size as u64);
+                        let end = *offset;
+                        let cycle_id = cycle_stack.len() as u64;
+                        cycle_stack.push((cycle_id, begin, end));
+
+                        // Write to mmap, this may be done concurrently
+                        let mut mmap_guard = match mmap.lock() {
+                            Ok(i) => i,
+                            Err(e) => panic!("error mutex 1: {:?}", e),
+                        };
+                        mmap_guard[begin as usize..end as usize].copy_from_slice(cycle.as_bytes());
+
+                        // unsafe {
+                        //     println!("1 {}", offset);
+                        //     let ptr = Arc::as_ptr(&mmap.clone()) as *mut u8;
+                        //     println!("2");
+                        //     let slice = std::slice::from_raw_parts_mut(
+                        //         ptr.add(begin as usize),
+                        //         (end - begin) as usize,
+                        //     );
+                        //     println!("3");
+                        //     slice.copy_from_slice(cycle.as_bytes());
+                        //     println!("4 {}", offset);
+                        // };
+                    }
+                    // match mmap.into_inner() {
+                    //     Ok(i) => i.flush().unwrap(),
+                    //     Err(e) => panic!("error mmap: {:?}", e),
+                    // };
+                });
+            }
+        })
+        .unwrap();
+        match mmap_write.into_inner() {
+            Ok(i) => i.flush()?,
+            Err(e) => panic!("can't flush {}", e),
+        };
+        println!("unmerged cycles {:?}", cycle_offsets);
+        self.merge_euler_trails(cycle_offsets)
+    }
+    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
+    /// num_threads controls parallelism level (defaults to 1, single-threaded).
+    /// returns vec of (euler path file sequence number, file size(vytes)).
+    pub fn find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(u64, u64)>, Error> {
+        let node_count = match (self.graph.size() - 1) as usize {
+            0 => panic!("Graph has no vertices"),
+            i => i,
+        };
+
+        let index_ptr = self.graph.index.as_ptr() as *const u64;
+        let graph_ptr = Arc::new(SharedPtr(self.graph.graph.as_ptr()));
+        let edge_size = self.graph.edge_size;
+
+        // atomic array for next unused edge index for each node and unread edge count
+        let mut next_edge_vec: Vec<AtomicU64> = Vec::with_capacity(node_count);
+        next_edge_vec.resize_with(node_count, || AtomicU64::new(0));
+        let mut end_offsets: Vec<AtomicU8> = Vec::with_capacity(node_count);
+        end_offsets.resize_with(node_count, || AtomicU8::new(0));
+
+        unsafe {
+            for i in 0..node_count {
+                next_edge_vec[i].store(*index_ptr.add(i), Ordering::Relaxed);
+                end_offsets[i].store(
+                    (*index_ptr.add(i + 1) - *index_ptr.add(i)) as u8,
+                    Ordering::Relaxed,
+                );
+            }
+        }
+        let next_edge = Arc::new(next_edge_vec);
+        let end_offsets = Arc::new(end_offsets);
+
+        // Atomic counter to pick next starting vertex for a new cycle
+        let start_vertex_counter = Arc::new(AtomicU64::new(0));
         let cycles_mutex = std::sync::Mutex::new(Vec::new());
 
         thread::scope(|scope| {
@@ -746,6 +1113,7 @@ where
                 let end_offsets = Arc::clone(&end_offsets);
                 let start_vertex_counter = Arc::clone(&start_vertex_counter);
                 let cycles_mutex = &cycles_mutex;
+
                 // Spawn a thread
                 scope.spawn(move |_| {
                     let mut local_cycles: Vec<Vec<u64>> = Vec::new();
@@ -764,9 +1132,7 @@ where
                             if idx >= node_count as u64 {
                                 break None;
                             }
-                            let current_index = next_edge[idx as usize].load(Ordering::Relaxed);
-                            let end_index = end_offsets[idx as usize];
-                            if current_index < end_index {
+                            if end_offsets[idx as usize].load(Ordering::Relaxed) != 0 {
                                 break Some(idx);
                             }
                         };
@@ -784,8 +1150,10 @@ where
                         stack.push(start_v);
                         while let Some(&v) = stack.last() {
                             // Get the next unused edge from v
-                            let edge_idx = next_edge[v as usize].fetch_add(1, Ordering::Relaxed);
-                            if edge_idx < end_offsets[v as usize] {
+                            if end_offsets[v as usize].load(Ordering::Relaxed) != 0 {
+                                end_offsets[v as usize].fetch_sub(1, Ordering::Relaxed);
+                                let edge_idx =
+                                    next_edge[v as usize].fetch_add(1, Ordering::Relaxed);
                                 let neighbor: u64;
                                 unsafe {
                                     neighbor = std::ptr::read_unaligned(
@@ -802,16 +1170,15 @@ where
                             }
                         }
                         cycle.reverse();
-                        local_cycles.push(cycle);
+                        local_cycles.push(cycle.clone());
                     }
                     let mut global_cycles = cycles_mutex.lock().unwrap();
                     global_cycles.extend(local_cycles);
                 });
             }
         })
-        .unwrap(); // join all threads
-
-        self.merge_euler_trails(cycles_mutex)
+        .unwrap();
+        self.merge_euler_trails_no_mmap(cycles_mutex)
     }
 }
 
@@ -861,7 +1228,7 @@ where
     }
 
     #[inline(always)]
-    pub fn node_degree(&self, node_id: u64) -> u64 {
+    pub fn _node_degree(&self, node_id: u64) -> u64 {
         unsafe {
             let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
             let begin = ptr.read_unaligned();
@@ -879,7 +1246,7 @@ where
     }
 
     #[inline(always)]
-    pub fn index_node(&self, node_id: u64) -> std::ops::Range<u64> {
+    pub fn _index_node(&self, node_id: u64) -> std::ops::Range<u64> {
         unsafe {
             let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
             ptr.read_unaligned()..ptr.add(1).read_unaligned()
@@ -907,7 +1274,7 @@ where
         ))
     }
 
-    pub fn edges_in_range(&self, start_node: u64, end_node: u64) -> Result<EdgeIter<T, U>, Error> {
+    pub fn _edges_in_range(&self, start_node: u64, end_node: u64) -> Result<EdgeIter<T, U>, Error> {
         if start_node > end_node {
             panic!("error invalid range, beginning after end");
         }
@@ -983,7 +1350,7 @@ impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphE
     }
 
     #[inline(always)]
-    fn into_neighbour(&self) -> Self {
+    fn _into_neighbour(&self) -> Self {
         NeighbourIter::new(self.orig_edge_ptr, self.orig_id_ptr, unsafe {
             self.edge_ptr.read_unaligned().dest()
         })
