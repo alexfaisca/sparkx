@@ -1,4 +1,4 @@
-use crate::node::EdgeType;
+use crate::node::{self, EdgeType};
 use crate::shared_slice::{SharedSlice, SharedSliceMut};
 
 use bitfield::bitfield;
@@ -587,21 +587,38 @@ where
         Ok(EulerTrail { graph })
     }
 
+    fn create_memmapped_mut_slice_from_tmp_file<V>(
+        filename: String,
+        len: usize,
+    ) -> Result<(SharedSliceMut<V>, MmapMut), Error> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .read(true)
+            .open(&filename)?;
+        file.set_len((len * std::mem::size_of::<V>()) as u64)?;
+        SharedSliceMut::<V>::from_file(&file)
+    }
+
+    fn create_memmapped_slice_from_tmp_file<V>(
+        filename: String,
+    ) -> Result<(SharedSlice<V>, Mmap), Error> {
+        let file = OpenOptions::new().read(true).open(filename)?;
+        SharedSlice::<V>::from_file(&file)
+    }
+
     fn merge_euler_trails(
         &self,
         cycle_offsets: Vec<(usize, usize, usize)>,
     ) -> Result<Vec<(u64, u64)>, Error> {
         let mut trail_heads: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
-        let m_fn = cache_file_name(
+        let mmap_fn = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             FileType::EulerTmp,
             None,
         )?;
-        let cycles = unsafe { MmapOptions::new().map(&OpenOptions::new().read(true).open(m_fn)?)? };
-        let cycles = SharedSlice::<u64>::new(
-            cycles.as_ptr() as *const u64,
-            cycles.len() / std::mem::size_of::<u64>(),
-        );
+        let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<u64>(mmap_fn)?;
 
         cycle_offsets.iter().for_each(|(idx, begin, _)| {
             trail_heads
@@ -903,31 +920,64 @@ where
             .collect())
     }
 
-    fn create_mmap_for_concurrent_data_write(
+    fn initialize_data_structures_memmapped_hierholzers(
         &self,
-        size: u64,
-        id: Option<u64>,
-    ) -> Result<Mutex<MmapMut>, Error> {
-        let filename = cache_file_name(
+    ) -> Result<(Vec<AtomicU64>, Vec<AtomicU8>, File, File), Error> {
+        let edge_vec_fn = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             FileType::EulerTmp,
-            id,
+            Some(1),
         )?;
-
-        let file = OpenOptions::new()
+        let edge_count_fn = cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            FileType::EulerTmp,
+            Some(2),
+        )?;
+        let edge_vec_file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .read(true)
-            .open(filename)?;
-        file.set_len(size)?;
-        Ok(Mutex::new(unsafe { MmapMut::map_mut(&file)? }))
+            .open(&edge_vec_fn)?;
+        edge_vec_file.set_len(std::mem::size_of::<AtomicU64>() as u64)?;
+        let edge_count_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .read(true)
+            .open(&edge_count_fn)?;
+        edge_count_file.set_len(std::mem::size_of::<AtomicU8>() as u64)?;
+
+        let edge_vec: Vec<AtomicU64> = vec![];
+        let edge_count_vec: Vec<AtomicU8> = vec![];
+        Ok((edge_vec, edge_count_vec, edge_vec_file, edge_count_file))
     }
+
+    // fn create_mmap_for_concurrent_data_write(
+    //     &self,
+    //     size: u64,
+    //     id: Option<u64>,
+    // ) -> Result<Mutex<MmapMut>, Error> {
+    //     let filename = cache_file_name(
+    //         self.graph.graph_cache.graph_filename.clone(),
+    //         FileType::EulerTmp,
+    //         id,
+    //     )?;
+    //
+    //     let file = OpenOptions::new()
+    //         .create(true)
+    //         .truncate(true)
+    //         .write(true)
+    //         .read(true)
+    //         .open(filename)?;
+    //     file.set_len(size)?;
+    //     Ok(Mutex::new(unsafe { MmapMut::map_mut(&file)? }))
+    // }
 
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn find_eulerian_cycle(&self, _mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
+    pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
         let node_count = match (self.graph.size() - 1) as usize {
             0 => panic!("Graph has no vertices"),
             i => i,
@@ -942,41 +992,74 @@ where
             self.graph.width() as usize,
         ));
 
+        let (mut edge_vec, mut edge_count_vec, edge_vec_file, edge_count_file) =
+            self.initialize_data_structures_memmapped_hierholzers()?;
+
         // atomic array for next unused edge index for each node and unread edge count
-        let mut next_edge_vec: Vec<AtomicU64> = Vec::with_capacity(node_count);
-        next_edge_vec.resize_with(node_count, || AtomicU64::new(0));
-        let mut edge_count: Vec<AtomicU8> = Vec::with_capacity(node_count);
-        edge_count.resize_with(node_count, || AtomicU8::new(0));
+        let (edge_vec, edge_mmap): (Arc<SharedSliceMut<AtomicU64>>, MmapMut) = {
+            if mmap < 1 {
+                edge_vec.resize_with(node_count, || AtomicU64::new(0));
+                unsafe {
+                    (
+                        Arc::new(SharedSliceMut::<AtomicU64>::new(
+                            edge_vec.as_mut_ptr(),
+                            edge_vec.len(),
+                        )),
+                        MmapOptions::new().map_mut(&edge_vec_file)?,
+                    )
+                }
+            } else {
+                edge_vec_file.set_len((node_count * std::mem::size_of::<AtomicU64>()) as u64)?;
+                let slice = SharedSliceMut::<AtomicU64>::from_file(&edge_vec_file)?;
+                (Arc::new(slice.0), slice.1)
+            }
+        };
+        let (edge_count, edge_count_mmap): (Arc<SharedSliceMut<AtomicU8>>, MmapMut) = {
+            if mmap < 2 {
+                edge_count_vec.resize_with(node_count, || AtomicU8::new(0));
+
+                unsafe {
+                    (
+                        Arc::new(SharedSliceMut::<AtomicU8>::new(
+                            edge_count_vec.as_mut_ptr(),
+                            edge_count_vec.len(),
+                        )),
+                        MmapOptions::new().map_mut(&edge_count_file)?,
+                    )
+                }
+            } else {
+                edge_count_file.set_len((node_count * std::mem::size_of::<AtomicU8>()) as u64)?;
+                let slice = SharedSliceMut::<AtomicU8>::from_file(&edge_count_file)?;
+                (Arc::new(slice.0), slice.1)
+            }
+        };
         for i in 0..node_count {
-            next_edge_vec[i].store(*index_ptr.get(i), Ordering::Relaxed);
-            edge_count[i].store(
+            edge_vec.get(i).store(*index_ptr.get(i), Ordering::Relaxed);
+            edge_count.get(i).store(
                 (*index_ptr.get(i + 1) - *index_ptr.get(i)) as u8,
                 Ordering::Relaxed,
             );
         }
-        let next_edge = Arc::new(SharedSliceMut::<AtomicU64>::new(
-            next_edge_vec.as_mut_ptr(),
-            next_edge_vec.len(),
-        ));
-        let edge_count = Arc::new(SharedSliceMut::<AtomicU8>::new(
-            edge_count.as_mut_ptr(),
-            next_edge_vec.len(),
-        ));
+        if mmap > 0 {
+            edge_mmap.flush()?;
+        }
+        if mmap > 1 {
+            edge_count_mmap.flush()?;
+        }
 
         // Atomic counter to pick next starting vertex for a new cycle
         let start_vertex_counter = Arc::new(AtomicU64::new(0));
         // mmap to store disjoined trails for subsequent merging
-        let mut mmap_write = self
-            .create_mmap_for_concurrent_data_write(
-                (self.graph.width() * 2) * std::mem::size_of::<u64>() as u64,
-                None,
-            )?
-            .into_inner()
-            .unwrap();
-        let mmap = Mutex::new(SharedSliceMut::<u64>::new(
-            mmap_write.as_mut_ptr() as *mut u64,
+        let filename = cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            FileType::EulerTmp,
+            None,
+        )?;
+        let (mmap_slice, mmap) = Self::create_memmapped_mut_slice_from_tmp_file::<u64>(
+            filename,
             (self.graph.width() * 2) as usize,
-        ));
+        )?;
+        let mmap_mutex = Mutex::new(mmap_slice);
 
         let cycle_offsets: Mutex<Vec<(usize, usize, usize)>> = std::sync::Mutex::new(vec![]);
         let mmap_offset: Mutex<usize> = Mutex::new(0);
@@ -984,12 +1067,13 @@ where
         thread::scope(|scope| {
             for _ in 0..self.graph.thread_count {
                 let graph = Arc::clone(&graph_ptr);
-                let next_edge = Arc::clone(&next_edge);
+                let next_edge = Arc::clone(&edge_vec);
                 let edge_count = Arc::new(&edge_count);
                 let start_vertex_counter = Arc::clone(&start_vertex_counter);
                 let cycle_offsets = &cycle_offsets;
                 let mmap_offset = &mmap_offset;
-                let mmap = &mmap;
+                let mmap = &mmap_mutex;
+                let node_count = node_count as u64;
 
                 // Spawn a thread
                 scope.spawn(move |_| {
@@ -998,14 +1082,14 @@ where
                         let start_v = loop {
                             let idx = start_vertex_counter
                                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                                    if x >= node_count as u64 {
+                                    if x >= node_count {
                                         Some(0)
                                     } else {
                                         Some(x + 1)
                                     }
                                 })
                                 .unwrap_or(0);
-                            if idx >= node_count as u64 {
+                            if idx >= node_count {
                                 break None;
                             }
                             if edge_count.get(idx as usize).load(Ordering::Relaxed) > 0 {
@@ -1075,7 +1159,7 @@ where
             }
         })
         .unwrap();
-        mmap_write.flush()?;
+        mmap.flush()?;
         let disjoint_cycles = cycle_offsets.into_inner().unwrap();
         // Euler trails are in the mem_mapped file
         self.merge_euler_trails(disjoint_cycles)
