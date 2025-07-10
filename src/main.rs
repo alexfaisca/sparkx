@@ -1,6 +1,7 @@
 mod abstract_graph;
 mod generic_memory_map;
 mod node;
+mod shared_slice;
 
 use clap::Parser;
 use core::panic;
@@ -38,7 +39,7 @@ struct ProgramArgs {
     debug: bool,
 
     /// enable graph memory mapping mode
-    #[arg(short, long)]
+    #[arg(short, long, default_value_t = true)]
     mmap: bool,
 
     /// program thread number, default is 1
@@ -46,11 +47,15 @@ struct ProgramArgs {
     threads: u8,
 
     /// enable verbose mode
-    #[arg(short, long)]
+    #[arg(short, long, default_value_t = false)]
     verbose: bool,
 
-    /// required — input file (.txt, .lz4, .mmap are accepted)
+    /// output file(s) identifier (filenames are generated using this as the graph id)
     #[arg(short, long)]
+    output_id: Option<String>,
+
+    /// required — input file (.txt, .lz4, .mmap are accepted)
+    #[arg(short, long, required = true)]
     file: String,
 }
 
@@ -70,9 +75,7 @@ fn main() {
         Path::new(args.file.as_str())
             .extension()
             .and_then(|s| s.to_str()),
-        Path::new(("./cache/index_".to_string() + args.file.as_str()).as_str()).try_exists(), // needs to
-                                                                                              // be in
-                                                                                              // cache dir
+        Path::new(("./cache/index_".to_string() + args.file.as_str()).as_str()).try_exists(),
     ) {
         // .txt input file
         (Some("txt"), _) => match args.mmap {
@@ -82,6 +85,7 @@ fn main() {
                         .expect("error couldn't read file")
                         .as_ref(),
                     args.threads,
+                    args.output_id,
                 ) {
                     Ok(i) => i,
                     Err(e) => panic!("error couldn't parse file, {:?}", e),
@@ -104,6 +108,7 @@ fn main() {
                         .expect("error couldn't read file")
                         .as_ref(),
                     args.threads,
+                    args.output_id,
                 )
                 .expect("error couldn't parse file"),
             ),
@@ -245,10 +250,14 @@ fn parse_bytes_petgraph(input: &[u8]) -> Result<DiGraphMap<u64, EdgeType>, Parsi
 fn parse_bytes_mmaped(
     input: &[u8],
     threads: u8,
+    id: Option<String>,
 ) -> Result<GraphMemoryMap<OutEdgeRecord, DirectedEdge>, ParsingError> {
     // This assumes UTF-8 but avoids full conversion
     let mut lines = input.split(|&b| b == b'\n');
-    let mut graph_cache = generic_memory_map::GraphCache::<OutEdgeRecord>::init()?;
+    let mut graph_cache = match id {
+        Some(id) => generic_memory_map::GraphCache::<OutEdgeRecord>::init_with_id(id)?,
+        None => generic_memory_map::GraphCache::<OutEdgeRecord>::init()?,
+    };
 
     //debug
     // println!("graph cache: {:?}", graph_cache);
