@@ -1,4 +1,4 @@
-use crate::node::{self, EdgeType};
+use crate::node::EdgeType;
 use crate::shared_slice::{SharedSlice, SharedSliceMut};
 
 use bitfield::bitfield;
@@ -922,6 +922,7 @@ where
 
     fn initialize_data_structures_memmapped_hierholzers(
         &self,
+        mmap: u8,
     ) -> Result<(Vec<AtomicU64>, Vec<AtomicU8>, File, File), Error> {
         let edge_vec_fn = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
@@ -939,17 +940,29 @@ where
             .write(true)
             .read(true)
             .open(&edge_vec_fn)?;
-        edge_vec_file.set_len(std::mem::size_of::<AtomicU64>() as u64)?;
+        edge_vec_file.set_len(
+            if mmap > 0 { self.graph.size() - 1 } else { 1 }
+                * std::mem::size_of::<AtomicU64>() as u64,
+        )?;
         let edge_count_file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .read(true)
             .open(&edge_count_fn)?;
-        edge_count_file.set_len(std::mem::size_of::<AtomicU8>() as u64)?;
+        edge_count_file.set_len(
+            if mmap > 1 { self.graph.size() - 1 } else { 1 }
+                * std::mem::size_of::<AtomicU8>() as u64,
+        )?;
 
-        let edge_vec: Vec<AtomicU64> = vec![];
-        let edge_count_vec: Vec<AtomicU8> = vec![];
+        let mut edge_vec: Vec<AtomicU64> = vec![];
+        if mmap < 1 {
+            edge_vec.resize_with((self.graph.size() - 1) as usize, || AtomicU64::new(0))
+        }
+        let mut edge_count_vec: Vec<AtomicU8> = vec![];
+        if mmap < 2 {
+            edge_count_vec.resize_with((self.graph.size() - 1) as usize, || AtomicU8::new(0))
+        }
         Ok((edge_vec, edge_count_vec, edge_vec_file, edge_count_file))
     }
 
@@ -992,13 +1005,13 @@ where
             self.graph.width() as usize,
         ));
 
+        // The vecs and File pointers need to be in scope for the structures not to be deallocated
         let (mut edge_vec, mut edge_count_vec, edge_vec_file, edge_count_file) =
-            self.initialize_data_structures_memmapped_hierholzers()?;
+            self.initialize_data_structures_memmapped_hierholzers(mmap)?;
 
         // atomic array for next unused edge index for each node and unread edge count
         let (edge_vec, edge_mmap): (Arc<SharedSliceMut<AtomicU64>>, MmapMut) = {
             if mmap < 1 {
-                edge_vec.resize_with(node_count, || AtomicU64::new(0));
                 unsafe {
                     (
                         Arc::new(SharedSliceMut::<AtomicU64>::new(
@@ -1009,15 +1022,12 @@ where
                     )
                 }
             } else {
-                edge_vec_file.set_len((node_count * std::mem::size_of::<AtomicU64>()) as u64)?;
                 let slice = SharedSliceMut::<AtomicU64>::from_file(&edge_vec_file)?;
                 (Arc::new(slice.0), slice.1)
             }
         };
         let (edge_count, edge_count_mmap): (Arc<SharedSliceMut<AtomicU8>>, MmapMut) = {
             if mmap < 2 {
-                edge_count_vec.resize_with(node_count, || AtomicU8::new(0));
-
                 unsafe {
                     (
                         Arc::new(SharedSliceMut::<AtomicU8>::new(
@@ -1028,7 +1038,6 @@ where
                     )
                 }
             } else {
-                edge_count_file.set_len((node_count * std::mem::size_of::<AtomicU8>()) as u64)?;
                 let slice = SharedSliceMut::<AtomicU8>::from_file(&edge_count_file)?;
                 (Arc::new(slice.0), slice.1)
             }
@@ -1149,7 +1158,7 @@ where
                                 Ok(i) => i,
                                 Err(e) => panic!("error mutex 1: {:?}", e),
                             };
-                            let _ = match mmap_guard.mut_slice(begin, end) {
+                            let () = match mmap_guard.mut_slice(begin, end) {
                                 Some(i) => i.copy_from_slice(cycle),
                                 None => panic!("error couldn't slice mmap to write cycle"),
                             };

@@ -11,6 +11,7 @@ use petgraph::graphmap::DiGraphMap;
 use rustworkx_core::petgraph::{self};
 use rustworkx_core::{self};
 use static_assertions::const_assert;
+use std::fmt::Display;
 use std::io::Write;
 use std::{
     fs::File,
@@ -345,21 +346,21 @@ fn parse_bytes_mmaped(
 
 #[derive(Debug)]
 enum ParsingError {
-    FormatError(std::fmt::Error),
-    IoError(std::io::Error),
+    Format(std::fmt::Error),
+    Io(std::io::Error),
     Utf8(std::str::Utf8Error),
     ParseInt(std::num::ParseIntError),
 }
 
 impl From<std::fmt::Error> for ParsingError {
     fn from(e: std::fmt::Error) -> Self {
-        ParsingError::FormatError(e)
+        ParsingError::Format(e)
     }
 }
 
 impl From<std::io::Error> for ParsingError {
     fn from(e: std::io::Error) -> Self {
-        ParsingError::IoError(e)
+        ParsingError::Io(e)
     }
 }
 
@@ -372,5 +373,16 @@ impl From<std::str::Utf8Error> for ParsingError {
 impl From<std::num::ParseIntError> for ParsingError {
     fn from(e: std::num::ParseIntError) -> Self {
         ParsingError::ParseInt(e)
+    }
+}
+
+impl Display for ParsingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ParsingError::Format(e) => write!(f, "FormatError {{{}}}", e),
+            ParsingError::Io(e) => write!(f, "IoError {{{}}}", e),
+            ParsingError::Utf8(e) => write!(f, "Utf8Error {{{}}}", e),
+            ParsingError::ParseInt(e) => write!(f, "ParseIntError {{{}}}", e),
+        }
     }
 }
