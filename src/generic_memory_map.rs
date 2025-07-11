@@ -10,6 +10,7 @@ use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use regex::Regex;
 use static_assertions::const_assert;
+use std::usize;
 use std::{
     any::type_name,
     collections::HashMap,
@@ -571,6 +572,13 @@ impl FindDisjointSetsEulerTrails {
     }
 }
 
+struct TmpMemoryHelperStruct {
+    _a: Vec<AtomicU64>,
+    _b: Vec<AtomicU8>,
+    _c: MmapMut,
+    _d: MmapMut,
+}
+
 pub struct EulerTrail<
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
     U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
@@ -920,10 +928,22 @@ where
             .collect())
     }
 
-    fn initialize_data_structures_memmapped_hierholzers(
+    fn initialize_hierholzers_procedural_memory(
         &self,
         mmap: u8,
-    ) -> Result<(Vec<AtomicU64>, Vec<AtomicU8>, File, File), Error> {
+    ) -> Result<
+        (
+            Arc<SharedSliceMut<AtomicU64>>,
+            Arc<SharedSliceMut<AtomicU8>>,
+            TmpMemoryHelperStruct,
+        ),
+        Error,
+    > {
+        let node_count = (self.graph.size() - 1) as usize;
+        let index_ptr = Arc::new(SharedSlice::<u64>::new(
+            self.graph.index.as_ptr() as *const u64,
+            self.graph.size() as usize,
+        ));
         let edge_vec_fn = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             FileType::EulerTmp,
@@ -957,60 +977,14 @@ where
 
         let mut edge_vec: Vec<AtomicU64> = vec![];
         if mmap < 1 {
-            edge_vec.resize_with((self.graph.size() - 1) as usize, || AtomicU64::new(0))
+            edge_vec.resize_with(node_count, || AtomicU64::new(0))
         }
         let mut edge_count_vec: Vec<AtomicU8> = vec![];
         if mmap < 2 {
-            edge_count_vec.resize_with((self.graph.size() - 1) as usize, || AtomicU8::new(0))
+            edge_count_vec.resize_with(node_count, || AtomicU8::new(0))
         }
-        Ok((edge_vec, edge_count_vec, edge_vec_file, edge_count_file))
-    }
 
-    // fn create_mmap_for_concurrent_data_write(
-    //     &self,
-    //     size: u64,
-    //     id: Option<u64>,
-    // ) -> Result<Mutex<MmapMut>, Error> {
-    //     let filename = cache_file_name(
-    //         self.graph.graph_cache.graph_filename.clone(),
-    //         FileType::EulerTmp,
-    //         id,
-    //     )?;
-    //
-    //     let file = OpenOptions::new()
-    //         .create(true)
-    //         .truncate(true)
-    //         .write(true)
-    //         .read(true)
-    //         .open(filename)?;
-    //     file.set_len(size)?;
-    //     Ok(Mutex::new(unsafe { MmapMut::map_mut(&file)? }))
-    // }
-
-    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
-    /// num_threads controls parallelism level (defaults to 1, single-threaded).
-    /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
-        let node_count = match (self.graph.size() - 1) as usize {
-            0 => panic!("Graph has no vertices"),
-            i => i,
-        };
-
-        let index_ptr = SharedSlice::<u64>::new(
-            self.graph.index.as_ptr() as *const u64,
-            self.graph.size() as usize,
-        );
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.graph.as_ptr() as *const T,
-            self.graph.width() as usize,
-        ));
-
-        // The vecs and File pointers need to be in scope for the structures not to be deallocated
-        let (mut edge_vec, mut edge_count_vec, edge_vec_file, edge_count_file) =
-            self.initialize_data_structures_memmapped_hierholzers(mmap)?;
-
-        // atomic array for next unused edge index for each node and unread edge count
-        let (edge_vec, edge_mmap): (Arc<SharedSliceMut<AtomicU64>>, MmapMut) = {
+        let (edge, edge_mmap): (Arc<SharedSliceMut<AtomicU64>>, MmapMut) = {
             if mmap < 1 {
                 unsafe {
                     (
@@ -1026,7 +1000,7 @@ where
                 (Arc::new(slice.0), slice.1)
             }
         };
-        let (edge_count, edge_count_mmap): (Arc<SharedSliceMut<AtomicU8>>, MmapMut) = {
+        let (count, edge_count_mmap): (Arc<SharedSliceMut<AtomicU8>>, MmapMut) = {
             if mmap < 2 {
                 unsafe {
                     (
@@ -1042,19 +1016,64 @@ where
                 (Arc::new(slice.0), slice.1)
             }
         };
-        for i in 0..node_count {
-            edge_vec.get(i).store(*index_ptr.get(i), Ordering::Relaxed);
-            edge_count.get(i).store(
-                (*index_ptr.get(i + 1) - *index_ptr.get(i)) as u8,
-                Ordering::Relaxed,
-            );
-        }
+
+        thread::scope(|scope| {
+            let threads = self.graph.thread_count as usize;
+            for i in 0..threads {
+                let index = Arc::clone(&index_ptr);
+                let edge = Arc::clone(&edge);
+                let count = Arc::clone(&count);
+                let begin = node_count / threads * i;
+                let end = if i == threads - 1 {
+                    node_count
+                } else {
+                    node_count / threads * (i + 1)
+                };
+                scope.spawn(move |_| {
+                    for k in begin..end {
+                        edge.get(k).store(*index.get(k), Ordering::Relaxed);
+                        count
+                            .get(k)
+                            .store((*index.get(k + 1) - *index.get(k)) as u8, Ordering::Relaxed);
+                    }
+                });
+            }
+        })
+        .unwrap();
         if mmap > 0 {
             edge_mmap.flush()?;
         }
         if mmap > 1 {
             edge_count_mmap.flush()?;
         }
+        Ok((
+            edge,
+            count,
+            TmpMemoryHelperStruct {
+                _a: edge_vec,
+                _b: edge_count_vec,
+                _c: edge_mmap,
+                _d: edge_count_mmap,
+            },
+        ))
+    }
+
+    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
+    /// num_threads controls parallelism level (defaults to 1, single-threaded).
+    /// returns vec of (euler path file sequence number, file size(vytes)).
+    pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
+        let node_count = match (self.graph.size() - 1) as usize {
+            0 => panic!("Graph has no vertices"),
+            i => i,
+        };
+        let graph_ptr = Arc::new(SharedSlice::<T>::new(
+            self.graph.graph.as_ptr() as *const T,
+            self.graph.width() as usize,
+        ));
+
+        // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
+        let (edge_vec, edge_count, _procedural_memory_ref) =
+            self.initialize_hierholzers_procedural_memory(mmap)?;
 
         // Atomic counter to pick next starting vertex for a new cycle
         let start_vertex_counter = Arc::new(AtomicU64::new(0));

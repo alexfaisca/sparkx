@@ -42,7 +42,7 @@ impl<T> SharedSlice<T> {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
-    pub fn len(&self) -> usize {
+    pub fn _len(&self) -> usize {
         self.len
     }
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
@@ -89,10 +89,10 @@ impl<T> SharedSliceMut<T> {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
-    pub fn len(&self) -> usize {
+    pub fn _len(&self) -> usize {
         self.len
     }
-    pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
+    pub fn _slice(&self, start: usize, end: usize) -> Option<&[T]> {
         if start >= self.len {
             return None;
         }
