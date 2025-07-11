@@ -8,8 +8,10 @@ use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
+use rand::seq::IndexedRandom;
 use regex::Regex;
 use static_assertions::const_assert;
+use std::sync::atomic::AtomicU32;
 use std::usize;
 use std::{
     any::type_name,
@@ -138,6 +140,7 @@ enum FileType {
     EulerTmp,
     KmerTmp,
     KmerSortedTmp,
+    KCore,
 }
 
 fn cache_file_name(
@@ -185,6 +188,10 @@ fn cache_file_name(
         },
         FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
         FileType::KmerSortedTmp => format!("{}_{}.{}", "kmersortedtmpfile", id, "tmp"),
+        FileType::KCore => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "kcore_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "kcores", id, "mmap"),
+        },
     };
 
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
@@ -1428,6 +1435,250 @@ where
     pub fn width(&self) -> u64 {
         self.graph_cache.graph_bytes // graph size stored as edges
     }
+
+    fn initialize_k_core_procedural_memory(
+        &self,
+        mmap: u8,
+    ) -> Result<(Arc<SharedSliceMut<AtomicU8>>, Vec<AtomicU8>, MmapMut), Error> {
+        let node_count = (self.size() - 1) as usize;
+        // Memory-map a file for degrees (each entry AtomicU32)
+        let deg_filename = cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
+            Some(0),
+        )?;
+        let deg_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&deg_filename)?;
+        deg_file.set_len(
+            (if mmap > 0 { node_count } else { 1 } * std::mem::size_of::<AtomicU8>()) as u64,
+        )?;
+        // Use an in-memory vector for degrees
+        let mut deg_vec: Vec<AtomicU8> = Vec::new();
+        // Initialize with 0s
+        if mmap < 1 {
+            deg_vec.resize_with(node_count, || AtomicU8::new(0));
+        }
+
+        let (degree, deg_mmap): (Arc<SharedSliceMut<AtomicU8>>, MmapMut) = {
+            if mmap < 2 {
+                unsafe {
+                    (
+                        Arc::new(SharedSliceMut::<AtomicU8>::new(
+                            deg_vec.as_mut_ptr(),
+                            deg_vec.len(),
+                        )),
+                        MmapOptions::new().map_mut(&deg_file)?,
+                    )
+                }
+            } else {
+                let slice = SharedSliceMut::<AtomicU8>::from_file(&deg_file)?;
+                (Arc::new(slice.0), slice.1)
+            }
+        };
+        Ok((degree, deg_vec, deg_mmap))
+    }
+
+    pub fn compute_k_core(&self, mmap: u8) -> Result<String, Error> {
+        let node_count = (self.size() - 1) as usize;
+        let edge_count = self.width() as usize;
+        if node_count == 0 {
+            return Err(Error::new(
+                std::io::ErrorKind::Other,
+                "Graph has no vertices",
+            ));
+        }
+
+        let (degree, _deg_vec, _deg_mmap) = self.initialize_k_core_procedural_memory(mmap)?;
+
+        // compute out-degrees in parallel
+        let index_ptr = Arc::new(SharedSlice::<u64>::new(
+            self.index.as_ptr() as *const u64,
+            node_count + 1,
+        ));
+        let graph_ptr = Arc::new(SharedSlice::<T>::new(
+            self.graph.as_ptr() as *const T,
+            edge_count,
+        ));
+
+        // initialize degree and bins count vecs
+        let mut bins: Vec<usize> = match thread::scope(|scope| {
+            let threads = self.thread_count.max(1) as usize;
+            let mut bins = Vec::new();
+            let mut max_vecs = Vec::new();
+            for t in 0..threads {
+                let index_ptr = Arc::clone(&index_ptr);
+                let deg_arr = Arc::clone(&degree);
+                let start = node_count * t / threads;
+                let end = if t == threads - 1 {
+                    node_count
+                } else {
+                    node_count * (t + 1) / threads
+                };
+                max_vecs.push(scope.spawn(move |_| {
+                    let mut bins: Vec<u64> = vec![0; 1];
+                    for v in start..end {
+                        let degree = (index_ptr.get(v + 1) - index_ptr.get(v)) as u8;
+                        if !degree < bins.len() as u8 {
+                            bins.push(1);
+                        } else {
+                            bins[degree as usize] += 1;
+                        }
+                        deg_arr.get(v).store(degree, Ordering::Relaxed);
+                    }
+                    bins
+                }));
+            }
+            // join results
+            max_vecs.into_iter().for_each(|v| {
+                let bin = match v.join() {
+                    Ok(i) => i,
+                    Err(e) => panic!("error getting thread bin count {:?}", e),
+                };
+                for (degree, count) in bin.iter().enumerate() {
+                    if !bins.len() > degree {
+                        bins.push(1);
+                    } else {
+                        bins[degree] += 1;
+                    }
+                }
+            });
+            bins
+        }) {
+            Ok(i) => i,
+            _ => panic!("error calculating max degree"),
+        };
+        let max_degree = bins.len() - 1;
+        let mut core = vec![0u8; node_count];
+
+        // prefix sum to get starting indices for each degree
+        let mut start_index = 0;
+        for d in 0..bins.len() {
+            let count = bins[d];
+            bins[d] = start_index;
+            start_index += count;
+        }
+        // `bins[d]` now holds the starting index in `vert` for vertices of degree d.
+        // fill vert array with vertices ordered by degree
+        let mut node = vec![0usize; node_count];
+        let mut pos = vec![0usize; node_count];
+        for v in 0..node_count {
+            let d = degree.get(v).load(Ordering::Relaxed) as usize;
+            let idx = bins[d] as usize;
+            node[idx] = v;
+            pos[v] = idx;
+            bins[d] += 1; // increment the bin index for the next vertex of same degree
+        }
+
+        // restore bin starting positions
+        for d in (1..=max_degree).rev() {
+            bins[d] = bins[d - 1];
+        }
+        bins[0] = 0;
+
+        // peel vertices in order of increasing current degree
+        for i in 0..node_count {
+            let v = node[i];
+            let deg_v = degree.get(v).load(Ordering::Relaxed);
+            core[v] = deg_v; // coreness of v
+
+            // iterate outgoing neighbors of v
+            let out_start = *(index_ptr.get(v)) as usize;
+            let out_end = *(index_ptr.get(v + 1)) as usize;
+            for e in out_start..out_end {
+                let u = (*graph_ptr.get(e)).dest() as usize;
+                if let Ok(u_new_degree) =
+                    degree
+                        .get(u)
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                            if x > deg_v {
+                                Some(x - 1)
+                            } else {
+                                None // don't update
+                            }
+                        })
+                {
+                    // FIXME: Synchronization
+                    let old_deg = (u_new_degree + 1) as usize; // old degree was one higher
+                    // swap u's position node array to maintain order
+                    let u_pos = pos[u];
+                    let new_pos = bins[old_deg];
+                    // bins[old_deg] points to start of nodes with degree >= old_deg
+                    // swap the node at new_pos with u to move u into the bucket of (u_new_degree)
+                    let w = node[new_pos];
+                    if u != w {
+                        node[u_pos] = w;
+                        pos[w] = u_pos;
+                        node[new_pos] = u;
+                        pos[u] = new_pos;
+                    }
+                    bins[old_deg] += 1;
+                }
+            }
+        }
+        let output_filename = cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KCore,
+            None,
+        )?;
+        let outfile = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .read(true)
+            .open(&output_filename)?;
+        outfile.set_len(edge_count as u64 * std::mem::size_of::<u8>() as u64)?;
+        let (out, _mmap): (SharedSliceMut<u8>, MmapMut) = SharedSliceMut::from_file(&outfile)?;
+        let out_slice = out;
+        let core = Arc::new(core);
+
+        // parallel edge labeling: partition vertices among threads and write edge core values
+        thread::scope(|scope| {
+            let threads = self.thread_count.max(1) as usize;
+            for t in 0..threads {
+                let index_ptr = Arc::clone(&index_ptr);
+                let graph_ptr = Arc::clone(&graph_ptr);
+                let core = Arc::new(&core);
+                let core = Arc::clone(&core);
+                let start = node_count * t / threads;
+                let end = if t == threads - 1 {
+                    node_count
+                } else {
+                    node_count * (t + 1) / threads
+                };
+                let mut out_ptr = out_slice;
+                scope.spawn(move |_| {
+                    for u in start..end {
+                        let core_u = core[u] as u8;
+                        let out_begin = *(index_ptr.get(u)) as usize;
+                        let out_end = *(index_ptr.get(u + 1)) as usize;
+                        for e in out_begin..out_end {
+                            let v = (*graph_ptr.get(e)).dest() as usize;
+                            // Determine edge's core = min(core_u, core[v])
+                            let core_val = if core[u] < core[v] {
+                                core_u
+                            } else {
+                                core[v] as u8
+                            };
+                            let () = match out_ptr.mut_slice(e, e + 1) {
+                                Some(i) => i.copy_from_slice(&[core_val]),
+                                None => panic!("error writing {} to {}", core_val, e),
+                            };
+                        }
+                    }
+                });
+            }
+        })
+        .unwrap();
+
+        // flush output to ensure all data is written to disk
+        _mmap.flush()?;
+
+        Ok(output_filename)
+    }
 }
 
 #[derive(Debug)]
@@ -1758,6 +2009,7 @@ impl fmt::Display for FileType {
             FileType::EulerTmp => "EulerTmp",
             FileType::KmerTmp => "KmerTmp",
             FileType::KmerSortedTmp => "KmerSortedTmp",
+            FileType::KCore => "KCore",
         };
         write!(f, "{}", s)
     }

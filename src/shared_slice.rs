@@ -29,7 +29,6 @@ impl<T> SharedSlice<T> {
             ));
         }
 
-        // Convert &[u8] -> &[AtomicU64]
         Ok((
             Self::new(
                 mmap.as_ptr() as *const T,
@@ -79,7 +78,6 @@ impl<T> SharedSliceMut<T> {
             ));
         }
 
-        // Convert &[u8] -> &[AtomicU64]
         Ok((
             Self::new(mmap.as_ptr() as *mut T, mmap_len / std::mem::size_of::<T>()),
             mmap,
@@ -89,10 +87,10 @@ impl<T> SharedSliceMut<T> {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
-    pub fn _len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
-    pub fn _slice(&self, start: usize, end: usize) -> Option<&[T]> {
+    pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         if start >= self.len {
             return None;
         }
