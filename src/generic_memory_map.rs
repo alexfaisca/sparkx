@@ -1,5 +1,5 @@
 use crate::node::EdgeType;
-use crate::shared_slice::{SharedSlice, SharedSliceMut};
+use crate::shared_slice::{AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut};
 
 use bitfield::bitfield;
 use bytemuck::{Pod, Zeroable};
@@ -1436,164 +1436,37 @@ where
         self.graph_cache.graph_bytes // graph size stored as edges
     }
 
-    fn initialize_k_core_procedural_memory(
+    fn init_procedural_memory(
         &self,
         mmap: u8,
     ) -> Result<
         (
-            SharedSliceMut<AtomicU8>,
-            Vec<AtomicU8>,
-            MmapMut,
-            SharedSliceMut<usize>,
-            Vec<usize>,
-            MmapMut,
-            SharedSliceMut<u8>,
-            Vec<u8>,
-            MmapMut,
-            SharedSliceMut<usize>,
-            Vec<usize>,
-            MmapMut,
+            AbstractedProceduralMemoryMut<AtomicU8>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<u8>,
+            AbstractedProceduralMemoryMut<usize>,
         ),
         Error,
     > {
         let node_count = (self.size() - 1) as usize;
-        // Memory-map a file for degrees (each entry AtomicU32)
-        let deg_filename = cache_file_name(
-            self.graph_cache.graph_filename.clone(),
-            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
-            Some(0),
-        )?;
-        let deg_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&deg_filename)?;
-        deg_file.set_len(
-            (if mmap > 0 { node_count } else { 1 } * std::mem::size_of::<AtomicU8>()) as u64,
-        )?;
-        // Use an in-memory vector for degrees
-        let mut deg_vec: Vec<AtomicU8> = Vec::new();
-        // Initialize with 0s
-        if mmap < 1 {
-            deg_vec.resize_with(node_count, || AtomicU8::new(0));
-        }
-        let node_filename = cache_file_name(
-            self.graph_cache.graph_filename.clone(),
-            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
-            Some(1),
-        )?;
-        let node_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&node_filename)?;
-        node_file.set_len(
-            (if mmap > 1 { node_count } else { 1 } * std::mem::size_of::<usize>()) as u64,
-        )?;
-        // Use an in-memory vector for degrees
-        let mut node_vec: Vec<usize> = Vec::new();
-        // Initialize with 0s
-        if mmap < 2 {
-            node_vec.resize_with(node_count, || 0);
-        }
-        let core_filename = cache_file_name(
-            self.graph_cache.graph_filename.clone(),
-            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
-            Some(2),
-        )?;
-        let core_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&core_filename)?;
-        core_file
-            .set_len((if mmap > 2 { node_count } else { 1 } * std::mem::size_of::<u8>()) as u64)?;
-        // Use an in-memory vector for degrees
-        let mut core_vec: Vec<u8> = Vec::new();
-        // Initialize with 0s
-        if mmap < 3 {
-            core_vec.resize_with(node_count, || 0);
-        }
-        let pos_filename = cache_file_name(
-            self.graph_cache.graph_filename.clone(),
-            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
-            Some(3),
-        )?;
-        let pos_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&pos_filename)?;
-        pos_file.set_len(
-            (if mmap > 3 { node_count } else { 1 } * std::mem::size_of::<usize>()) as u64,
-        )?;
-        // Use an in-memory vector for degrees
-        let mut pos_vec: Vec<usize> = Vec::new();
-        // Initialize with 0s
-        if mmap < 4 {
-            pos_vec.resize_with(node_count, || 0);
-        }
-
-        let (degree, deg_mmap): (SharedSliceMut<AtomicU8>, MmapMut) = {
-            if mmap < 1 {
-                unsafe {
-                    (
-                        SharedSliceMut::<AtomicU8>::new(deg_vec.as_mut_ptr(), deg_vec.len()),
-                        MmapOptions::new().map_mut(&deg_file)?,
-                    )
-                }
-            } else {
-                let slice = SharedSliceMut::<AtomicU8>::from_file(&deg_file)?;
-                (slice.0, slice.1)
-            }
-        };
-        let (node, node_mmap): (SharedSliceMut<usize>, MmapMut) = {
-            if mmap < 2 {
-                unsafe {
-                    (
-                        SharedSliceMut::<usize>::new(node_vec.as_mut_ptr(), node_vec.len()),
-                        MmapOptions::new().map_mut(&node_file)?,
-                    )
-                }
-            } else {
-                let slice = SharedSliceMut::<usize>::from_file(&node_file)?;
-                (slice.0, slice.1)
-            }
-        };
-        let (core, core_mmap): (SharedSliceMut<u8>, MmapMut) = {
-            if mmap < 3 {
-                unsafe {
-                    (
-                        SharedSliceMut::<u8>::new(core_vec.as_mut_ptr(), core_vec.len()),
-                        MmapOptions::new().map_mut(&core_file)?,
-                    )
-                }
-            } else {
-                let slice = SharedSliceMut::<u8>::from_file(&core_file)?;
-                (slice.0, slice.1)
-            }
-        };
-        let (pos, pos_mmap): (SharedSliceMut<usize>, MmapMut) = {
-            if mmap < 4 {
-                unsafe {
-                    (
-                        SharedSliceMut::<usize>::new(pos_vec.as_mut_ptr(), pos_vec.len()),
-                        MmapOptions::new().map_mut(&pos_file)?,
-                    )
-                }
-            } else {
-                let slice = SharedSliceMut::<usize>::from_file(&pos_file)?;
-                (slice.0, slice.1)
-            }
-        };
-        Ok((
-            degree, deg_vec, deg_mmap, node, node_vec, node_mmap, core, core_vec, core_mmap, pos,
-            pos_vec, pos_mmap,
-        ))
+        let fln = self.graph_cache.graph_filename.clone();
+        let d_fn = cache_file_name(fln.clone(), FileType::KCore, Some(0))?;
+        let n_fn = cache_file_name(fln.clone(), FileType::KCore, Some(1))?;
+        let c_fn = cache_file_name(fln.clone(), FileType::KCore, Some(2))?;
+        let p_fn = cache_file_name(fln.clone(), FileType::KCore, Some(3))?;
+        let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
+        let n_v: Vec<usize> = Vec::<usize>::new();
+        let c_v: Vec<u8> = Vec::<u8>::new();
+        let p_v: Vec<usize> = Vec::<usize>::new();
+        let degree =
+            SharedSliceMut::<AtomicU8>::abstract_mem_mut(d_fn.as_str(), d_v, node_count, mmap > 0)?;
+        let node =
+            SharedSliceMut::<usize>::abstract_mem_mut(n_fn.as_str(), n_v, node_count, mmap > 1)?;
+        let core =
+            SharedSliceMut::<u8>::abstract_mem_mut(c_fn.as_str(), c_v, node_count, mmap > 2)?;
+        let pos =
+            SharedSliceMut::<usize>::abstract_mem_mut(p_fn.as_str(), p_v, node_count, mmap > 3)?;
+        Ok((degree, node, core, pos))
     }
 
     pub fn compute_k_core(&self, mmap: u8) -> Result<String, Error> {
@@ -1606,21 +1479,7 @@ where
             ));
         }
 
-        let (
-            mut degree,
-            _deg_vec,
-            _deg_mmap,
-            mut node,
-            _node_vec,
-            _node_mmap,
-            mut core,
-            _core_vec,
-            _core_mmap,
-            mut pos,
-            _pos_vec,
-            _pos_mmap,
-        ) = self.initialize_k_core_procedural_memory(mmap)?;
-
+        let (degree, mut node, mut core, mut pos) = self.init_procedural_memory(mmap)?;
         // compute out-degrees in parallel
         let index_ptr = Arc::new(SharedSlice::<u64>::new(
             self.index.as_ptr() as *const u64,
@@ -1648,16 +1507,14 @@ where
                 max_vecs.push(scope.spawn(move |_| {
                     let mut bins: Vec<u64> = vec![0; 1];
                     for v in start..end {
-                        let degree = (index_ptr.get(v + 1) - index_ptr.get(v)) as u8;
-                        if degree >= bins.len() as u8 {
-                            println!("bins {:?}", bins);
-                            bins.resize_with((degree + 1) as usize, || 0u64);
-                            println!("bins {:?}", bins);
-                            bins[degree as usize] += 1;
+                        let deg = (index_ptr.get(v + 1) - index_ptr.get(v)) as u8;
+                        if deg >= bins.len() as u8 {
+                            bins.resize_with((deg + 1) as usize, || 0u64);
+                            bins[deg as usize] += 1;
                         } else {
-                            bins[degree as usize] += 1;
+                            bins[deg as usize] += 1;
                         }
-                        deg_arr.get(v).store(degree, Ordering::Relaxed);
+                        deg_arr.get(v).store(deg, Ordering::Relaxed);
                     }
                     bins
                 }));
@@ -1669,7 +1526,7 @@ where
                     Err(e) => panic!("error getting thread bin count {:?}", e),
                 };
                 for (degree, count) in bin.iter().enumerate() {
-                    if !bins.len() > degree {
+                    if bins.len() <= degree {
                         bins.push(*count as usize);
                     } else {
                         bins[degree] += *count as usize;
@@ -1679,9 +1536,7 @@ where
             bins
         }) {
             Ok(i) => {
-                if mmap > 0 {
-                    _deg_mmap.flush()?;
-                }
+                degree.flush()?;
                 i
             }
             _ => panic!("error calculating max degree"),
@@ -1689,10 +1544,10 @@ where
         let max_degree = bins.len() - 1;
 
         // prefix sum to get starting indices for each degree
-        let mut start_index = 0;
-        for d in 0..bins.len() {
-            let count = bins[d];
-            bins[d] = start_index;
+        let mut start_index = 0usize;
+        for i in bins.iter_mut() {
+            let count = *i;
+            *i = start_index;
             start_index += count;
         }
         // `bins[d]` now holds the starting index in `vert` for vertices of degree d.
@@ -1704,12 +1559,8 @@ where
             *pos.get_mut(v) = idx;
             bins[d] += 1; // increment the bin index for the next vertex of same degree
         }
-        if mmap > 1 {
-            _node_mmap.flush()?;
-        }
-        if mmap > 3 {
-            _pos_mmap.flush()?;
-        }
+        node.flush()?;
+        pos.flush()?;
 
         // restore bin starting positions
         for d in (1..=max_degree).rev() {
@@ -1752,10 +1603,7 @@ where
                     });
             }
         }
-
-        if mmap > 2 {
-            _core_mmap.flush()?;
-        }
+        core.flush()?;
 
         let output_filename = cache_file_name(
             self.graph_cache.graph_filename.clone(),

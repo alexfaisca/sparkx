@@ -17,14 +17,23 @@ pub struct AbstractedProceduralMemory<T> {
     mmapped: bool,
 }
 
-pub struct AbstractedProceduralMemoryMut<'a, T> {
+pub struct AbstractedProceduralMemoryMut<T> {
     pub slice: SharedSliceMut<T>,
     mmap: MmapMut,
-    vec: &'a mut Vec<T>,
+    vec: Vec<T>,
     mmapped: bool,
 }
 
-impl<'a, T> AbstractedProceduralMemoryMut<'a, T> {
+impl<T> AbstractedProceduralMemoryMut<T> {
+    pub fn get(&self, idx: usize) -> &T {
+        self.slice.get(idx)
+    }
+    pub fn get_mut(&mut self, idx: usize) -> &mut T {
+        self.slice.get_mut(idx)
+    }
+    pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
+        self.slice.mut_slice(start, end)
+    }
     pub fn flush(&self) -> Result<(), Error> {
         if self.mmapped {
             self.mmap.flush()
@@ -182,12 +191,12 @@ impl<T> SharedSliceMut<T> {
             ))
         }
     }
-    pub fn abstract_mem_mut<'a>(
+    pub fn abstract_mem_mut(
         mfn: &str,
-        vec: &'a mut Vec<T>,
+        mut vec: Vec<T>,
         len: usize,
         mmapped: bool,
-    ) -> Result<AbstractedProceduralMemoryMut<'a, T>, Error> {
+    ) -> Result<AbstractedProceduralMemoryMut<T>, Error> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
