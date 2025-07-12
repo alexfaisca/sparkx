@@ -948,32 +948,15 @@ where
             self.graph.index.as_ptr() as *const u64,
             self.graph.size() as usize,
         ));
-        let edge_vec_fn = cache_file_name(
-            self.graph.graph_cache.graph_filename.clone(),
-            FileType::EulerTmp,
-            Some(1),
-        )?;
-        let edge_count_fn = cache_file_name(
-            self.graph.graph_cache.graph_filename.clone(),
-            FileType::EulerTmp,
-            Some(2),
-        )?;
+        let template_fn = self.graph.graph_cache.graph_filename.clone();
+        let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
 
-        let edge_vec: Vec<AtomicU64> = vec![];
-        let edges = SharedSliceMut::<AtomicU64>::abstract_mem_mut(
-            edge_vec_fn.as_str(),
-            edge_vec,
-            node_count,
-            mmap > 0,
-        )?;
+        let e_vec: Vec<AtomicU64> = vec![];
+        let edges = SharedSliceMut::<AtomicU64>::abst_mem_mut(e_fn, e_vec, node_count, mmap > 0)?;
 
-        let edge_count_vec: Vec<AtomicU8> = vec![];
-        let count = SharedSliceMut::<AtomicU8>::abstract_mem_mut(
-            edge_count_fn.as_str(),
-            edge_count_vec,
-            node_count,
-            mmap > 1,
-        )?;
+        let c_vec: Vec<AtomicU8> = vec![];
+        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, c_vec, node_count, mmap > 1)?;
 
         thread::scope(|scope| {
             let threads = self.graph.thread_count as usize;
@@ -1386,23 +1369,25 @@ where
         Error,
     > {
         let node_count = (self.size() - 1) as usize;
-        let fln = self.graph_cache.graph_filename.clone();
-        let d_fn = cache_file_name(fln.clone(), FileType::KCore, Some(0))?;
-        let n_fn = cache_file_name(fln.clone(), FileType::KCore, Some(1))?;
-        let c_fn = cache_file_name(fln.clone(), FileType::KCore, Some(2))?;
-        let p_fn = cache_file_name(fln.clone(), FileType::KCore, Some(3))?;
+
+        let template_fn = self.graph_cache.graph_filename.clone();
+        let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
+
         let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
+        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
+
         let n_v: Vec<usize> = Vec::<usize>::new();
+        let node = SharedSliceMut::<usize>::abst_mem_mut(n_fn, n_v, node_count, mmap > 1)?;
+
         let c_v: Vec<u8> = Vec::<u8>::new();
+        let core = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
+
         let p_v: Vec<usize> = Vec::<usize>::new();
-        let degree =
-            SharedSliceMut::<AtomicU8>::abstract_mem_mut(d_fn.as_str(), d_v, node_count, mmap > 0)?;
-        let node =
-            SharedSliceMut::<usize>::abstract_mem_mut(n_fn.as_str(), n_v, node_count, mmap > 1)?;
-        let core =
-            SharedSliceMut::<u8>::abstract_mem_mut(c_fn.as_str(), c_v, node_count, mmap > 2)?;
-        let pos =
-            SharedSliceMut::<usize>::abstract_mem_mut(p_fn.as_str(), p_v, node_count, mmap > 3)?;
+        let pos = SharedSliceMut::<usize>::abst_mem_mut(p_fn, p_v, node_count, mmap > 3)?;
+
         Ok((degree, node, core, pos))
     }
 

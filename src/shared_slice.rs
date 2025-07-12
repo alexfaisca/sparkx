@@ -92,7 +92,7 @@ impl<T> SharedSlice<T> {
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
     pub fn _abstract_mem(
-        mfn: &str,
+        mfn: String,
         vec: Vec<T>,
         len: usize,
         mmapped: bool,
@@ -191,8 +191,8 @@ impl<T> SharedSliceMut<T> {
             ))
         }
     }
-    pub fn abstract_mem_mut(
-        mfn: &str,
+    pub fn abst_mem_mut(
+        mfn: String,
         mut vec: Vec<T>,
         len: usize,
         mmapped: bool,
