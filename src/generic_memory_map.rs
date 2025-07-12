@@ -11,7 +11,7 @@ use memmap::{Mmap, MmapMut, MmapOptions};
 use rand::seq::IndexedRandom;
 use regex::Regex;
 use static_assertions::const_assert;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 use std::usize;
 use std::{
     any::type_name,
@@ -1439,7 +1439,23 @@ where
     fn initialize_k_core_procedural_memory(
         &self,
         mmap: u8,
-    ) -> Result<(Arc<SharedSliceMut<AtomicU8>>, Vec<AtomicU8>, MmapMut), Error> {
+    ) -> Result<
+        (
+            SharedSliceMut<AtomicU8>,
+            Vec<AtomicU8>,
+            MmapMut,
+            SharedSliceMut<usize>,
+            Vec<usize>,
+            MmapMut,
+            SharedSliceMut<u8>,
+            Vec<u8>,
+            MmapMut,
+            SharedSliceMut<usize>,
+            Vec<usize>,
+            MmapMut,
+        ),
+        Error,
+    > {
         let node_count = (self.size() - 1) as usize;
         // Memory-map a file for degrees (each entry AtomicU32)
         let deg_filename = cache_file_name(
@@ -1462,24 +1478,122 @@ where
         if mmap < 1 {
             deg_vec.resize_with(node_count, || AtomicU8::new(0));
         }
+        let node_filename = cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
+            Some(1),
+        )?;
+        let node_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&node_filename)?;
+        node_file.set_len(
+            (if mmap > 1 { node_count } else { 1 } * std::mem::size_of::<usize>()) as u64,
+        )?;
+        // Use an in-memory vector for degrees
+        let mut node_vec: Vec<usize> = Vec::new();
+        // Initialize with 0s
+        if mmap < 2 {
+            node_vec.resize_with(node_count, || 0);
+        }
+        let core_filename = cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
+            Some(2),
+        )?;
+        let core_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&core_filename)?;
+        core_file
+            .set_len((if mmap > 2 { node_count } else { 1 } * std::mem::size_of::<u8>()) as u64)?;
+        // Use an in-memory vector for degrees
+        let mut core_vec: Vec<u8> = Vec::new();
+        // Initialize with 0s
+        if mmap < 3 {
+            core_vec.resize_with(node_count, || 0);
+        }
+        let pos_filename = cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KCore, // assume FileType::CoreTmp is defined for temp files
+            Some(3),
+        )?;
+        let pos_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&pos_filename)?;
+        pos_file.set_len(
+            (if mmap > 3 { node_count } else { 1 } * std::mem::size_of::<usize>()) as u64,
+        )?;
+        // Use an in-memory vector for degrees
+        let mut pos_vec: Vec<usize> = Vec::new();
+        // Initialize with 0s
+        if mmap < 4 {
+            pos_vec.resize_with(node_count, || 0);
+        }
 
-        let (degree, deg_mmap): (Arc<SharedSliceMut<AtomicU8>>, MmapMut) = {
-            if mmap < 2 {
+        let (degree, deg_mmap): (SharedSliceMut<AtomicU8>, MmapMut) = {
+            if mmap < 1 {
                 unsafe {
                     (
-                        Arc::new(SharedSliceMut::<AtomicU8>::new(
-                            deg_vec.as_mut_ptr(),
-                            deg_vec.len(),
-                        )),
+                        SharedSliceMut::<AtomicU8>::new(deg_vec.as_mut_ptr(), deg_vec.len()),
                         MmapOptions::new().map_mut(&deg_file)?,
                     )
                 }
             } else {
                 let slice = SharedSliceMut::<AtomicU8>::from_file(&deg_file)?;
-                (Arc::new(slice.0), slice.1)
+                (slice.0, slice.1)
             }
         };
-        Ok((degree, deg_vec, deg_mmap))
+        let (node, node_mmap): (SharedSliceMut<usize>, MmapMut) = {
+            if mmap < 2 {
+                unsafe {
+                    (
+                        SharedSliceMut::<usize>::new(node_vec.as_mut_ptr(), node_vec.len()),
+                        MmapOptions::new().map_mut(&node_file)?,
+                    )
+                }
+            } else {
+                let slice = SharedSliceMut::<usize>::from_file(&node_file)?;
+                (slice.0, slice.1)
+            }
+        };
+        let (core, core_mmap): (SharedSliceMut<u8>, MmapMut) = {
+            if mmap < 3 {
+                unsafe {
+                    (
+                        SharedSliceMut::<u8>::new(core_vec.as_mut_ptr(), core_vec.len()),
+                        MmapOptions::new().map_mut(&core_file)?,
+                    )
+                }
+            } else {
+                let slice = SharedSliceMut::<u8>::from_file(&core_file)?;
+                (slice.0, slice.1)
+            }
+        };
+        let (pos, pos_mmap): (SharedSliceMut<usize>, MmapMut) = {
+            if mmap < 4 {
+                unsafe {
+                    (
+                        SharedSliceMut::<usize>::new(pos_vec.as_mut_ptr(), pos_vec.len()),
+                        MmapOptions::new().map_mut(&pos_file)?,
+                    )
+                }
+            } else {
+                let slice = SharedSliceMut::<usize>::from_file(&pos_file)?;
+                (slice.0, slice.1)
+            }
+        };
+        Ok((
+            degree, deg_vec, deg_mmap, node, node_vec, node_mmap, core, core_vec, core_mmap, pos,
+            pos_vec, pos_mmap,
+        ))
     }
 
     pub fn compute_k_core(&self, mmap: u8) -> Result<String, Error> {
@@ -1492,7 +1606,20 @@ where
             ));
         }
 
-        let (degree, _deg_vec, _deg_mmap) = self.initialize_k_core_procedural_memory(mmap)?;
+        let (
+            mut degree,
+            _deg_vec,
+            _deg_mmap,
+            mut node,
+            _node_vec,
+            _node_mmap,
+            mut core,
+            _core_vec,
+            _core_mmap,
+            mut pos,
+            _pos_vec,
+            _pos_mmap,
+        ) = self.initialize_k_core_procedural_memory(mmap)?;
 
         // compute out-degrees in parallel
         let index_ptr = Arc::new(SharedSlice::<u64>::new(
@@ -1511,7 +1638,7 @@ where
             let mut max_vecs = Vec::new();
             for t in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
-                let deg_arr = Arc::clone(&degree);
+                let deg_arr = &degree;
                 let start = node_count * t / threads;
                 let end = if t == threads - 1 {
                     node_count
@@ -1522,8 +1649,11 @@ where
                     let mut bins: Vec<u64> = vec![0; 1];
                     for v in start..end {
                         let degree = (index_ptr.get(v + 1) - index_ptr.get(v)) as u8;
-                        if !degree < bins.len() as u8 {
-                            bins.push(1);
+                        if degree >= bins.len() as u8 {
+                            println!("bins {:?}", bins);
+                            bins.resize_with((degree + 1) as usize, || 0u64);
+                            println!("bins {:?}", bins);
+                            bins[degree as usize] += 1;
                         } else {
                             bins[degree as usize] += 1;
                         }
@@ -1540,19 +1670,23 @@ where
                 };
                 for (degree, count) in bin.iter().enumerate() {
                     if !bins.len() > degree {
-                        bins.push(1);
+                        bins.push(*count as usize);
                     } else {
-                        bins[degree] += 1;
+                        bins[degree] += *count as usize;
                     }
                 }
             });
             bins
         }) {
-            Ok(i) => i,
+            Ok(i) => {
+                if mmap > 0 {
+                    _deg_mmap.flush()?;
+                }
+                i
+            }
             _ => panic!("error calculating max degree"),
         };
         let max_degree = bins.len() - 1;
-        let mut core = vec![0u8; node_count];
 
         // prefix sum to get starting indices for each degree
         let mut start_index = 0;
@@ -1562,15 +1696,19 @@ where
             start_index += count;
         }
         // `bins[d]` now holds the starting index in `vert` for vertices of degree d.
-        // fill vert array with vertices ordered by degree
-        let mut node = vec![0usize; node_count];
-        let mut pos = vec![0usize; node_count];
+        // fill node array with vertices ordered by degree
         for v in 0..node_count {
             let d = degree.get(v).load(Ordering::Relaxed) as usize;
             let idx = bins[d] as usize;
-            node[idx] = v;
-            pos[v] = idx;
+            *node.get_mut(idx) = v;
+            *pos.get_mut(v) = idx;
             bins[d] += 1; // increment the bin index for the next vertex of same degree
+        }
+        if mmap > 1 {
+            _node_mmap.flush()?;
+        }
+        if mmap > 3 {
+            _pos_mmap.flush()?;
         }
 
         // restore bin starting positions
@@ -1581,44 +1719,44 @@ where
 
         // peel vertices in order of increasing current degree
         for i in 0..node_count {
-            let v = node[i];
+            let v = *node.get(i);
             let deg_v = degree.get(v).load(Ordering::Relaxed);
-            core[v] = deg_v; // coreness of v
+            *core.get_mut(v) = deg_v; // coreness of v
 
             // iterate outgoing neighbors of v
             let out_start = *(index_ptr.get(v)) as usize;
             let out_end = *(index_ptr.get(v + 1)) as usize;
             for e in out_start..out_end {
                 let u = (*graph_ptr.get(e)).dest() as usize;
-                if let Ok(u_new_degree) =
-                    degree
-                        .get(u)
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                            if x > deg_v {
-                                Some(x - 1)
-                            } else {
-                                None // don't update
+                degree
+                    .get(u)
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                        if x > deg_v {
+                            // swap u's position node array to maintain order
+                            let u_pos = *pos.get(u);
+                            let new_pos = bins[x as usize];
+                            // bins[old_deg] points to start of nodes with degree >= old_deg
+                            // swap the node at new_pos with u to move u into the bucket of (u_new_degree)
+                            let w = *node.get(new_pos);
+                            if u != w {
+                                *node.get_mut(u_pos) = w;
+                                *pos.get_mut(w) = u_pos;
+                                *node.get_mut(new_pos) = u;
+                                *pos.get_mut(u) = new_pos;
                             }
-                        })
-                {
-                    // FIXME: Synchronization
-                    let old_deg = (u_new_degree + 1) as usize; // old degree was one higher
-                    // swap u's position node array to maintain order
-                    let u_pos = pos[u];
-                    let new_pos = bins[old_deg];
-                    // bins[old_deg] points to start of nodes with degree >= old_deg
-                    // swap the node at new_pos with u to move u into the bucket of (u_new_degree)
-                    let w = node[new_pos];
-                    if u != w {
-                        node[u_pos] = w;
-                        pos[w] = u_pos;
-                        node[new_pos] = u;
-                        pos[u] = new_pos;
-                    }
-                    bins[old_deg] += 1;
-                }
+                            bins[x as usize] += 1;
+                            Some(x - 1)
+                        } else {
+                            None // don't update
+                        }
+                    });
             }
         }
+
+        if mmap > 2 {
+            _core_mmap.flush()?;
+        }
+
         let output_filename = cache_file_name(
             self.graph_cache.graph_filename.clone(),
             FileType::KCore,
@@ -1652,21 +1790,18 @@ where
                 let mut out_ptr = out_slice;
                 scope.spawn(move |_| {
                     for u in start..end {
-                        let core_u = core[u] as u8;
+                        let core_u = *core.get(u);
                         let out_begin = *(index_ptr.get(u)) as usize;
                         let out_end = *(index_ptr.get(u + 1)) as usize;
                         for e in out_begin..out_end {
                             let v = (*graph_ptr.get(e)).dest() as usize;
-                            // Determine edge's core = min(core_u, core[v])
-                            let core_val = if core[u] < core[v] {
+                            // determine edge's core = min(core_u, core[v])
+                            let core_val = if *core.get(u) < *core.get(v) {
                                 core_u
                             } else {
-                                core[v] as u8
+                                *core.get(v)
                             };
-                            let () = match out_ptr.mut_slice(e, e + 1) {
-                                Some(i) => i.copy_from_slice(&[core_val]),
-                                None => panic!("error writing {} to {}", core_val, e),
-                            };
+                            *out_ptr.get_mut(e) = core_val;
                         }
                     }
                 });
