@@ -31,7 +31,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     pub fn get_mut(&mut self, idx: usize) -> &mut T {
         self.slice.get_mut(idx)
     }
-    pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
+    pub fn _mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
         self.slice.mut_slice(start, end)
     }
     pub fn flush(&self) -> Result<(), Error> {
@@ -91,7 +91,7 @@ impl<T> SharedSlice<T> {
         let end = if end > self.len { self.len } else { end };
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
-    pub fn abstract_mem(
+    pub fn _abstract_mem(
         mfn: &str,
         vec: Vec<T>,
         len: usize,
