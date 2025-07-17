@@ -10,17 +10,17 @@ pub struct SharedSlice<T> {
     len: usize,
 }
 
-pub struct AbstractedProceduralMemory<T> {
+pub struct _AbstractedProceduralMemory<T> {
     pub slice: SharedSlice<T>,
     mmap: Mmap,
-    vec: Vec<T>,
+    _vec: Vec<T>,
     mmapped: bool,
 }
 
 pub struct AbstractedProceduralMemoryMut<T> {
     pub slice: SharedSliceMut<T>,
     mmap: MmapMut,
-    vec: Vec<T>,
+    _vec: Vec<T>,
     mmapped: bool,
 }
 
@@ -96,7 +96,7 @@ impl<T> SharedSlice<T> {
         vec: Vec<T>,
         len: usize,
         mmapped: bool,
-    ) -> Result<AbstractedProceduralMemory<T>, Error> {
+    ) -> Result<_AbstractedProceduralMemory<T>, Error> {
         let file = OpenOptions::new().read(true).open(mfn)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
 
@@ -122,9 +122,9 @@ impl<T> SharedSlice<T> {
                 SharedSlice::<T>::new(vec.as_ptr(), len)
             }
         };
-        Ok(AbstractedProceduralMemory {
+        Ok(_AbstractedProceduralMemory {
             slice,
-            vec,
+            _vec: vec,
             mmap,
             mmapped,
         })
@@ -143,6 +143,12 @@ unsafe impl<T> Sync for SharedSliceMut<T> {}
 impl<T> SharedSliceMut<T> {
     pub fn new(ptr: *mut T, len: usize) -> Self {
         SharedSliceMut::<T> { ptr, len }
+    }
+    pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
+        SharedSliceMut::<T> {
+            ptr: slice.ptr,
+            len: slice.len,
+        }
     }
     pub fn from_file(file: &File) -> Result<(Self, MmapMut), Error> {
         let mmap = unsafe { MmapOptions::new().map_mut(file)? };
@@ -217,7 +223,7 @@ impl<T> SharedSliceMut<T> {
         };
         Ok(AbstractedProceduralMemoryMut {
             slice,
-            vec,
+            _vec: vec,
             mmap,
             mmapped,
         })

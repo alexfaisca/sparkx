@@ -1291,7 +1291,7 @@ where
     }
 
     #[inline(always)]
-    pub fn node_degree(&self, node_id: u64) -> u64 {
+    pub fn _node_degree(&self, node_id: u64) -> u64 {
         unsafe {
             let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
             let begin = ptr.read_unaligned();
@@ -1361,7 +1361,7 @@ where
         self.graph_cache.graph_bytes // graph size stored as edges
     }
 
-    fn init_procedural_memory_bz(
+    fn init_procedural_memory(
         &self,
         mmap: u8,
     ) -> Result<
@@ -1406,7 +1406,7 @@ where
             ));
         }
 
-        let (degree, mut node, mut core, mut pos) = self.init_procedural_memory_bz(mmap)?;
+        let (degree, mut node, mut core, mut pos) = self.init_procedural_memory(mmap)?;
         // compute out-degrees in parallel
         let index_ptr = Arc::new(SharedSlice::<u64>::new(
             self.index.as_ptr() as *const u64,
@@ -1590,42 +1590,7 @@ where
         Ok(output_filename)
     }
 
-    fn init_procedural_memory_liu_et_al(
-        &self,
-        mmap: u8,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<AtomicU8>,
-            AbstractedProceduralMemoryMut<AtomicBool>,
-            AbstractedProceduralMemoryMut<u8>,
-            AbstractedProceduralMemoryMut<usize>,
-        ),
-        Error,
-    > {
-        let node_count = (self.size() - 1) as usize;
-
-        let template_fn = self.graph_cache.graph_filename.clone();
-        let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
-        let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
-
-        let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
-        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
-
-        let p_v: Vec<AtomicBool> = Vec::<AtomicBool>::new();
-        let peeled = SharedSliceMut::<AtomicBool>::abst_mem_mut(p_fn, p_v, node_count, mmap > 1)?;
-
-        let c_v: Vec<u8> = Vec::<u8>::new();
-        let core = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
-
-        let f_v: Vec<usize> = Vec::<usize>::new();
-        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, f_v, node_count, mmap > 3)?;
-
-        Ok((degree, peeled, core, frontier))
-    }
-
-    pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Error> {
+    pub fn compute_k_core_liu_et_all(&self, mmap: u8) -> Result<String, Error> {
         let node_count = (self.size() - 1) as usize;
         let edge_count = self.width() as usize;
         if node_count == 0 {
@@ -1634,6 +1599,8 @@ where
                 "Graph has no vertices",
             ));
         }
+
+        let (degree, mut node, mut core, mut pos) = self.init_procedural_memory(mmap)?;
         // compute out-degrees in parallel
         let index_ptr = Arc::new(SharedSlice::<u64>::new(
             self.index.as_ptr() as *const u64,
@@ -1644,102 +1611,121 @@ where
             edge_count,
         ));
 
-        let (mut degree, mut peeled, mut core, mut frontier) =
-            self.init_procedural_memory_liu_et_al(mmap)?;
-        for u in 0..node_count {
-            // Initial degree = out-degree = offsets[u+1] - offsets[u]
-            let d = (index_ptr.get(u + 1) - index_ptr.get(u)) as u8;
-            degree.get_mut(u).store(d, Ordering::Relaxed);
-            peeled.get_mut(u).store(false, Ordering::Relaxed);
-        }
-
-        // --- Core-peeling loop (Liu et al. algorithm) ---
-        let mut k = 1u8;
-        let mut remaining = node_count; // number of vertices not yet peeled
-        while remaining > 0 {
-            // Build initial frontier = all vertices with degree <= k that are still active.
-            let mut frontier: Vec<usize> = Vec::new();
-            for u in 0..node_count {
-                if !peeled.get(u).load(Ordering::Relaxed) {
-                    if degree.get(u).load(Ordering::Relaxed) <= k {
-                        peeled.get(u).store(true, Ordering::Relaxed);
-                        frontier.push(u);
-                    }
-                }
-            }
-            // If no vertices at this k, increment k and try again.
-            if frontier.is_empty() {
-                k += 1;
-                continue;
-            }
-            // Process subrounds for current k: peel all vertices with degree k.
-            while !frontier.is_empty() {
-                // Threaded peel: each thread handles a chunk of the frontier.
-                let mut next_frontier: Vec<usize> = Vec::new();
-                let frontier_len = frontier.len();
-                let num_threads = self.thread_count.max(1) as usize;
-                let chunk_size = frontier_len.div_ceil(num_threads);
-                let _ = thread::scope(|s| {
-                    let mut handles = Vec::new();
-                    // Spawn threads processing chunks of 'frontier'
-                    for tid in 0..num_threads {
-                        let start = tid * chunk_size;
-                        if start >= frontier_len {
-                            break;
+        // initialize degree and bins count vecs
+        let mut bins: Vec<usize> = match thread::scope(|scope| {
+            let threads = self.thread_count.max(1) as usize;
+            let mut bins = Vec::new();
+            let mut max_vecs = Vec::new();
+            for t in 0..threads {
+                let index_ptr = Arc::clone(&index_ptr);
+                let deg_arr = &degree;
+                let start = node_count * t / threads;
+                let end = if t == threads - 1 {
+                    node_count
+                } else {
+                    node_count * (t + 1) / threads
+                };
+                max_vecs.push(scope.spawn(move |_| {
+                    let mut bins: Vec<u64> = vec![0; 1];
+                    for v in start..end {
+                        let deg = (index_ptr.get(v + 1) - index_ptr.get(v)) as u8;
+                        if deg >= bins.len() as u8 {
+                            bins.resize_with((deg + 1) as usize, || 0u64);
+                            bins[deg as usize] += 1;
+                        } else {
+                            bins[deg as usize] += 1;
                         }
-                        let end = std::cmp::min(start + chunk_size, frontier_len);
-                        // Slice of vertices for this thread
-                        let chunk = &frontier[start..end];
-                        // Clone references for move into thread
-                        let offsets = &index_ptr;
-                        let neighbors = &graph_ptr;
-                        let degree = &degree;
-                        let peeled = &peeled;
-                        let mut c = SharedSliceMut::<u8>::from_shared_slice(core.slice);
-                        handles.push(s.spawn(move |_| {
-                            let mut local_next = Vec::new();
-                            for &u in chunk.iter() {
-                                // Set coreness and decrement neighbor degrees
-                                *c.get_mut(u) = k;
-                                // For each neighbor v of u:
-                                let off_u = *offsets.get(u) as usize;
-                                let off_up = *offsets.get(u) as usize;
-                                for idx in off_u..off_up {
-                                    let v = neighbors.get(idx).dest() as usize;
-                                    // Atomically decrement v's degree
-                                    let old = degree.get(v).fetch_sub(1, Ordering::SeqCst);
-                                    // If old was k+1, then new degree is k => add v to next frontier
-                                    if old == k + 1 {
-                                        // Mark peeled and add to local next frontier if not already done
-                                        let was_peeled =
-                                            peeled.get(v).swap(true, Ordering::Relaxed);
-                                        if !was_peeled {
-                                            local_next.push(v);
-                                        }
-                                    }
-                                }
-                            }
-                            local_next
-                        }));
+                        deg_arr.get(v).store(deg, Ordering::Relaxed);
                     }
-                    // Collect next_frontier from all threads
-                    for handle in handles {
-                        let mut local = handle.join().unwrap();
-                        next_frontier.append(&mut local);
-                    }
-                });
-                // Decrement remaining count and prepare for next subround
-                for &u in frontier.iter() {
-                    remaining -= 1;
-                }
-                frontier = next_frontier;
+                    bins
+                }));
             }
-            k += 1;
+            // join results
+            max_vecs.into_iter().for_each(|v| {
+                let bin = match v.join() {
+                    Ok(i) => i,
+                    Err(e) => panic!("error getting thread bin count {:?}", e),
+                };
+                for (degree, count) in bin.iter().enumerate() {
+                    if bins.len() <= degree {
+                        bins.push(*count as usize);
+                    } else {
+                        bins[degree] += *count as usize;
+                    }
+                }
+            });
+            bins
+        }) {
+            Ok(i) => {
+                degree.flush()?;
+                i
+            }
+            _ => panic!("error calculating max degree"),
+        };
+        let max_degree = bins.len() - 1;
+
+        // prefix sum to get starting indices for each degree
+        let mut start_index = 0usize;
+        for i in bins.iter_mut() {
+            let count = *i;
+            *i = start_index;
+            start_index += count;
+        }
+        // `bins[d]` now holds the starting index in `vert` for vertices of degree d.
+        // fill node array with vertices ordered by degree
+        for v in 0..node_count {
+            let d = degree.get(v).load(Ordering::Relaxed) as usize;
+            let idx = bins[d] as usize;
+            *node.get_mut(idx) = v;
+            *pos.get_mut(v) = idx;
+            bins[d] += 1; // increment the bin index for the next vertex of same degree
+        }
+        node.flush()?;
+        pos.flush()?;
+
+        // restore bin starting positions
+        for d in (1..=max_degree).rev() {
+            bins[d] = bins[d - 1];
+        }
+        bins[0] = 0;
+
+        // peel vertices in order of increasing current degree
+        for i in 0..node_count {
+            let v = *node.get(i);
+            let deg_v = degree.get(v).load(Ordering::Relaxed);
+            *core.get_mut(v) = deg_v; // coreness of v
+
+            // iterate outgoing neighbors of v
+            let out_start = *(index_ptr.get(v)) as usize;
+            let out_end = *(index_ptr.get(v + 1)) as usize;
+            for e in out_start..out_end {
+                let u = (*graph_ptr.get(e)).dest() as usize;
+                degree
+                    .get(u)
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                        if x > deg_v {
+                            // swap u's position node array to maintain order
+                            let u_pos = *pos.get(u);
+                            let new_pos = bins[x as usize];
+                            // bins[old_deg] points to start of nodes with degree >= old_deg
+                            // swap the node at new_pos with u to move u into the bucket of (u_new_degree)
+                            let w = *node.get(new_pos);
+                            if u != w {
+                                *node.get_mut(u_pos) = w;
+                                *pos.get_mut(w) = u_pos;
+                                *node.get_mut(new_pos) = u;
+                                *pos.get_mut(u) = new_pos;
+                            }
+                            bins[x as usize] += 1;
+                            Some(x - 1)
+                        } else {
+                            None // don't update
+                        }
+                    });
+            }
         }
         core.flush()?;
 
-        // --- Compute per-edge core labels and write output ---
-        // Create an output memory-mapped buffer for edge labels (u32 per directed edge).
         let output_filename = cache_file_name(
             self.graph_cache.graph_filename.clone(),
             FileType::KCore,
@@ -1800,84 +1786,82 @@ where
 
     pub fn k_truss_decomposition(&self, mmap: u8) -> Result<Vec<u8>, Error> {
         let m = self.size() as usize;
-        let n = self.width() as usize;
         // Shared atomic arrays for counts and trussness
-        let fn_template = self.graph_cache.graph_filename.clone();
+        let fn_template = self.graph_cache.graph_filename;
         let tri_vec: Vec<AtomicU8> = Vec::new();
-        let tri_fn: String = cache_file_name(fn_template.clone(), FileType::KTruss, Some(0))?;
+        let tri_fn: String = cache_file_name(fn_template, FileType::KTruss, Some(0))?;
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(tri_fn, tri_vec, m, mmap > 0);
         let trussness_vec: Vec<AtomicU8> = Vec::new();
         let trussness_fn: String = cache_file_name(fn_template, FileType::KTruss, Some(1))?;
         let trussness =
             SharedSliceMut::<AtomicU8>::abst_mem_mut(trussness_fn, trussness_vec, m, mmap > 1);
 
-        // // Parallel triangle counting
-        // (0..n).into_iter().for_each(|node_id| {
-        //     for neighbour in self.neighbours(node_id as u64) {
-        //         // Order endpoints by degree to speed up intersection
-        //         let (u_small, v_large) =
-        //             if self.node_degree(node_id as u64) <= self.node_degree(neighbour.id) {
-        //                 (node_id as u64, neighbour.id)
-        //             } else {
-        //                 (neighbour.id, node_id as u64)
-        //             };
-        //         for w in self.neighbours(u_small) {
-        //             if let (Some(e2), Some(e3)) =
-        //                 (graph.edge_index(v_large, w), graph.edge_index(u_small, w))
-        //             {
-        //                 tri_count[eid].fetch_add(1, Ordering::Relaxed);
-        //                 tri_count[e2].fetch_add(1, Ordering::Relaxed);
-        //                 tri_count[e3].fetch_add(1, Ordering::Relaxed);
-        //             }
-        //         }
-        //     }
-        // });
+        // Parallel triangle counting
+        (0..m).into_iter().for_each(|eid| {
+            let (u, v) = graph.edge_endpoints(eid);
+            // Order endpoints by degree to speed up intersection
+            let (u_small, v_large) = if graph.degree(u) <= graph.degree(v) {
+                (u, v)
+            } else {
+                (v, u)
+            };
+            for &w in graph.neighbors(u_small) {
+                if let (Some(e2), Some(e3)) =
+                    (graph.edge_index(v_large, w), graph.edge_index(u_small, w))
+                {
+                    tri_count[eid].fetch_add(1, Relaxed);
+                    tri_count[e2].fetch_add(1, Relaxed);
+                    tri_count[e3].fetch_add(1, Relaxed);
+                }
+            }
+        });
 
-        // // Parallel peeling to compute trussness
-        // for k in 1u8.. {
-        //     let removed = AtomicBool::new(false);
-        //     (0..m).into_iter().for_each(|eid| {
-        //         // Only consider edges not yet assigned a trussness
-        //         if trussness[eid].load(Ordering::Acquire)? == u8::MAX {
-        //             if tri_count[eid].load(Ordering::Relaxed) < k as u32 {
-        //                 // Set trussness = k-1
-        //                 trussness[eid].store(k - 1, Ordering::Release);
-        //                 // Decrement neighbors in all triangles of this edge
-        //                 let (u, v) = graph.edge_endpoints(eid);
-        //                 let (u_small, v_large) = if graph.degree(u) <= graph.degree(v) {
-        //                     (u, v)
-        //                 } else {
-        //                     (v, u)
-        //                 };
-        //                 for &w in graph.neighbors(u_small) {
-        //                     if let (Some(e2), Some(e3)) =
-        //                         (graph.edge_index(u_small, w), graph.edge_index(v_large, w))
-        //                     {
-        //                         // Only update counts if those edges are still active
-        //                         if trussness[e2].load(Ordering::Relaxed) == u8::MAX
-        //                             && trussness[e3].load(Ordering::Relaxed) == u8::MAX
-        //                         {
-        //                             tri_count[e2].fetch_sub(1, Ordering::Relaxed);
-        //                             tri_count[e3].fetch_sub(1, Ordering::Relaxed);
-        //                         }
-        //                     }
-        //                 }
-        //                 removed.store(true, Ordering::Relaxed);
-        //             }
-        //         }
-        //     });
-        //     // Stop when no edges were removed in this round
-        //     if !removed.load(Ordering::Relaxed) {
-        //         break;
-        //     }
-        // }
-        //
+        // Parallel peeling to compute trussness
+        for k in 1u8.. {
+            let removed = AtomicBool::new(false);
+            (0..m).into_par_iter().for_each(|eid| {
+                // Only consider edges not yet assigned a trussness
+                let eid = eid as usize;
+                if trussness[eid].load(Ordering::Acquire)? == u8::MAX {
+                    if tri_count[eid].load(Ordering::Relaxed) < k as u32 {
+                        // Set trussness = k-1
+                        trussness[eid].store(k - 1, Ordering::Release);
+                        // Decrement neighbors in all triangles of this edge
+                        let (u, v) = graph.edge_endpoints(eid);
+                        let (u_small, v_large) = if graph.degree(u) <= graph.degree(v) {
+                            (u, v)
+                        } else {
+                            (v, u)
+                        };
+                        for &w in graph.neighbors(u_small) {
+                            if let (Some(e2), Some(e3)) =
+                                (graph.edge_index(u_small, w), graph.edge_index(v_large, w))
+                            {
+                                // Only update counts if those edges are still active
+                                if trussness[e2].load(Ordering::Relaxed) == u8::MAX
+                                    && trussness[e3].load(Ordering::Relaxed) == u8::MAX
+                                {
+                                    tri_count[e2].fetch_sub(1, Ordering::Relaxed);
+                                    tri_count[e3].fetch_sub(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        removed.store(true, Ordering::Relaxed);
+                    }
+                }
+            });
+            // Stop when no edges were removed in this round
+            if !removed.load(Relaxed) {
+                break;
+            }
+        }
+
         // Collect the results
         let mut result = vec![0u8; m];
-        // result.iter_mut().enumerate().for_each(|(eid, slot)| {
-        //     *slot = trussness[eid].load(Ordering::Relaxed);
-        // });
-        Ok(result)
+        result.par_iter_mut().enumerate().for_each(|(eid, slot)| {
+            *slot = trussness[eid].load(Relaxed);
+        });
+        result
     }
 }
 
