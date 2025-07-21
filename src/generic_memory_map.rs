@@ -1,5 +1,7 @@
 use crate::node::EdgeType;
-use crate::shared_slice::{AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut};
+use crate::shared_slice::{
+    AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut, SharedStackMut,
+};
 
 use bitfield::bitfield;
 use bytemuck::{Pod, Zeroable};
@@ -8,11 +10,9 @@ use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
-use rand::seq::IndexedRandom;
 use regex::Regex;
 use static_assertions::const_assert;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize};
-use std::usize;
+use std::sync::atomic::AtomicBool;
 use std::{
     any::type_name,
     collections::HashMap,
@@ -217,7 +217,7 @@ fn cleanup_cache() -> Result<(), Error> {
     }
 }
 
-pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> {
+pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> {
     pub graph_file: Arc<File>,
     pub index_file: Arc<File>,
     pub kmer_file: Arc<File>,
@@ -232,7 +232,7 @@ pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> {
 
 impl<T> GraphCache<T>
 where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
 {
     fn init_cache_file_from_id_or_random(
         graph_id: Option<String>,
@@ -419,12 +419,12 @@ where
     where
         T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
     {
-        match node_id == self.index_bytes / 8 {
+        match node_id == self.index_bytes {
             true => {
                 writeln!(self.kmer_file, "{}\t{}", node_id, label)?;
 
                 match self.index_file.write_all(self.graph_bytes.as_bytes()) {
-                    Ok(_) => self.index_bytes += BYTES_U64,
+                    Ok(_) => self.index_bytes += 1,
                     Err(e) => panic!("error writing index for {}: {}", node_id, e),
                 };
 
@@ -438,8 +438,7 @@ where
             }
             false => panic!(
                 "error nodes must be mem mapped in ascending order, (id: {}, expected_id: {})",
-                node_id,
-                self.index_bytes / 8
+                node_id, self.index_bytes
             ),
         }
     }
@@ -490,7 +489,7 @@ where
 
         // Complete index file
         match self.index_file.write_all(self.graph_bytes.as_bytes()) {
-            Ok(_) => self.index_bytes += BYTES_U64,
+            Ok(_) => self.index_bytes += 1,
             Err(e) => panic!("error couldn't finish index: {}", e),
         };
 
@@ -568,15 +567,14 @@ impl FindDisjointSetsEulerTrails {
             return;
         }
 
+        // FIXME: Ugly!
+
         // Break cycles in graph
-        // println!("{:?}", self.trails);
         for (id, _i) in self.clone().trails.iter().enumerate() {
-            // println!("check {}: {} -> {}", id, i.0.0, i.1);
             self.cycle_break(id);
         }
         // Works as an union find in tree
         for (id, _i) in self.clone().trails.iter().enumerate() {
-            // println!("check {}: {} - -> {}", id, i.0.0, i.1);
             self.cycle_break(id);
         }
 
@@ -584,22 +582,17 @@ impl FindDisjointSetsEulerTrails {
     }
 }
 
-struct TmpMemoryHelperStruct {
-    _a: Vec<AtomicU64>,
-    _c: MmapMut,
-}
-
 pub struct EulerTrail<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 > {
     graph: GraphMemoryMap<T, U>,
 }
 
 impl<T, U> EulerTrail<T, U>
 where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 {
     pub fn new(graph: GraphMemoryMap<T, U>) -> Result<EulerTrail<T, U>, Error> {
         Ok(EulerTrail { graph })
@@ -797,7 +790,7 @@ where
             .collect())
     }
 
-    fn merge_euler_trails_no_mmap(
+    fn _merge_euler_trails_no_mmap(
         &self,
         cycles: Mutex<Vec<Vec<u64>>>,
     ) -> Result<Vec<(u64, u64)>, Error> {
@@ -1127,7 +1120,7 @@ where
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(u64, u64)>, Error> {
+    pub fn _find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(u64, u64)>, Error> {
         let node_count = match (self.graph.size() - 1) as usize {
             0 => panic!("Graph has no vertices"),
             i => i,
@@ -1241,14 +1234,14 @@ where
             }
         })
         .unwrap();
-        self.merge_euler_trails_no_mmap(cycles_mutex)
+        self._merge_euler_trails_no_mmap(cycles_mutex)
     }
 }
 
 #[derive(Clone)]
 pub struct GraphMemoryMap<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 > {
     graph: Arc<Mmap>,
     index: Arc<Mmap>,
@@ -1261,8 +1254,8 @@ pub struct GraphMemoryMap<
 
 impl<T, U> GraphMemoryMap<T, U>
 where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 {
     pub fn init(cache: GraphCache<T>, thread_count: u8) -> Result<GraphMemoryMap<T, U>, Error> {
         if cache.readonly {
@@ -1353,12 +1346,32 @@ where
         ))
     }
 
+    fn is_triangle(&self, u: u64, v: u64, w: u64) -> Option<(usize, usize)> {
+        let mut u_offset = None;
+        let mut v_offset = None;
+        let w_neighbours = match self.neighbours(w) {
+            Ok(i) => i,
+            Err(_) => return None,
+        };
+        for n in w_neighbours.clone() {
+            if n.dest() == u {
+                u_offset = Some(w_neighbours.offset);
+            } else if n.dest() == v {
+                v_offset = Some(w_neighbours.offset);
+            }
+        }
+        match (u_offset, v_offset) {
+            (Some(u_offset), Some(v_offset)) => Some((u_offset as usize, v_offset as usize)),
+            _ => None,
+        }
+    }
+
     pub fn size(&self) -> u64 {
-        self.graph_cache.index_bytes / BYTES_U64 // index size stored as bits
+        self.graph_cache.index_bytes // num nodes
     }
 
     pub fn width(&self) -> u64 {
-        self.graph_cache.graph_bytes // graph size stored as edges
+        self.graph_cache.graph_bytes // num edges
     }
 
     fn init_procedural_memory_bz(
@@ -1506,7 +1519,7 @@ where
             let out_end = *(index_ptr.get(v + 1)) as usize;
             for e in out_start..out_end {
                 let u = (*graph_ptr.get(e)).dest() as usize;
-                degree
+                let _ = degree
                     .get(u)
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                         if x > deg_v {
@@ -1599,16 +1612,19 @@ where
             AbstractedProceduralMemoryMut<AtomicBool>,
             AbstractedProceduralMemoryMut<u8>,
             AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
         ),
         Error,
     > {
         let node_count = (self.size() - 1) as usize;
+        let edge_count = self.width() as usize;
 
         let template_fn = self.graph_cache.graph_filename.clone();
         let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
         let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
         let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
         let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
+        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(4))?;
 
         let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
         let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
@@ -1620,9 +1636,13 @@ where
         let core = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
 
         let f_v: Vec<usize> = Vec::<usize>::new();
-        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, f_v, node_count, mmap > 3)?;
+        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, f_v, edge_count, mmap > 3)?;
 
-        Ok((degree, peeled, core, frontier))
+        let fs_v: Vec<usize> = Vec::<usize>::new();
+        let frontier_swap =
+            SharedSliceMut::<usize>::abst_mem_mut(fs_fn, fs_v, edge_count, mmap > 3)?;
+
+        Ok((degree, peeled, core, frontier, frontier_swap))
     }
 
     pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Error> {
@@ -1634,7 +1654,6 @@ where
                 "Graph has no vertices",
             ));
         }
-        // compute out-degrees in parallel
         let index_ptr = Arc::new(SharedSlice::<u64>::new(
             self.index.as_ptr() as *const u64,
             node_count + 1,
@@ -1644,10 +1663,9 @@ where
             edge_count,
         ));
 
-        let (mut degree, mut peeled, mut core, mut frontier) =
+        let (mut degree, mut peeled, core, frontier, swap) =
             self.init_procedural_memory_liu_et_al(mmap)?;
         for u in 0..node_count {
-            // Initial degree = out-degree = offsets[u+1] - offsets[u]
             let d = (index_ptr.get(u + 1) - index_ptr.get(u)) as u8;
             degree.get_mut(u).store(d, Ordering::Relaxed);
             peeled.get_mut(u).store(false, Ordering::Relaxed);
@@ -1658,13 +1676,14 @@ where
         let mut remaining = node_count; // number of vertices not yet peeled
         while remaining > 0 {
             // Build initial frontier = all vertices with degree <= k that are still active.
-            let mut frontier: Vec<usize> = Vec::new();
+            // FIXME:: Abstract frontier to RAM with fallback mmap
+            let mut frontier = SharedStackMut::<usize>::from_shared_slice(frontier.slice);
             for u in 0..node_count {
-                if !peeled.get(u).load(Ordering::Relaxed) {
-                    if degree.get(u).load(Ordering::Relaxed) <= k {
-                        peeled.get(u).store(true, Ordering::Relaxed);
-                        frontier.push(u);
-                    }
+                if !peeled.get(u).load(Ordering::Relaxed)
+                    && degree.get(u).load(Ordering::Relaxed) <= k
+                {
+                    peeled.get(u).store(true, Ordering::Relaxed);
+                    let _ = frontier.push_async(u);
                 }
             }
             // If no vertices at this k, increment k and try again.
@@ -1673,9 +1692,11 @@ where
                 continue;
             }
             // Process subrounds for current k: peel all vertices with degree k.
+            // FIXME: stack struct isn't being shared by threads, only memory location
+            let mut swap_slice = swap.slice;
             while !frontier.is_empty() {
                 // Threaded peel: each thread handles a chunk of the frontier.
-                let mut next_frontier: Vec<usize> = Vec::new();
+                let swap = SharedStackMut::<usize>::from_shared_slice(swap_slice);
                 let frontier_len = frontier.len();
                 let num_threads = self.thread_count.max(1) as usize;
                 let chunk_size = frontier_len.div_ceil(num_threads);
@@ -1689,17 +1710,21 @@ where
                         }
                         let end = std::cmp::min(start + chunk_size, frontier_len);
                         // Slice of vertices for this thread
-                        let chunk = &frontier[start..end];
+                        let chunk = match frontier.slice(start, end) {
+                            Some(i) => Arc::new(i),
+                            None => panic!("err getting frontier slice"),
+                        };
                         // Clone references for move into thread
                         let offsets = &index_ptr;
                         let neighbors = &graph_ptr;
                         let degree = &degree;
                         let peeled = &peeled;
+                        let mut swap = swap.clone();
                         let mut c = SharedSliceMut::<u8>::from_shared_slice(core.slice);
                         handles.push(s.spawn(move |_| {
-                            let mut local_next = Vec::new();
-                            for &u in chunk.iter() {
+                            for i in 0..chunk.len() {
                                 // Set coreness and decrement neighbor degrees
+                                let u = *chunk.get(i);
                                 *c.get_mut(u) = k;
                                 // For each neighbor v of u:
                                 let off_u = *offsets.get(u) as usize;
@@ -1714,25 +1739,19 @@ where
                                         let was_peeled =
                                             peeled.get(v).swap(true, Ordering::Relaxed);
                                         if !was_peeled {
-                                            local_next.push(v);
+                                            let _ = swap.push_async(v);
                                         }
                                     }
                                 }
                             }
-                            local_next
                         }));
-                    }
-                    // Collect next_frontier from all threads
-                    for handle in handles {
-                        let mut local = handle.join().unwrap();
-                        next_frontier.append(&mut local);
                     }
                 });
                 // Decrement remaining count and prepare for next subround
-                for &u in frontier.iter() {
-                    remaining -= 1;
-                }
-                frontier = next_frontier;
+                remaining -= frontier.len();
+                let r = frontier;
+                frontier = swap;
+                swap_slice = r.raw_slice();
             }
             k += 1;
         }
@@ -1798,112 +1817,268 @@ where
         Ok(output_filename)
     }
 
+    fn init_procedural_memory_k_truss_decomposition(
+        &self,
+        mmap: u8,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<AtomicU8>,
+            AbstractedProceduralMemoryMut<(u64, usize)>,
+            AbstractedProceduralMemoryMut<u8>,
+            AbstractedProceduralMemoryMut<bool>,
+        ),
+        Error,
+    > {
+        let edge_count = self.width() as usize;
+
+        let template_fn = self.graph_cache.graph_filename.clone();
+        let t_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(0))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
+        let r_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
+        let e_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
+
+        let t_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
+        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, t_v, edge_count, mmap > 0)?;
+
+        let s_v: Vec<(u64, usize)> = Vec::<(u64, usize)>::new();
+        let stack = SharedSliceMut::<(u64, usize)>::abst_mem_mut(s_fn, s_v, edge_count, mmap > 1)?;
+
+        let r_v: Vec<bool> = Vec::<bool>::new();
+        let removed = SharedSliceMut::<bool>::abst_mem_mut(r_fn, r_v, edge_count, mmap > 3)?;
+
+        let e_v: Vec<u8> = Vec::<u8>::new();
+        let edge_trussness = SharedSliceMut::<u8>::abst_mem_mut(e_fn, e_v, edge_count, true)?;
+
+        Ok((tri_count, stack, edge_trussness, removed))
+    }
+
     pub fn k_truss_decomposition(&self, mmap: u8) -> Result<Vec<u8>, Error> {
-        let m = self.size() as usize;
-        let n = self.width() as usize;
+        let node_count = self.size() as usize - 1;
+        let edge_count = self.width() as usize;
+        let index_ptr = Arc::new(SharedSlice::<u64>::new(
+            self.index.as_ptr() as *const u64,
+            node_count + 1,
+        ));
+        let graph_ptr = Arc::new(SharedSlice::<T>::new(
+            self.graph.as_ptr() as *const T,
+            edge_count,
+        ));
         // Shared atomic arrays for counts and trussness
-        let fn_template = self.graph_cache.graph_filename.clone();
-        let tri_vec: Vec<AtomicU8> = Vec::new();
-        let tri_fn: String = cache_file_name(fn_template.clone(), FileType::KTruss, Some(0))?;
-        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(tri_fn, tri_vec, m, mmap > 0);
-        let trussness_vec: Vec<AtomicU8> = Vec::new();
-        let trussness_fn: String = cache_file_name(fn_template, FileType::KTruss, Some(1))?;
-        let trussness =
-            SharedSliceMut::<AtomicU8>::abst_mem_mut(trussness_fn, trussness_vec, m, mmap > 1);
+        let (triangle_count, edge_stack, edge_trussness, edge_removed) =
+            self.init_procedural_memory_k_truss_decomposition(mmap)?;
 
-        // // Parallel triangle counting
-        // (0..n).into_iter().for_each(|node_id| {
-        //     for neighbour in self.neighbours(node_id as u64) {
-        //         // Order endpoints by degree to speed up intersection
-        //         let (u_small, v_large) =
-        //             if self.node_degree(node_id as u64) <= self.node_degree(neighbour.id) {
-        //                 (node_id as u64, neighbour.id)
-        //             } else {
-        //                 (neighbour.id, node_id as u64)
-        //             };
-        //         for w in self.neighbours(u_small) {
-        //             if let (Some(e2), Some(e3)) =
-        //                 (graph.edge_index(v_large, w), graph.edge_index(u_small, w))
-        //             {
-        //                 tri_count[eid].fetch_add(1, Ordering::Relaxed);
-        //                 tri_count[e2].fetch_add(1, Ordering::Relaxed);
-        //                 tri_count[e3].fetch_add(1, Ordering::Relaxed);
-        //             }
-        //         }
-        //     }
-        // });
+        // Algorithm 1 - adjusted for directed scheme
+        thread::scope(|scope| {
+            let threads = self.thread_count.max(1) as usize;
+            for tid in 0..threads {
+                let index_ptr = Arc::clone(&index_ptr);
+                let mut trussness = edge_trussness.slice;
+                let mut triangles = triangle_count.slice.clone();
+                let mut removed = edge_removed.slice;
+                let thread_load = node_count.div_ceil(threads);
+                let start = tid * thread_load;
+                if start >= index_ptr.len() {
+                    break;
+                }
+                let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
+                scope.spawn(move |_| -> Result<(), Error> {
+                    // initialize triangle_count with zeroes
+                    let t_begin = *index_ptr.get(start) as usize;
+                    let t_end = *index_ptr.get(end) as usize;
+                    for idx in t_begin..t_end {
+                        *trussness.get_mut(idx) = 0;
+                        *triangles.get_mut(idx) = AtomicU8::new(0);
+                    }
+                    // count triangles
+                    for u in start..end {
+                        let u_neighbours = self.neighbours(u as u64)?;
+                        let degree_u = u_neighbours.count;
+                        for v in u_neighbours.clone() {
+                            *removed.get_mut(u_neighbours.offset as usize) = false;
+                            let v_id = v.dest() as usize;
+                            if let Ok(v_n) = self.neighbours(v_id as u64) {
+                                if v_n.count > degree_u || (v_n.count == degree_u && u < v_id) {
+                                    // let max_id = v_id.max(u);
+                                    for w in self.neighbours(v.dest())? {
+                                        if let Some((w_u, w_v)) =
+                                            self.is_triangle(u as u64, v.dest(), w.dest())
+                                        {
+                                            let triangle_edges = match (
+                                                self.is_triangle(v.dest(), w.dest(), u as u64),
+                                                self.is_triangle(u as u64, w.dest(), v.dest()),
+                                            ) {
+                                                (Some((u_v, u_w)), Some((v_u, v_w))) => {
+                                                    [u_v, u_w, v_u, v_w, w_u, w_v]
+                                                }
+                                                _ => panic!(
+                                                    "DBG reciprocal directed edges property broken"
+                                                ),
+                                            };
 
-        // // Parallel peeling to compute trussness
-        // for k in 1u8.. {
-        //     let removed = AtomicBool::new(false);
-        //     (0..m).into_iter().for_each(|eid| {
-        //         // Only consider edges not yet assigned a trussness
-        //         if trussness[eid].load(Ordering::Acquire)? == u8::MAX {
-        //             if tri_count[eid].load(Ordering::Relaxed) < k as u32 {
-        //                 // Set trussness = k-1
-        //                 trussness[eid].store(k - 1, Ordering::Release);
-        //                 // Decrement neighbors in all triangles of this edge
-        //                 let (u, v) = graph.edge_endpoints(eid);
-        //                 let (u_small, v_large) = if graph.degree(u) <= graph.degree(v) {
-        //                     (u, v)
-        //                 } else {
-        //                     (v, u)
-        //                 };
-        //                 for &w in graph.neighbors(u_small) {
-        //                     if let (Some(e2), Some(e3)) =
-        //                         (graph.edge_index(u_small, w), graph.edge_index(v_large, w))
-        //                     {
-        //                         // Only update counts if those edges are still active
-        //                         if trussness[e2].load(Ordering::Relaxed) == u8::MAX
-        //                             && trussness[e3].load(Ordering::Relaxed) == u8::MAX
-        //                         {
-        //                             tri_count[e2].fetch_sub(1, Ordering::Relaxed);
-        //                             tri_count[e3].fetch_sub(1, Ordering::Relaxed);
-        //                         }
-        //                     }
-        //                 }
-        //                 removed.store(true, Ordering::Relaxed);
-        //             }
-        //         }
-        //     });
-        //     // Stop when no edges were removed in this round
-        //     if !removed.load(Ordering::Relaxed) {
-        //         break;
-        //     }
-        // }
-        //
-        // Collect the results
-        let mut result = vec![0u8; m];
-        // result.iter_mut().enumerate().for_each(|(eid, slot)| {
-        //     *slot = trussness[eid].load(Ordering::Relaxed);
-        // });
-        Ok(result)
+                                            for e in triangle_edges {
+                                                triangles
+                                                    .get_mut(e)
+                                                    .fetch_add(1, Ordering::Relaxed);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        })
+        .unwrap();
+
+        let stack = SharedStackMut::<(u64, usize)>::from_shared_slice(edge_stack.slice);
+
+        // Algorithm 2 - sentinel value is 0
+        thread::scope(|scope| {
+            let threads = self.thread_count.max(1) as usize;
+            for tid in 0..threads {
+                let index_ptr = Arc::clone(&index_ptr);
+                let graph_ptr = Arc::clone(&graph_ptr);
+                let mut trussness = edge_trussness.slice;
+                let mut triangle_count = triangle_count.slice.clone();
+                let mut removed = edge_removed.slice;
+                let mut stack = stack.clone();
+                let thread_load = node_count.div_ceil(threads);
+                let start = tid * thread_load;
+                if start >= index_ptr.len() {
+                    break;
+                }
+                let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
+                scope.spawn(move |_| {
+                    for k in 1..16 {
+                        for u in start..end {
+                            let out_begin = *(index_ptr.get(u)) as usize;
+                            let out_end = *(index_ptr.get(u + 1)) as usize;
+                            for edge_offset in out_begin..out_end {
+                                let t_count =
+                                    triangle_count.get(edge_offset).load(Ordering::Relaxed);
+                                if t_count == k - 1 {
+                                    stack.push((u as u64, edge_offset));
+                                }
+                                if t_count == 0 {
+                                    *removed.get_mut(edge_offset) = true;
+                                }
+                            }
+                        }
+                        while let Some((u, offset)) = stack.pop() {
+                            *removed.get_mut(offset) = true;
+                            let v = graph_ptr.get(offset).dest();
+                            let v_n = match self.neighbours(v) {
+                                Ok(i) => i,
+                                Err(e) => panic!("error getting neighbour iter for {}: {}", v, e),
+                            };
+                            for w in v_n {
+                                if let Some((w_u, w_v)) = self.is_triangle(u, v, w.dest()) {
+                                    let tri_edges: [(u64, usize); 5] = match (
+                                        self.is_triangle(v, w.dest(), u),
+                                        self.is_triangle(u, w.dest(), v),
+                                    ) {
+                                        (Some((_, b)), Some((c, v_w))) => {
+                                            match (removed.get(v_w), removed.get(w_u)) {
+                                                (true, true) => {
+                                                    match (
+                                                        removed.get(c),
+                                                        removed.get(b),
+                                                        removed.get(w_v),
+                                                    ) {
+                                                        (true, true, true) => [
+                                                            (u, b),
+                                                            (v, c),
+                                                            (v, v_w),
+                                                            (w.dest(), w_u),
+                                                            (w.dest(), w_v),
+                                                        ],
+                                                        _ => [
+                                                            (v, v_w),
+                                                            (w.dest(), w_u),
+                                                            (0, usize::MAX),
+                                                            (0, usize::MAX),
+                                                            (0, usize::MAX),
+                                                        ],
+                                                    }
+                                                }
+                                                _ => [
+                                                    (0, usize::MAX),
+                                                    (0, usize::MAX),
+                                                    (0, usize::MAX),
+                                                    (0, usize::MAX),
+                                                    (0, usize::MAX),
+                                                ],
+                                            }
+                                        }
+                                        _ => panic!("error DBG edge reciprocity property broken"),
+                                    };
+                                    for (orig, offset) in tri_edges {
+                                        if orig == 0 && offset == usize::MAX {
+                                            break;
+                                        }
+                                        if let Ok(previous_t_count) =
+                                            triangle_count.get_mut(offset).fetch_update(
+                                                Ordering::Relaxed,
+                                                Ordering::Relaxed,
+                                                |t| match t.cmp(&1) {
+                                                    std::cmp::Ordering::Greater => Some(t - 1),
+                                                    std::cmp::Ordering::Less => {
+                                                        *removed.get_mut(offset) = true;
+                                                        Some(t - 1)
+                                                    }
+                                                    std::cmp::Ordering::Equal => None,
+                                                },
+                                            )
+                                        {
+                                            if previous_t_count == k {
+                                                stack.push((orig, offset));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            *trussness.get_mut(offset) = k - 1;
+                        }
+                    }
+                });
+            }
+        })
+        .unwrap();
+        edge_trussness.flush()?;
+        Ok(vec![])
     }
 }
 
 #[derive(Debug)]
-pub struct GraphIterator<'a, T: Copy + Debug + Display + Pod + Zeroable> {
+pub struct GraphIterator<'a, T: Copy + Debug + Display + Pod + Zeroable + Send + Sync> {
     inner: &'a [T],
     pos: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NeighbourIter<
     'a,
-    T: Copy + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Pod + Zeroable + GraphEdge,
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
 > {
     edge_ptr: *const T,
-    orig_edge_ptr: *const T,
-    orig_id_ptr: *const u64,
+    _orig_edge_ptr: *const T,
+    _orig_id_ptr: *const u64,
     id: u64,
-    count: u64,
+    pub count: u64,
+    pub offset: u64,
     _phantom: std::marker::PhantomData<&'a U>,
 }
 
 #[derive(Debug)]
-pub struct EdgeIter<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphEdge>
-{
+pub struct EdgeIter<
+    'a,
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
+> {
     edge_ptr: *const T,
     id_ptr: *const u64,
     id: u64,
@@ -1912,35 +2087,42 @@ pub struct EdgeIter<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Ze
     _phantom: std::marker::PhantomData<&'a U>,
 }
 
-impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphEdge>
-    NeighbourIter<'a, T, U>
+impl<
+    'a,
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
+> NeighbourIter<'a, T, U>
 {
     fn new(edge_mmap: *const T, id_mmap: *const u64, node_id: u64) -> Self {
-        let orig_edge_ptr = edge_mmap;
-        let orig_id_ptr = id_mmap;
+        let _orig_edge_ptr = edge_mmap;
+        let _orig_id_ptr = id_mmap;
         let id_ptr = unsafe { id_mmap.add(node_id as usize) };
         let offset = unsafe { id_ptr.read_unaligned() };
 
         NeighbourIter {
             edge_ptr: unsafe { edge_mmap.add(offset as usize) },
-            orig_edge_ptr,
-            orig_id_ptr,
+            _orig_edge_ptr,
+            _orig_id_ptr,
             id: node_id,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
+            offset,
             _phantom: std::marker::PhantomData::<&'a U>,
         }
     }
 
     #[inline(always)]
     fn _into_neighbour(&self) -> Self {
-        NeighbourIter::new(self.orig_edge_ptr, self.orig_id_ptr, unsafe {
+        NeighbourIter::new(self._orig_edge_ptr, self._orig_id_ptr, unsafe {
             self.edge_ptr.read_unaligned().dest()
         })
     }
 }
 
-impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphEdge> Iterator
-    for NeighbourIter<'a, T, U>
+impl<
+    'a,
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
+> Iterator for NeighbourIter<'a, T, U>
 {
     type Item = U;
 
@@ -1950,6 +2132,7 @@ impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphE
             return None;
         }
         self.count -= 1;
+        self.offset += 1;
         unsafe { Some(U::new(self.id, self.edge_ptr.add(1).read_unaligned())) }
     }
 
@@ -1960,8 +2143,11 @@ impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphE
     }
 }
 
-impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphEdge>
-    EdgeIter<'a, T, U>
+impl<
+    'a,
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
+> EdgeIter<'a, T, U>
 {
     #[inline(always)]
     fn new(edge_mmap: *const T, id_mmap: *const u64, start: u64, end: u64) -> Self {
@@ -1980,8 +2166,11 @@ impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphE
     }
 }
 
-impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphEdge> Iterator
-    for EdgeIter<'a, T, U>
+impl<
+    'a,
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
+> Iterator for EdgeIter<'a, T, U>
 {
     type Item = U;
 
@@ -2006,7 +2195,9 @@ impl<'a, T: Copy + Pod + Zeroable + EdgeOutOf, U: Copy + Pod + Zeroable + GraphE
     }
 }
 
-impl<'a, T: Copy + Debug + Display + Pod + Zeroable> Iterator for GraphIterator<'a, T> {
+impl<'a, T: Copy + Debug + Display + Pod + Zeroable + Send + Sync> Iterator
+    for GraphIterator<'a, T>
+{
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2020,8 +2211,8 @@ impl<'a, T: Copy + Debug + Display + Pod + Zeroable> Iterator for GraphIterator<
 }
 
 impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 > std::ops::Index<std::ops::RangeFull> for GraphMemoryMap<T, U>
 {
     type Output = [T];
@@ -2037,8 +2228,8 @@ impl<
 }
 
 impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 > std::ops::Index<std::ops::Range<usize>> for GraphMemoryMap<T, U>
 {
     type Output = [T];
@@ -2054,8 +2245,8 @@ impl<
 }
 
 impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 > std::ops::Index<std::ops::Range<u64>> for GraphMemoryMap<T, U>
 {
     type Output = [T];
@@ -2074,8 +2265,8 @@ impl<
 }
 
 impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge,
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 > Debug for GraphMemoryMap<T, U>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2167,7 +2358,7 @@ impl Display for DirectedEdge {
     }
 }
 
-impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> Debug for GraphCache<T> {
+impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> Debug for GraphCache<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -2177,7 +2368,7 @@ impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> Debug for GraphCach
     }
 }
 
-impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf> Clone for GraphCache<T> {
+impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> Clone for GraphCache<T> {
     fn clone(&self) -> Self {
         if !self.readonly {
             panic!(

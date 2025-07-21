@@ -2,6 +2,10 @@ use memmap::{Mmap, MmapMut, MmapOptions};
 use std::{
     fs::{File, OpenOptions},
     io::{Error, ErrorKind},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 #[derive(Copy, Clone)]
@@ -81,7 +85,7 @@ impl<T> SharedSlice<T> {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
-    pub fn _len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
@@ -131,7 +135,7 @@ impl<T> SharedSlice<T> {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy)]
 pub struct SharedSliceMut<T> {
     ptr: *mut T,
     len: usize,
@@ -139,6 +143,15 @@ pub struct SharedSliceMut<T> {
 
 unsafe impl<T> Send for SharedSliceMut<T> {}
 unsafe impl<T> Sync for SharedSliceMut<T> {}
+
+impl<T> Clone for SharedSliceMut<T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+        }
+    }
+}
 
 impl<T> SharedSliceMut<T> {
     pub fn new(ptr: *mut T, len: usize) -> Self {
@@ -175,7 +188,7 @@ impl<T> SharedSliceMut<T> {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
-    pub fn _len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
     pub fn _slice(&self, start: usize, end: usize) -> Option<&[T]> {
@@ -227,5 +240,82 @@ impl<T> SharedSliceMut<T> {
             mmap,
             mmapped,
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct SharedStackMut<T> {
+    ptr: *mut T,
+    max: usize,
+    len: Arc<AtomicUsize>,
+}
+
+unsafe impl<T> Send for SharedStackMut<T> {}
+unsafe impl<T> Sync for SharedStackMut<T> {}
+
+impl<T: Clone> SharedStackMut<T> {
+    pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
+        SharedStackMut::<T> {
+            ptr: slice.ptr,
+            max: slice.len,
+            len: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len.load(Ordering::Relaxed) == 0
+    }
+    // FIXME: In concurrent push pops reads and writes may give undefined behaviour? push_async?
+    pub fn push(&mut self, el: T) -> Option<usize> {
+        match self
+            .len
+            .fetch_update(Ordering::Relaxed, Ordering::SeqCst, |x| {
+                if x < self.max { Some(x + 1) } else { None }
+            }) {
+            Ok(i) => {
+                unsafe { *self.ptr.add(i) = el.clone() };
+                Some(i) // return option<index_of_pushed_el>
+            }
+            Err(_) => None,
+        }
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        match self
+            .len
+            .fetch_update(Ordering::Relaxed, Ordering::SeqCst, |x| {
+                if x > 0 { Some(x - 1) } else { None }
+            }) {
+            Ok(i) => Some(unsafe { (*self.ptr.add(i - 1)).clone() }),
+            Err(_) => None,
+        }
+    }
+    pub fn push_async(&mut self, el: T) -> Option<usize> {
+        match self
+            .len
+            .fetch_update(Ordering::Relaxed, Ordering::SeqCst, |x| {
+                if x < self.max { Some(x + 1) } else { None }
+            }) {
+            Ok(i) => {
+                unsafe { *self.ptr.add(i) = el.clone() };
+                Some(i) // return option<index_of_pushed_el>
+            }
+            Err(_) => None,
+        }
+    }
+    pub fn slice(&self, start: usize, end: usize) -> Option<SharedSliceMut<T>> {
+        if start >= self.len.load(Ordering::Relaxed) {
+            return None;
+        }
+        let end = if end > self.len.load(Ordering::Relaxed) {
+            self.len.load(Ordering::Relaxed)
+        } else {
+            end
+        };
+        unsafe { Some(SharedSliceMut::new(self.ptr.add(start), end - start)) }
+    }
+    pub fn raw_slice(&self) -> SharedSliceMut<T> {
+        SharedSliceMut::new(self.ptr, self.max)
     }
 }
