@@ -245,7 +245,7 @@ impl<T> SharedSliceMut<T> {
 }
 
 #[derive(Clone)]
-pub struct SharedStackMut<T> {
+pub struct SharedQueueMut<T> {
     ptr: *mut T,
     max: usize,
     read: Arc<AtomicUsize>,
@@ -253,12 +253,12 @@ pub struct SharedStackMut<T> {
     len: Arc<AtomicUsize>,
 }
 
-unsafe impl<T> Send for SharedStackMut<T> {}
-unsafe impl<T> Sync for SharedStackMut<T> {}
+unsafe impl<T> Send for SharedQueueMut<T> {}
+unsafe impl<T> Sync for SharedQueueMut<T> {}
 
-impl<T: Debug + Copy + Clone + Eq> SharedStackMut<T> {
+impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
     pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
-        SharedStackMut::<T> {
+        SharedQueueMut::<T> {
             ptr: slice.ptr,
             max: slice.len,
             read: Arc::new(AtomicUsize::new(0)),
@@ -307,19 +307,6 @@ impl<T: Debug + Copy + Clone + Eq> SharedStackMut<T> {
             None
         }
     }
-    pub fn push_async(&mut self, el: T) -> Option<usize> {
-        match self
-            .len
-            .fetch_update(Ordering::Relaxed, Ordering::SeqCst, |x| {
-                if x < self.max { Some(x + 1) } else { None }
-            }) {
-            Ok(i) => {
-                unsafe { *self.ptr.add(i) = el };
-                Some(i) // return option<index_of_pushed_el>
-            }
-            Err(_) => None,
-        }
-    }
     pub fn slice(&self, start: usize, end: usize) -> Option<SharedSliceMut<T>> {
         let start = if start < self.read.load(Ordering::Relaxed) {
             self.read.load(Ordering::Relaxed)
@@ -329,6 +316,9 @@ impl<T: Debug + Copy + Clone + Eq> SharedStackMut<T> {
         let end = if end > self.len.load(Ordering::Relaxed) {
             self.len.load(Ordering::Relaxed)
         } else {
+            if end < start {
+                return None;
+            }
             end
         };
         unsafe { Some(SharedSliceMut::new(self.ptr.add(start), end - start)) }

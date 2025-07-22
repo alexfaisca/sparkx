@@ -1,6 +1,6 @@
 use crate::node::EdgeType;
 use crate::shared_slice::{
-    AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut, SharedStackMut,
+    AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut, SharedQueueMut,
 };
 
 use bitfield::bitfield;
@@ -1726,13 +1726,13 @@ where
         while remaining > 0 {
             // Build initial frontier = all vertices with degree <= k that are still active.
             // FIXME:: Abstract frontier to RAM with fallback mmap
-            let mut frontier = SharedStackMut::<usize>::from_shared_slice(frontier.slice);
+            let mut frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
             for u in 0..node_count {
                 if !peeled.get(u).load(Ordering::Relaxed)
                     && degree.get(u).load(Ordering::Relaxed) <= k
                 {
                     peeled.get(u).store(true, Ordering::Relaxed);
-                    let _ = frontier.push_async(u);
+                    let _ = frontier.push(u);
                 }
             }
             // If no vertices at this k, increment k and try again.
@@ -1745,7 +1745,7 @@ where
             let mut swap_slice = swap.slice;
             while !frontier.is_empty() {
                 // Threaded peel: each thread handles a chunk of the frontier.
-                let swap = SharedStackMut::<usize>::from_shared_slice(swap_slice);
+                let swap = SharedQueueMut::<usize>::from_shared_slice(swap_slice);
                 let frontier_len = frontier.len();
                 let num_threads = self.thread_count.max(1) as usize;
                 let chunk_size = frontier_len.div_ceil(num_threads);
@@ -1788,7 +1788,7 @@ where
                                         let was_peeled =
                                             peeled.get(v).swap(true, Ordering::Relaxed);
                                         if !was_peeled {
-                                            let _ = swap.push_async(v);
+                                            let _ = swap.push(v);
                                         }
                                     }
                                 }
@@ -1987,7 +1987,7 @@ where
         })
         .unwrap();
 
-        let stack = SharedStackMut::<(u64, usize)>::from_shared_slice(edge_stack.slice);
+        let stack = SharedQueueMut::<(u64, usize)>::from_shared_slice(edge_stack.slice);
 
         // Algorithm 2 - sentinel value is 0
         // blank (u64, usize) value
