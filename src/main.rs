@@ -5,7 +5,9 @@ mod shared_slice;
 
 use clap::Parser;
 use core::panic;
-use generic_memory_map::{DirectedEdge, EulerTrail, GraphCache, GraphMemoryMap, OutEdgeRecord};
+use generic_memory_map::{
+    DirectedEdge, EdgeOutOf, EulerTrail, GraphCache, GraphMemoryMap, OutEdgeRecord,
+};
 use node::EdgeType;
 use petgraph::graphmap::DiGraphMap;
 use rustworkx_core::petgraph::{self};
@@ -296,6 +298,8 @@ fn parse_bytes_mmaped(
                 link_slice[1].parse()?,
             ));
         }
+
+        edges.sort_unstable_by_key(|e| e.dest());
 
         graph_cache.write_node(id, edges.as_slice(), k_mer)?;
     }

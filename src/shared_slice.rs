@@ -1,5 +1,6 @@
 use memmap::{Mmap, MmapMut, MmapOptions};
 use std::{
+    fmt::Debug,
     fs::{File, OpenOptions},
     io::{Error, ErrorKind},
     sync::{
@@ -247,17 +248,21 @@ impl<T> SharedSliceMut<T> {
 pub struct SharedStackMut<T> {
     ptr: *mut T,
     max: usize,
+    read: Arc<AtomicUsize>,
+    write: Arc<AtomicUsize>,
     len: Arc<AtomicUsize>,
 }
 
 unsafe impl<T> Send for SharedStackMut<T> {}
 unsafe impl<T> Sync for SharedStackMut<T> {}
 
-impl<T: Clone> SharedStackMut<T> {
+impl<T: Debug + Copy + Clone + Eq> SharedStackMut<T> {
     pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
         SharedStackMut::<T> {
             ptr: slice.ptr,
             max: slice.len,
+            read: Arc::new(AtomicUsize::new(0)),
+            write: Arc::new(AtomicUsize::new(0)),
             len: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -269,26 +274,37 @@ impl<T: Clone> SharedStackMut<T> {
     }
     // FIXME: In concurrent push pops reads and writes may give undefined behaviour? push_async?
     pub fn push(&mut self, el: T) -> Option<usize> {
-        match self
-            .len
-            .fetch_update(Ordering::Relaxed, Ordering::SeqCst, |x| {
-                if x < self.max { Some(x + 1) } else { None }
-            }) {
-            Ok(i) => {
-                unsafe { *self.ptr.add(i) = el.clone() };
-                Some(i) // return option<index_of_pushed_el>
-            }
-            Err(_) => None,
+        let write_idx = self.write.fetch_add(1, Ordering::SeqCst);
+        if write_idx < self.max {
+            unsafe { *self.ptr.add(write_idx) = el };
+            self.len.fetch_add(1, Ordering::SeqCst);
+            Some(write_idx)
+        } else {
+            // println!("Failed to push");
+            None
         }
     }
     pub fn pop(&mut self) -> Option<T> {
-        match self
-            .len
-            .fetch_update(Ordering::Relaxed, Ordering::SeqCst, |x| {
-                if x > 0 { Some(x - 1) } else { None }
-            }) {
-            Ok(i) => Some(unsafe { (*self.ptr.add(i - 1)).clone() }),
-            Err(_) => None,
+        let idx = self
+            .read
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                if x < self.len.load(Ordering::SeqCst) {
+                    Some(x + 1)
+                } else {
+                    // print!(
+                    //     "FAIL (read: {} len: {} max: {}) ",
+                    //     x,
+                    //     self.len.load(Ordering::SeqCst),
+                    //     self.max
+                    // );
+                    None
+                }
+            })
+            .ok();
+        if let Some(offset) = idx {
+            Some(unsafe { *self.ptr.add(offset) })
+        } else {
+            None
         }
     }
     pub fn push_async(&mut self, el: T) -> Option<usize> {
@@ -298,16 +314,18 @@ impl<T: Clone> SharedStackMut<T> {
                 if x < self.max { Some(x + 1) } else { None }
             }) {
             Ok(i) => {
-                unsafe { *self.ptr.add(i) = el.clone() };
+                unsafe { *self.ptr.add(i) = el };
                 Some(i) // return option<index_of_pushed_el>
             }
             Err(_) => None,
         }
     }
     pub fn slice(&self, start: usize, end: usize) -> Option<SharedSliceMut<T>> {
-        if start >= self.len.load(Ordering::Relaxed) {
-            return None;
-        }
+        let start = if start < self.read.load(Ordering::Relaxed) {
+            self.read.load(Ordering::Relaxed)
+        } else {
+            start
+        };
         let end = if end > self.len.load(Ordering::Relaxed) {
             self.len.load(Ordering::Relaxed)
         } else {
@@ -315,7 +333,7 @@ impl<T: Clone> SharedStackMut<T> {
         };
         unsafe { Some(SharedSliceMut::new(self.ptr.add(start), end - start)) }
     }
-    pub fn raw_slice(&self) -> SharedSliceMut<T> {
+    pub unsafe fn raw_slice(&self) -> SharedSliceMut<T> {
         SharedSliceMut::new(self.ptr, self.max)
     }
 }

@@ -529,7 +529,7 @@ struct FindDisjointSetsEulerTrails {
 
 impl FindDisjointSetsEulerTrails {
     pub fn new(trails: &mut [(usize, usize, usize)]) -> Self {
-        trails.sort_by_key(|(trail_id, _, _)| *trail_id);
+        trails.sort_unstable_by_key(|(trail_id, _, _)| *trail_id);
         FindDisjointSetsEulerTrails {
             trails: trails
                 .iter()
@@ -694,7 +694,7 @@ where
 
         let mut keys_by_trail_size: Vec<(usize, usize)> =
             output_len.values().map(|&(a, b)| (a, b)).collect();
-        keys_by_trail_size.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+        keys_by_trail_size.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(*s));
 
         for (idx, (head_trail, output_len)) in keys_by_trail_size.iter().enumerate() {
             // Initialize writing guide
@@ -710,7 +710,7 @@ where
             // sort positions in ascending order for each trail and push head trail to stack
             pos_map
                 .values_mut()
-                .for_each(|v| v.sort_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
+                .for_each(|v| v.sort_unstable_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
             let mut stack: Vec<(usize, usize, usize)> = vec![];
             let mut remaining: Vec<(usize, usize)> = vec![];
             let mut expand = Some((*head_trail, 0));
@@ -848,7 +848,7 @@ where
 
         let mut keys_by_trail_size: Vec<(usize, usize)> =
             output_len.values().map(|&(a, b)| (a, b)).collect();
-        keys_by_trail_size.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+        keys_by_trail_size.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(*s));
 
         // Write
         for (idx, (head_trail, output_len)) in keys_by_trail_size.iter().enumerate() {
@@ -863,7 +863,7 @@ where
             }
             pos_map
                 .values_mut()
-                .for_each(|v| v.sort_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
+                .for_each(|v| v.sort_unstable_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
 
             let mut stack: Vec<(usize, usize, usize)> = vec![];
             let mut remaining: Vec<(usize, usize)> = vec![];
@@ -1347,23 +1347,72 @@ where
     }
 
     fn is_triangle(&self, u: u64, v: u64, w: u64) -> Option<(usize, usize)> {
-        let mut u_offset = None;
-        let mut v_offset = None;
-        let w_neighbours = match self.neighbours(w) {
-            Ok(i) => i,
-            Err(_) => return None,
-        };
-        for n in w_neighbours.clone() {
-            if n.dest() == u {
-                u_offset = Some(w_neighbours.offset);
-            } else if n.dest() == v {
-                v_offset = Some(w_neighbours.offset);
+        let mut index_a = None;
+        let mut index_b = None;
+        let switch = v < u;
+
+        if let Ok(mut iter) = self.neighbours(w) {
+            loop {
+                if let Some((index, n)) = iter.next_with_offset() {
+                    if index_a.is_none() {
+                        match (if switch {v} else {u}).cmp(&n.dest()) {
+                                std::cmp::Ordering::Less => { 
+                                    return None; },
+                                std::cmp::Ordering::Equal => {
+                                    if let Some(b) = index_b {
+                                        return Some((index, b));
+                                    }
+                                    index_a = Some(index);
+                                },
+                                _ => {},
+                            };
+                    } else {
+                        match (if switch {u} else {v}).cmp(&n.dest()) {
+                                std::cmp::Ordering::Less => { 
+                                    return None; },
+                                std::cmp::Ordering::Equal => {
+                                    if let Some(a) = index_a {
+                                        return Some(if switch {(index, a)} else {(a, index)});
+                                    }
+                                }
+                                _ => {},
+                            };
+
+                    }
+                } else {
+                    return None;
+                }
+                if let Some((index, n)) = iter.next_back_with_offset() {
+                    if index_b.is_none() {
+                        match (if switch {u} else {v}).cmp(&n.dest()) {
+                                std::cmp::Ordering::Greater => return None,
+                                std::cmp::Ordering::Equal => {
+                                    if let Some(a) = index_a {
+                                        return Some((a, index));
+                                    }
+                                    index_b = Some(index);
+                                },
+                                _ => {},
+                            };
+                    } else {
+                        match (if switch {v} else {u}).cmp(&n.dest()) {
+                                std::cmp::Ordering::Greater => return None,
+                                std::cmp::Ordering::Equal => {
+                                    if let Some(b) = index_b {
+                                        return Some(if switch {(b, index)} else {(index, b)});
+                                    }
+                                }
+                                _ => {},
+                            };
+
+                    }
+                } else {
+                    return None;
+                }
+
             }
         }
-        match (u_offset, v_offset) {
-            (Some(u_offset), Some(v_offset)) => Some((u_offset as usize, v_offset as usize)),
-            _ => None,
-        }
+        None
     }
 
     pub fn size(&self) -> u64 {
@@ -1723,7 +1772,7 @@ where
                         let mut c = SharedSliceMut::<u8>::from_shared_slice(core.slice);
                         handles.push(s.spawn(move |_| {
                             for i in 0..chunk.len() {
-                                // Set coreness and decrement neighbor degrees
+                                // Set coreness and decrement neighbour degrees
                                 let u = *chunk.get(i);
                                 *c.get_mut(u) = k;
                                 // For each neighbor v of u:
@@ -1751,7 +1800,7 @@ where
                 remaining -= frontier.len();
                 let r = frontier;
                 frontier = swap;
-                swap_slice = r.raw_slice();
+                swap_slice = unsafe { r.raw_slice() };
             }
             k += 1;
         }
@@ -1841,7 +1890,7 @@ where
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, t_v, edge_count, mmap > 0)?;
 
         let s_v: Vec<(u64, usize)> = Vec::<(u64, usize)>::new();
-        let stack = SharedSliceMut::<(u64, usize)>::abst_mem_mut(s_fn, s_v, edge_count, mmap > 1)?;
+        let stack = SharedSliceMut::<(u64, usize)>::abst_mem_mut(s_fn, s_v, edge_count * 4, mmap > 1)?;
 
         let r_v: Vec<bool> = Vec::<bool>::new();
         let removed = SharedSliceMut::<bool>::abst_mem_mut(r_fn, r_v, edge_count, mmap > 3)?;
@@ -1852,28 +1901,30 @@ where
         Ok((tri_count, stack, edge_trussness, removed))
     }
 
-    pub fn k_truss_decomposition(&self, mmap: u8) -> Result<Vec<u8>, Error> {
+    pub fn k_truss_decomposition(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() as usize - 1;
         let edge_count = self.width() as usize;
-        let index_ptr = Arc::new(SharedSlice::<u64>::new(
-            self.index.as_ptr() as *const u64,
+        let threads = self.thread_count.max(1) as usize;
+        let thread_load = node_count.div_ceil(threads);
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
             self.graph.as_ptr() as *const T,
             edge_count,
         ));
-        // Shared atomic arrays for counts and trussness
+
+        // Shared atomic & simple arrays for counts and trussness
         let (triangle_count, edge_stack, edge_trussness, edge_removed) =
             self.init_procedural_memory_k_truss_decomposition(mmap)?;
 
         // Algorithm 1 - adjusted for directed scheme
         thread::scope(|scope| {
-            let threads = self.thread_count.max(1) as usize;
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
                 let mut trussness = edge_trussness.slice;
-                let mut triangles = triangle_count.slice.clone();
+                let mut tris = triangle_count.slice.clone();
                 let mut removed = edge_removed.slice;
                 let thread_load = node_count.div_ceil(threads);
                 let start = tid * thread_load;
@@ -1883,49 +1934,53 @@ where
                 let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
                 scope.spawn(move |_| -> Result<(), Error> {
                     // initialize triangle_count with zeroes
-                    let t_begin = *index_ptr.get(start) as usize;
-                    let t_end = *index_ptr.get(end) as usize;
+                    let t_begin = *index_ptr.get(start);
+                    let t_end = *index_ptr.get(end);
                     for idx in t_begin..t_end {
                         *trussness.get_mut(idx) = 0;
-                        *triangles.get_mut(idx) = AtomicU8::new(0);
+                        *tris.get_mut(idx) = AtomicU8::new(0);
                     }
                     // count triangles
+                    // let mut t = 0;
+                    // let mut p = 0;
                     for u in start..end {
-                        let u_neighbours = self.neighbours(u as u64)?;
-                        let degree_u = u_neighbours.count;
-                        for v in u_neighbours.clone() {
-                            *removed.get_mut(u_neighbours.offset as usize) = false;
-                            let v_id = v.dest() as usize;
-                            if let Ok(v_n) = self.neighbours(v_id as u64) {
-                                if v_n.count > degree_u || (v_n.count == degree_u && u < v_id) {
+                        let mut u_neighbours = self.neighbours(u as u64)?;
+                        let deg_u = u_neighbours.count;
+                        while let Some ((edge_idx, edge)) = u_neighbours.next_with_offset() {
+                            *removed.get_mut(edge_idx) = false;
+                            let v = edge.dest();
+                            if let Ok(v_n) = self.neighbours(v) {
+                                if v_n.count > deg_u || (v_n.count == deg_u && u < v as usize) {
                                     // let max_id = v_id.max(u);
-                                    for w in self.neighbours(v.dest())? {
-                                        if let Some((w_u, w_v)) =
-                                            self.is_triangle(u as u64, v.dest(), w.dest())
-                                        {
+                                    for w in self.neighbours(v)? {
+                                        let w = w.dest();
+                                        if w == u as u64 || w == v {continue;}
+                                        if let Some((w_u, w_v)) = self.is_triangle(u as u64, v, w) {
+                                            // t += 1;
                                             let triangle_edges = match (
-                                                self.is_triangle(v.dest(), w.dest(), u as u64),
-                                                self.is_triangle(u as u64, w.dest(), v.dest()),
+                                                self.is_triangle(v, w, u as u64),
+                                                self.is_triangle(u as u64, w, v),
                                             ) {
                                                 (Some((u_v, u_w)), Some((v_u, v_w))) => {
                                                     [u_v, u_w, v_u, v_w, w_u, w_v]
                                                 }
-                                                _ => panic!(
-                                                    "DBG reciprocal directed edges property broken"
-                                                ),
+                                                _ => {
+                                                    panic!("DBG reciprocal edges property broken ( u: {}, v: {}, w: {})", u, v, w)
+                                                },
                                             };
 
                                             for e in triangle_edges {
-                                                triangles
-                                                    .get_mut(e)
-                                                    .fetch_add(1, Ordering::Relaxed);
+                                                tris.get_mut(e).fetch_add(1, Ordering::Relaxed);
                                             }
+                                        } else {
+                                            // p += 1;
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                    // println!("thred found {} triangles and {} misses", t, p);
                     Ok(())
                 });
             }
@@ -1935,30 +1990,33 @@ where
         let stack = SharedStackMut::<(u64, usize)>::from_shared_slice(edge_stack.slice);
 
         // Algorithm 2 - sentinel value is 0
+        // blank (u64, usize) value
+        let _z = (0, usize::MAX);
         thread::scope(|scope| {
-            let threads = self.thread_count.max(1) as usize;
+            let mut res = vec![];
             for tid in 0..threads {
-                let index_ptr = Arc::clone(&index_ptr);
                 let graph_ptr = Arc::clone(&graph_ptr);
+                let index_ptr = Arc::clone(&index_ptr);
                 let mut trussness = edge_trussness.slice;
-                let mut triangle_count = triangle_count.slice.clone();
+                let mut tris = triangle_count.slice.clone();
                 let mut removed = edge_removed.slice;
                 let mut stack = stack.clone();
-                let thread_load = node_count.div_ceil(threads);
                 let start = tid * thread_load;
                 if start >= index_ptr.len() {
                     break;
                 }
                 let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
-                scope.spawn(move |_| {
+                res.push(scope.spawn(move |_| -> Vec<u64> {
+                    let mut test = vec![0u64; 16];
                     for k in 1..16 {
                         for u in start..end {
-                            let out_begin = *(index_ptr.get(u)) as usize;
-                            let out_end = *(index_ptr.get(u + 1)) as usize;
-                            for edge_offset in out_begin..out_end {
-                                let t_count =
-                                    triangle_count.get(edge_offset).load(Ordering::Relaxed);
+                            for edge_offset in *(index_ptr.get(u))..*(index_ptr.get(u + 1)) {
+                                let t_count = tris.get(edge_offset).load(Ordering::Relaxed);
                                 if t_count == k - 1 {
+                                    if edge_offset > *index_ptr.get(u + 1) || 
+                                        edge_offset < *index_ptr.get(u) {
+                                        panic!("impossible edge in init section {} @ {}", edge_offset, u);
+                                    }
                                     stack.push((u as u64, edge_offset));
                                 }
                                 if t_count == 0 {
@@ -1967,6 +2025,11 @@ where
                             }
                         }
                         while let Some((u, offset)) = stack.pop() {
+                            // FIXME: Possible data race in stack read write
+                            if offset > *index_ptr.get(u as usize + 1) || 
+                                offset < *index_ptr.get(u as usize) {
+                                panic!("impossible edge in pop section {} @ {} < {} - {} >", offset, u, *index_ptr.get(u as usize), *index_ptr.get(u as usize + 1));
+                            }
                             *removed.get_mut(offset) = true;
                             let v = graph_ptr.get(offset).dest();
                             let v_n = match self.neighbours(v) {
@@ -1974,81 +2037,124 @@ where
                                 Err(e) => panic!("error getting neighbour iter for {}: {}", v, e),
                             };
                             for w in v_n {
-                                if let Some((w_u, w_v)) = self.is_triangle(u, v, w.dest()) {
+                                let w = w.dest();
+                                if w == u || w == v {continue;}
+                                if let Some((w_u, w_v)) = self.is_triangle(u, v, w) {
+                                    // FIXME: Can only one of the triangles be residual?
                                     let tri_edges: [(u64, usize); 5] = match (
-                                        self.is_triangle(v, w.dest(), u),
-                                        self.is_triangle(u, w.dest(), v),
+                                        self.is_triangle(v, w, u),
+                                        self.is_triangle(u, w, v),
                                     ) {
-                                        (Some((_, b)), Some((c, v_w))) => {
-                                            match (removed.get(v_w), removed.get(w_u)) {
-                                                (true, true) => {
-                                                    match (
-                                                        removed.get(c),
-                                                        removed.get(b),
-                                                        removed.get(w_v),
-                                                    ) {
-                                                        (true, true, true) => [
-                                                            (u, b),
-                                                            (v, c),
-                                                            (v, v_w),
-                                                            (w.dest(), w_u),
-                                                            (w.dest(), w_v),
-                                                        ],
-                                                        _ => [
-                                                            (v, v_w),
-                                                            (w.dest(), w_u),
-                                                            (0, usize::MAX),
-                                                            (0, usize::MAX),
-                                                            (0, usize::MAX),
-                                                        ],
-                                                    }
-                                                }
-                                                _ => [
-                                                    (0, usize::MAX),
-                                                    (0, usize::MAX),
-                                                    (0, usize::MAX),
-                                                    (0, usize::MAX),
-                                                    (0, usize::MAX),
-                                                ],
-                                            }
+                                        (Some((_, u_w)), Some((v_u, v_w))) => 
+                                            [(v, v_w),(w, w_u),(u, u_w),(v, v_u),(w, w_v)],
+                                        _ => {
+                                            // println!("(u, v) offset -> {}", offset);
+                                            // print!("Neighbours {}", u);
+                                            // let mut u_n = self.neighbours(u).unwrap();
+                                            // while let Some(p) = u_n.next_with_offset() {
+                                            //     print!(" ({}, {})", p.0, p.1.dest());
+                                            // }
+                                            // println!();
+                                            // print!("Neighbours {}", v);
+                                            // let mut v_n = self.neighbours(v).unwrap();
+                                            // while let Some(p) = v_n.next_with_offset() {
+                                            //     print!(" ({}, {})", p.0, p.1.dest());
+                                            // }
+                                            // println!();
+                                            // print!("Neighbours {}", w);
+                                            // let mut w_n = self.neighbours(w).unwrap();
+                                            // while let Some(p) = w_n.next_with_offset() {
+                                            //     print!(" ({}, {})", p.0, p.1.dest());
+                                            // }
+                                            // println!();
+                                            panic!("DBG reciprocal edge property broken (u: {} v: {} w: {}, w_u: {}, w_v: {})", u, v, w, w_u, w_v);
                                         }
-                                        _ => panic!("error DBG edge reciprocity property broken"),
                                     };
                                     for (orig, offset) in tri_edges {
-                                        if orig == 0 && offset == usize::MAX {
+                                        if orig == _z.0 && offset == _z.1 {
                                             break;
                                         }
                                         if let Ok(previous_t_count) =
-                                            triangle_count.get_mut(offset).fetch_update(
-                                                Ordering::Relaxed,
-                                                Ordering::Relaxed,
+                                            tris.get_mut(offset).fetch_update(
+                                                Ordering::SeqCst,
+                                                Ordering::SeqCst,
                                                 |t| match t.cmp(&1) {
                                                     std::cmp::Ordering::Greater => Some(t - 1),
-                                                    std::cmp::Ordering::Less => {
+                                                    std::cmp::Ordering::Equal => {
                                                         *removed.get_mut(offset) = true;
                                                         Some(t - 1)
                                                     }
-                                                    std::cmp::Ordering::Equal => None,
+                                                    std::cmp::Ordering::Less => None,
                                                 },
                                             )
                                         {
                                             if previous_t_count == k {
+                                                if offset > *index_ptr.get(orig as usize + 1) || 
+                                                    offset < *index_ptr.get(orig as usize) {
+                                                    panic!("impossible edge in extend section {} @ {}", offset, orig);
+                                                }
                                                 stack.push((orig, offset));
                                             }
                                         }
                                     }
+                                    // // FIXME: Can only one of the triangles be residual?
+                                    // let tri_edges: [(u64, usize); 5] = match (
+                                    //     self.is_triangle(v, w, u),
+                                    //     self.is_triangle(u, w, v),
+                                    // ) {
+                                    //     (Some((_, u_w)), Some((v_u, v_w))) => {
+                                    //         match (removed.get(v_w), removed.get(w_u)) {
+                                    //             (true, true) => {
+                                    //                 match (
+                                    //                     removed.get(v_u),
+                                    //                     removed.get(u_w),
+                                    //                     removed.get(w_v),
+                                    //                 ) {
+                                    //                     (true, true, true) => [
+                                    //                         (u, u_w),
+                                    //                         (v, v_u),
+                                    //                         (v, v_w),
+                                    //                         (w, w_u),
+                                    //                         (w, w_v),
+                                    //                     ],
+                                    //                     _ => [(v, v_w), (w, w_u), _z, _z, _z],
+                                    //                 }
+                                    //             }
+                                    //             _ => [_z, _z, _z, _z, _z],
+                                    //         }
+                                    //     }
+                                    //     _ => panic!("DBG reciprocal edge property broken (u: {} v: {} w: {})", u, v, w),
+                                    // };
                                 }
                             }
 
                             *trussness.get_mut(offset) = k - 1;
+                            test[(k - 1) as usize] += 1;
                         }
                     }
-                });
+                    test
+                }));
             }
+            let joined_res: Vec<Vec<u64>> = res
+                .into_iter()
+                .map(|v| v.join().expect("error thread panicked"))
+                .collect();
+            let mut r = vec![0u64; 16];
+            for i in 0..16 {
+                for v in joined_res.clone() {
+                    r[i] += v[i];
+                }
+            }
+            println!("k-trussness {:?}", r);
         })
         .unwrap();
         edge_trussness.flush()?;
-        Ok(vec![])
+
+        cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KTruss,
+            None,
+        )
     }
 }
 
@@ -2060,7 +2166,6 @@ pub struct GraphIterator<'a, T: Copy + Debug + Display + Pod + Zeroable + Send +
 
 #[derive(Debug, Clone)]
 pub struct NeighbourIter<
-    'a,
     T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
 > {
@@ -2069,13 +2174,12 @@ pub struct NeighbourIter<
     _orig_id_ptr: *const u64,
     id: u64,
     pub count: u64,
-    pub offset: u64,
-    _phantom: std::marker::PhantomData<&'a U>,
+    offset: usize,
+    _phantom: std::marker::PhantomData<U>,
 }
 
 #[derive(Debug)]
 pub struct EdgeIter<
-    'a,
     T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
 > {
@@ -2084,14 +2188,13 @@ pub struct EdgeIter<
     id: u64,
     end: u64,
     count: u64,
-    _phantom: std::marker::PhantomData<&'a U>,
+    _phantom: std::marker::PhantomData<U>,
 }
 
 impl<
-    'a,
     T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> NeighbourIter<'a, T, U>
+> NeighbourIter<T, U>
 {
     fn new(edge_mmap: *const T, id_mmap: *const u64, node_id: u64) -> Self {
         let _orig_edge_ptr = edge_mmap;
@@ -2105,8 +2208,8 @@ impl<
             _orig_id_ptr,
             id: node_id,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            offset,
-            _phantom: std::marker::PhantomData::<&'a U>,
+            offset: offset as usize,
+            _phantom: std::marker::PhantomData::<U>,
         }
     }
 
@@ -2116,13 +2219,57 @@ impl<
             self.edge_ptr.read_unaligned().dest()
         })
     }
+
+    fn next_back_with_offset(&mut self) -> Option<(usize, U)> {
+        if self.count == 0 {
+            return None;
+        }
+        self.count -= 1;
+        let next: (usize, U);
+        unsafe {
+            next = (self.offset + self.count as usize, U::new(self.id, self.edge_ptr.add(self.count as usize).read_unaligned()));
+        };
+        Some(next)
+    }
+
+    fn next_with_offset(&mut self) -> Option<(usize, U)> {
+        if self.count == 0 {
+            return None;
+        }
+        self.count -= 1;
+        let next: (usize, U);
+        self.edge_ptr = unsafe {
+            next = (self.offset, U::new(self.id, self.edge_ptr.read_unaligned()));
+            self.edge_ptr.add(1)
+        };
+        self.offset += 1;
+        Some(next)
+    }
 }
 
 impl<
-    'a,
     T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> Iterator for NeighbourIter<'a, T, U>
+> DoubleEndedIterator for NeighbourIter<T, U>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<U> {
+        if self.count == 0 {
+            return None;
+        }
+        self.count -= 1;
+        let next: U;
+        unsafe {
+            next = U::new(self.id, self.edge_ptr.add(self.count as usize).read_unaligned());
+        };
+        Some(next)
+    }
+}
+
+impl<
+    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
+> Iterator for NeighbourIter<T, U>
 {
     type Item = U;
 
@@ -2133,7 +2280,12 @@ impl<
         }
         self.count -= 1;
         self.offset += 1;
-        unsafe { Some(U::new(self.id, self.edge_ptr.add(1).read_unaligned())) }
+        let next: U;
+        self.edge_ptr = unsafe {
+            next = U::new(self.id, self.edge_ptr.read_unaligned());
+            self.edge_ptr.add(1)
+        };
+        Some(next)
     }
 
     #[inline(always)]
@@ -2144,10 +2296,9 @@ impl<
 }
 
 impl<
-    'a,
     T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> EdgeIter<'a, T, U>
+> EdgeIter<T, U>
 {
     #[inline(always)]
     fn new(edge_mmap: *const T, id_mmap: *const u64, start: u64, end: u64) -> Self {
@@ -2161,16 +2312,15 @@ impl<
             id: start,
             end,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            _phantom: std::marker::PhantomData::<&'a U>,
+            _phantom: std::marker::PhantomData::<U>,
         }
     }
 }
 
 impl<
-    'a,
     T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> Iterator for EdgeIter<'a, T, U>
+> Iterator for EdgeIter<T, U>
 {
     type Item = U;
 
@@ -2181,11 +2331,19 @@ impl<
             if self.id > self.end {
                 return None;
             }
-
-            let offset = unsafe { self.id_ptr.read_unaligned() };
-            self.count = unsafe { self.id_ptr.add(1).read_unaligned() - offset };
+            unsafe {
+                self.id_ptr = self.id_ptr.add(1);
+                let offset = self.id_ptr.read_unaligned();
+                self.count = self.id_ptr.add(1).read_unaligned() - offset;
+            };
         }
-        unsafe { Some(U::new(self.id, self.edge_ptr.add(1).read_unaligned())) }
+        self.count -= 1;
+        let next: U;
+        self.edge_ptr = unsafe {
+            next = U::new(self.id, self.edge_ptr.read_unaligned());
+            self.edge_ptr.add(1)
+        };
+        Some(next)
     }
 
     #[inline(always)]
@@ -2198,14 +2356,14 @@ impl<
 impl<'a, T: Copy + Debug + Display + Pod + Zeroable + Send + Sync> Iterator
     for GraphIterator<'a, T>
 {
-    type Item = T;
+    type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.pos >= self.inner.len() {
             None
         } else {
             self.pos += 1;
-            Some(self.inner[self.pos - 1])
+            Some(&self.inner[self.pos - 1])
         }
     }
 }
