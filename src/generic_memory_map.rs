@@ -6,13 +6,14 @@ use crate::shared_slice::{
 use bitfield::bitfield;
 use bytemuck::{Pod, Zeroable};
 use core::{fmt, panic};
+use std::sync::Barrier;
 use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use regex::Regex;
 use static_assertions::const_assert;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::{
     any::type_name,
     collections::HashMap,
@@ -26,7 +27,7 @@ use std::{
     slice,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
 use zerocopy::*; // Using crossbeam for scoped threads
@@ -37,14 +38,14 @@ static CACHE_DIR: &str = "./cache/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
 
 pub trait EdgeOutOf {
-    fn dest(&self) -> u64;
+    fn dest(&self) -> usize;
     fn edge_type(&self) -> EdgeType;
 }
 
 pub trait GraphEdge {
-    fn new(orig: u64, out_edge: impl EdgeOutOf) -> Self;
-    fn orig(&self) -> u64;
-    fn dest(&self) -> u64;
+    fn new(orig: usize, out_edge: impl EdgeOutOf) -> Self;
+    fn orig(&self) -> usize;
+    fn dest(&self) -> usize;
     fn edge_type(&self) -> EdgeType;
 }
 
@@ -62,8 +63,8 @@ bitfield! {
 }
 
 impl EdgeOutOf for OutEdgeRecord {
-    fn dest(&self) -> u64 {
-        self.dest_node()
+    fn dest(&self) -> usize {
+        self.dest_node() as usize
     }
     fn edge_type(&self) -> EdgeType {
         self.edge_type()
@@ -73,19 +74,19 @@ impl EdgeOutOf for OutEdgeRecord {
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Pod, Zeroable)]
 #[repr(C)]
 pub struct DirectedEdge {
-    origin: u64,
+    origin: usize,
     edge: OutEdgeRecord,
 }
 
 impl DirectedEdge {
     #[inline]
-    fn origin(&self) -> u64 {
+    fn origin(&self) -> usize {
         self.origin
     }
 
     #[inline]
-    fn dest(&self) -> u64 {
-        self.edge.dest_node()
+    fn dest(&self) -> usize {
+        self.edge.dest_node() as usize
     }
 
     #[inline]
@@ -96,20 +97,20 @@ impl DirectedEdge {
 
 impl GraphEdge for DirectedEdge {
     #[inline]
-    fn new(origin: u64, out_edge: impl EdgeOutOf) -> DirectedEdge {
+    fn new(origin: usize, out_edge: impl EdgeOutOf) -> DirectedEdge {
         DirectedEdge {
             origin,
-            edge: OutEdgeRecord::new(out_edge.edge_type(), out_edge.dest()),
+            edge: OutEdgeRecord::new(out_edge.edge_type(), out_edge.dest() as u64),
         }
     }
 
     #[inline]
-    fn orig(&self) -> u64 {
+    fn orig(&self) -> usize {
         self.origin
     }
 
     #[inline]
-    fn dest(&self) -> u64 {
+    fn dest(&self) -> usize {
         self.dest()
     }
 
@@ -147,7 +148,7 @@ enum FileType {
 fn cache_file_name(
     original_filename: String,
     target_type: FileType,
-    sequence_number: Option<u64>,
+    sequence_number: Option<usize>,
 ) -> Result<String, Error> {
     let path = Path::new(original_filename.as_str());
 
@@ -224,8 +225,8 @@ pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + S
     pub graph_filename: String,
     pub index_filename: String,
     pub kmer_filename: String,
-    pub graph_bytes: u64,
-    pub index_bytes: u64,
+    pub graph_bytes: usize,
+    pub index_bytes: usize,
     pub readonly: bool,
     _marker: PhantomData<T>,
 }
@@ -398,8 +399,8 @@ where
             Err(e) => panic!("error couldnt open file {}: {}", kmer_filename, e),
         };
 
-        let graph_len = graph_file.metadata().unwrap().len();
-        let index_len = index_file.metadata().unwrap().len();
+        let graph_len = graph_file.metadata().unwrap().len() as usize;
+        let index_len = index_file.metadata().unwrap().len() as usize;
 
         Ok(GraphCache::<T> {
             graph_file: Arc::new(graph_file),
@@ -415,7 +416,7 @@ where
         })
     }
 
-    pub fn write_node(&mut self, node_id: u64, data: &[T], label: &str) -> Result<(), Error>
+    pub fn write_node(&mut self, node_id: usize, data: &[T], label: &str) -> Result<(), Error>
     where
         T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
     {
@@ -430,7 +431,7 @@ where
 
                 match self.graph_file.write_all(bytemuck::cast_slice(data)) {
                     Ok(_) => {
-                        self.graph_bytes += data.len() as u64;
+                        self.graph_bytes += data.len();
                         Ok(())
                     }
                     Err(e) => panic!("error writing edges for {}: {}", node_id, e),
@@ -736,7 +737,7 @@ where
             let output_filename = cache_file_name(
                 self.graph.graph_cache.graph_filename.clone(),
                 FileType::EulerPath,
-                Some(idx as u64),
+                Some(idx),
             )?;
             let output_file = OpenOptions::new()
                 .create(true)
@@ -792,9 +793,9 @@ where
 
     fn _merge_euler_trails_no_mmap(
         &self,
-        cycles: Mutex<Vec<Vec<u64>>>,
-    ) -> Result<Vec<(u64, u64)>, Error> {
-        let mut trail_heads: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
+        cycles: Mutex<Vec<Vec<usize>>>,
+    ) -> Result<Vec<(usize, usize)>, Error> {
+        let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
         let cycles = cycles.into_inner().unwrap();
         cycles.iter().enumerate().for_each(|(idx, trail)| {
             if let Some(first) = trail.first() {
@@ -895,7 +896,7 @@ where
             let output_filename = cache_file_name(
                 self.graph.graph_cache.graph_filename.clone(),
                 FileType::EulerPath,
-                Some(idx as u64),
+                Some(idx),
             )?;
             let output_file = OpenOptions::new()
                 .create(true)
@@ -927,7 +928,7 @@ where
         Ok(keys_by_trail_size
             .iter()
             .enumerate()
-            .map(|(idx, (_, size))| (idx as u64, *size as u64))
+            .map(|(idx, (_, size))| (idx, *size))
             .collect())
     }
 
@@ -936,22 +937,22 @@ where
         mmap: u8,
     ) -> Result<
         (
-            AbstractedProceduralMemoryMut<AtomicU64>,
+            AbstractedProceduralMemoryMut<AtomicUsize>,
             AbstractedProceduralMemoryMut<AtomicU8>,
         ),
         Error,
     > {
-        let node_count = (self.graph.size() - 1) as usize;
-        let index_ptr = Arc::new(SharedSlice::<u64>::new(
-            self.graph.index.as_ptr() as *const u64,
-            self.graph.size() as usize,
+        let node_count = self.graph.size() - 1;
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.graph.index.as_ptr() as *const usize,
+            self.graph.size(),
         ));
         let template_fn = self.graph.graph_cache.graph_filename.clone();
         let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
         let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
 
-        let e_vec: Vec<AtomicU64> = vec![];
-        let edges = SharedSliceMut::<AtomicU64>::abst_mem_mut(e_fn, e_vec, node_count, mmap > 0)?;
+        let e_vec: Vec<AtomicUsize> = vec![];
+        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, e_vec, node_count, mmap > 0)?;
 
         let c_vec: Vec<AtomicU8> = vec![];
         let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, c_vec, node_count, mmap > 1)?;
@@ -988,29 +989,29 @@ where
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
     pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
-        let node_count = match (self.graph.size() - 1) as usize {
+        let node_count = match self.graph.size() - 1 {
             0 => panic!("Graph has no vertices"),
             i => i,
         };
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
             self.graph.graph.as_ptr() as *const T,
-            self.graph.width() as usize,
+            self.graph.width(),
         ));
 
         // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
         let (edges, edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;
 
         // Atomic counter to pick next starting vertex for a new cycle
-        let start_vertex_counter = Arc::new(AtomicU64::new(0));
+        let start_vertex_counter = Arc::new(AtomicUsize::new(0));
         // mmap to store disjoined trails for subsequent merging
         let filename = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             FileType::EulerTmp,
             None,
         )?;
-        let (mmap_slice, mmap) = Self::create_memmapped_mut_slice_from_tmp_file::<u64>(
+        let (mmap_slice, mmap) = Self::create_memmapped_mut_slice_from_tmp_file::<usize>(
             filename,
-            (self.graph.width() * 2) as usize,
+            self.graph.width() * 2,
         )?;
         let mmap_mutex = Mutex::new(mmap_slice);
 
@@ -1026,7 +1027,6 @@ where
                 let cycle_offsets = &cycle_offsets;
                 let mmap_offset = &mmap_offset;
                 let mmap = &mmap_mutex;
-                let node_count = node_count as u64;
 
                 // Spawn a thread
                 scope.spawn(move |_| {
@@ -1045,7 +1045,7 @@ where
                             if idx >= node_count {
                                 break None;
                             }
-                            if edge_count.get(idx as usize).load(Ordering::Relaxed) > 0 {
+                            if edge_count.get(idx).load(Ordering::Relaxed) > 0 {
                                 break Some(idx);
                             }
                         };
@@ -1057,12 +1057,12 @@ where
                         };
 
                         // Hierholzer's DFS
-                        let mut stack: Vec<u64> = Vec::new();
-                        let mut cycle: Vec<u64> = Vec::new();
+                        let mut stack: Vec<usize> = Vec::new();
+                        let mut cycle: Vec<usize> = Vec::new();
                         stack.push(start_v);
                         while let Some(&v) = stack.last() {
                             if edge_count
-                                .get(v as usize)
+                                .get(v)
                                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                                     if x > 0 {
                                         Some(x - 1)
@@ -1073,8 +1073,8 @@ where
                                 .is_ok()
                             {
                                 let edge_idx =
-                                    next_edge.get(v as usize).fetch_add(1, Ordering::Relaxed);
-                                stack.push(graph.get(edge_idx as usize).dest());
+                                    next_edge.get(v).fetch_add(1, Ordering::Relaxed);
+                                stack.push(graph.get(edge_idx).dest());
                             } else {
                                 stack.pop();
                                 if cycle.is_empty() {
@@ -1120,24 +1120,24 @@ where
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn _find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(u64, u64)>, Error> {
-        let node_count = match (self.graph.size() - 1) as usize {
+    pub fn _find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(usize, usize)>, Error> {
+        let node_count = match self.graph.size() - 1 {
             0 => panic!("Graph has no vertices"),
             i => i,
         };
 
-        let index_ptr = SharedSlice::<u64>::new(
-            self.graph.index.as_ptr() as *const u64,
-            self.graph.size() as usize,
+        let index_ptr = SharedSlice::<usize>::new(
+            self.graph.index.as_ptr() as *const usize,
+            self.graph.size(),
         );
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
             self.graph.graph.as_ptr() as *const T,
-            self.graph.width() as usize,
+            self.graph.width(),
         ));
 
         // atomic array for next unused edge index for each node and unread edge count
-        let mut next_edge_vec: Vec<AtomicU64> = Vec::with_capacity(node_count);
-        next_edge_vec.resize_with(node_count, || AtomicU64::new(0));
+        let mut next_edge_vec: Vec<AtomicUsize> = Vec::with_capacity(node_count);
+        next_edge_vec.resize_with(node_count, || AtomicUsize::new(0));
         let mut edge_count: Vec<AtomicU8> = Vec::with_capacity(node_count);
         edge_count.resize_with(node_count, || AtomicU8::new(0));
         for i in 0..node_count {
@@ -1152,7 +1152,7 @@ where
         let edge_count = Arc::new(edge_count);
 
         // Atomic counter to pick next starting vertex for a new cycle
-        let start_vertex_counter = Arc::new(AtomicU64::new(0));
+        let start_vertex_counter = Arc::new(AtomicUsize::new(0));
         let cycles_mutex = std::sync::Mutex::new(Vec::new());
 
         thread::scope(|scope| {
@@ -1165,23 +1165,23 @@ where
 
                 // Spawn a thread
                 scope.spawn(move |_| {
-                    let mut local_cycles: Vec<Vec<u64>> = Vec::new();
+                    let mut local_cycles: Vec<Vec<usize>> = Vec::new();
                     // find cycles until no unused edges remain
                     loop {
                         let start_v = loop {
                             let idx = start_vertex_counter
                                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                                    if x >= node_count as u64 {
+                                    if x >= node_count {
                                         Some(0)
                                     } else {
                                         Some(x + 1)
                                     }
                                 })
                                 .unwrap_or(0);
-                            if idx >= node_count as u64 {
+                            if idx >= node_count {
                                 break None;
                             }
-                            if edge_count[idx as usize].load(Ordering::Relaxed) > 0 {
+                            if edge_count[idx].load(Ordering::Relaxed) > 0 {
                                 break Some(idx);
                             }
                         };
@@ -1194,12 +1194,12 @@ where
                         };
 
                         // Hierholzer's DFS
-                        let mut stack: Vec<u64> = Vec::new();
-                        let mut cycle: Vec<u64> = Vec::new();
+                        let mut stack: Vec<usize> = Vec::new();
+                        let mut cycle: Vec<usize> = Vec::new();
                         stack.push(start_v);
                         while let Some(&v) = stack.last() {
                             // get next unused edge from v
-                            if edge_count[v as usize]
+                            if edge_count[v]
                                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                                     if x > 0 {
                                         Some(x - 1)
@@ -1210,8 +1210,8 @@ where
                                 .is_ok()
                             {
                                 let edge_idx =
-                                    next_edge[v as usize].fetch_add(1, Ordering::Relaxed);
-                                stack.push(graph_ptr.get(edge_idx as usize).dest());
+                                    next_edge[v].fetch_add(1, Ordering::Relaxed);
+                                stack.push(graph_ptr.get(edge_idx).dest());
                             } else {
                                 stack.pop();
                                 if cycle.is_empty() {
@@ -1284,9 +1284,9 @@ where
     }
 
     #[inline(always)]
-    pub fn node_degree(&self, node_id: u64) -> u64 {
+    pub fn _node_degree(&self, node_id: usize) -> usize {
         unsafe {
-            let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
+            let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             let begin = ptr.read_unaligned();
             ptr.add(1).read_unaligned() - begin
         }
@@ -1302,21 +1302,21 @@ where
     }
 
     #[inline(always)]
-    pub fn _index_node(&self, node_id: u64) -> std::ops::Range<u64> {
+    pub fn _index_node(&self, node_id: usize) -> std::ops::Range<usize> {
         unsafe {
-            let ptr = (self.index.as_ptr() as *const u64).add(node_id as usize);
+            let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             ptr.read_unaligned()..ptr.add(1).read_unaligned()
         }
     }
 
-    pub fn neighbours(&self, node_id: u64) -> Result<NeighbourIter<T, U>, Error> {
+    pub fn neighbours(&self, node_id: usize) -> Result<NeighbourIter<T, U>, Error> {
         if node_id >= self.size() {
             panic!("error invalid range");
         }
 
         Ok(NeighbourIter::<T, U>::new(
             self.graph.as_ptr() as *const T,
-            self.index.as_ptr() as *const u64,
+            self.index.as_ptr() as *const usize,
             node_id,
         ))
     }
@@ -1324,29 +1324,29 @@ where
     pub fn edges(&self) -> Result<EdgeIter<T, U>, Error> {
         Ok(EdgeIter::<T, U>::new(
             self.graph.as_ptr() as *const T,
-            self.index.as_ptr() as *const u64,
+            self.index.as_ptr() as *const usize,
             0,
             self.size(),
         ))
     }
 
-    pub fn _edges_in_range(&self, start_node: u64, end_node: u64) -> Result<EdgeIter<T, U>, Error> {
+    pub fn _edges_in_range(&self, start_node: usize, end_node: usize) -> Result<EdgeIter<T, U>, Error> {
         if start_node > end_node {
             panic!("error invalid range, beginning after end");
         }
-        if start_node > self.size() || end_node > self.size() {
+        if start_node > self.size()|| end_node > self.size() {
             panic!("error invalid range");
         }
 
         Ok(EdgeIter::<T, U>::new(
             self.graph.as_ptr() as *const T,
-            self.index.as_ptr() as *const u64,
+            self.index.as_ptr() as *const usize,
             start_node,
             end_node,
         ))
     }
 
-    fn is_triangle(&self, u: u64, v: u64, w: u64) -> Option<(usize, usize)> {
+    fn is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
         let mut index_a = None;
         let mut index_b = None;
         let switch = v < u;
@@ -1415,15 +1415,15 @@ where
         None
     }
 
-    pub fn size(&self) -> u64 {
+    pub fn size(&self) -> usize {
         self.graph_cache.index_bytes // num nodes
     }
 
-    pub fn width(&self) -> u64 {
+    pub fn width(&self) -> usize {
         self.graph_cache.graph_bytes // num edges
     }
 
-    fn init_procedural_memory_bz(
+    fn _init_procedural_memory_bz(
         &self,
         mmap: u8,
     ) -> Result<
@@ -1435,7 +1435,7 @@ where
         ),
         Error,
     > {
-        let node_count = (self.size() - 1) as usize;
+        let node_count = self.size() - 1;
 
         let template_fn = self.graph_cache.graph_filename.clone();
         let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
@@ -1458,9 +1458,9 @@ where
         Ok((degree, node, core, pos))
     }
 
-    pub fn compute_k_core_bz(&self, mmap: u8) -> Result<String, Error> {
-        let node_count = (self.size() - 1) as usize;
-        let edge_count = self.width() as usize;
+    pub fn _compute_k_core_bz(&self, mmap: u8) -> Result<String, Error> {
+        let node_count = self.size() - 1;
+        let edge_count = self.width();
         if node_count == 0 {
             return Err(Error::new(
                 std::io::ErrorKind::Other,
@@ -1468,10 +1468,10 @@ where
             ));
         }
 
-        let (degree, mut node, mut core, mut pos) = self.init_procedural_memory_bz(mmap)?;
+        let (degree, mut node, mut core, mut pos) = self._init_procedural_memory_bz(mmap)?;
         // compute out-degrees in parallel
-        let index_ptr = Arc::new(SharedSlice::<u64>::new(
-            self.index.as_ptr() as *const u64,
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
@@ -1494,16 +1494,19 @@ where
                     node_count * (t + 1) / threads
                 };
                 max_vecs.push(scope.spawn(move |_| {
-                    let mut bins: Vec<u64> = vec![0; 1];
+                    let mut bins: Vec<usize> = vec![0; 1];
                     for v in start..end {
-                        let deg = (index_ptr.get(v + 1) - index_ptr.get(v)) as u8;
-                        if deg >= bins.len() as u8 {
-                            bins.resize_with((deg + 1) as usize, || 0u64);
-                            bins[deg as usize] += 1;
-                        } else {
-                            bins[deg as usize] += 1;
+                        let deg = index_ptr.get(v + 1) - index_ptr.get(v);
+                        if deg > u8::MAX as usize {
+                            panic!("error degree is {} when it should be at maximum 16", deg);
                         }
-                        deg_arr.get(v).store(deg, Ordering::Relaxed);
+                        if deg >= bins.len() {
+                            bins.resize_with(deg + 1, || 0usize);
+                            bins[deg] += 1;
+                        } else {
+                            bins[deg] += 1;
+                        }
+                        deg_arr.get(v).store(deg as u8, Ordering::Relaxed);
                     }
                     bins
                 }));
@@ -1516,9 +1519,9 @@ where
                 };
                 for (degree, count) in bin.iter().enumerate() {
                     if bins.len() <= degree {
-                        bins.push(*count as usize);
+                        bins.push(*count);
                     } else {
-                        bins[degree] += *count as usize;
+                        bins[degree] += *count;
                     }
                 }
             });
@@ -1564,10 +1567,10 @@ where
             *core.get_mut(v) = deg_v; // coreness of v
 
             // iterate outgoing neighbors of v
-            let out_start = *(index_ptr.get(v)) as usize;
-            let out_end = *(index_ptr.get(v + 1)) as usize;
+            let out_start = *index_ptr.get(v);
+            let out_end = *index_ptr.get(v + 1);
             for e in out_start..out_end {
-                let u = (*graph_ptr.get(e)).dest() as usize;
+                let u = (*graph_ptr.get(e)).dest();
                 let _ = degree
                     .get(u)
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
@@ -1628,10 +1631,10 @@ where
                 scope.spawn(move |_| {
                     for u in start..end {
                         let core_u = *core.get(u);
-                        let out_begin = *(index_ptr.get(u)) as usize;
-                        let out_end = *(index_ptr.get(u + 1)) as usize;
+                        let out_begin = *index_ptr.get(u);
+                        let out_end = *index_ptr.get(u + 1);
                         for e in out_begin..out_end {
-                            let v = (*graph_ptr.get(e)).dest() as usize;
+                            let v = (*graph_ptr.get(e)).dest();
                             // determine edge's core = min(core[u], core[v])
                             let core_val = if *core.get(u) < *core.get(v) {
                                 core_u
@@ -1665,8 +1668,8 @@ where
         ),
         Error,
     > {
-        let node_count = (self.size() - 1) as usize;
-        let edge_count = self.width() as usize;
+        let node_count = self.size() - 1;
+        let edge_count = self.width();
 
         let template_fn = self.graph_cache.graph_filename.clone();
         let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
@@ -1695,16 +1698,16 @@ where
     }
 
     pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Error> {
-        let node_count = (self.size() - 1) as usize;
-        let edge_count = self.width() as usize;
+        let node_count = self.size() - 1;
+        let edge_count = self.width();
         if node_count == 0 {
             return Err(Error::new(
                 std::io::ErrorKind::Other,
                 "Graph has no vertices",
             ));
         }
-        let index_ptr = Arc::new(SharedSlice::<u64>::new(
-            self.index.as_ptr() as *const u64,
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
@@ -1779,7 +1782,7 @@ where
                                 let off_u = *offsets.get(u) as usize;
                                 let off_up = *offsets.get(u) as usize;
                                 for idx in off_u..off_up {
-                                    let v = neighbors.get(idx).dest() as usize;
+                                    let v = neighbors.get(idx).dest();
                                     // Atomically decrement v's degree
                                     let old = degree.get(v).fetch_sub(1, Ordering::SeqCst);
                                     // If old was k+1, then new degree is k => add v to next frontier
@@ -1842,10 +1845,10 @@ where
                 scope.spawn(move |_| {
                     for u in start..end {
                         let core_u = *core.get(u);
-                        let out_begin = *(index_ptr.get(u)) as usize;
-                        let out_end = *(index_ptr.get(u + 1)) as usize;
+                        let out_begin = *index_ptr.get(u);
+                        let out_end = *index_ptr.get(u + 1);
                         for e in out_begin..out_end {
-                            let v = (*graph_ptr.get(e)).dest() as usize;
+                            let v = (*graph_ptr.get(e)).dest();
                             // determine edge's core = min(core[u], core[v])
                             let core_val = if *core.get(u) < *core.get(v) {
                                 core_u
@@ -1872,13 +1875,13 @@ where
     ) -> Result<
         (
             AbstractedProceduralMemoryMut<AtomicU8>,
-            AbstractedProceduralMemoryMut<(u64, usize)>,
+            AbstractedProceduralMemoryMut<(usize, usize)>,
             AbstractedProceduralMemoryMut<u8>,
             AbstractedProceduralMemoryMut<bool>,
         ),
         Error,
     > {
-        let edge_count = self.width() as usize;
+        let edge_count = self.width();
 
         let template_fn = self.graph_cache.graph_filename.clone();
         let t_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(0))?;
@@ -1889,8 +1892,8 @@ where
         let t_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, t_v, edge_count, mmap > 0)?;
 
-        let s_v: Vec<(u64, usize)> = Vec::<(u64, usize)>::new();
-        let stack = SharedSliceMut::<(u64, usize)>::abst_mem_mut(s_fn, s_v, edge_count * 4, mmap > 1)?;
+        let s_v: Vec<(usize, usize)> = Vec::<(usize, usize)>::new();
+        let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(s_fn, s_v, edge_count * 4, mmap > 1)?;
 
         let r_v: Vec<bool> = Vec::<bool>::new();
         let removed = SharedSliceMut::<bool>::abst_mem_mut(r_fn, r_v, edge_count, mmap > 3)?;
@@ -1902,8 +1905,8 @@ where
     }
 
     pub fn k_truss_decomposition(&self, mmap: u8) -> Result<String, Error> {
-        let node_count = self.size() as usize - 1;
-        let edge_count = self.width() as usize;
+        let node_count = self.size() - 1;
+        let edge_count = self.width();
         let threads = self.thread_count.max(1) as usize;
         let thread_load = node_count.div_ceil(threads);
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
@@ -1944,37 +1947,36 @@ where
                     // let mut t = 0;
                     // let mut p = 0;
                     for u in start..end {
-                        let mut u_neighbours = self.neighbours(u as u64)?;
-                        let deg_u = u_neighbours.count;
+                        let mut u_neighbours = self.neighbours(u)?;
+                        let deg_u = self._node_degree(u);
                         while let Some ((edge_idx, edge)) = u_neighbours.next_with_offset() {
                             *removed.get_mut(edge_idx) = false;
                             let v = edge.dest();
-                            if let Ok(v_n) = self.neighbours(v) {
-                                if v_n.count > deg_u || (v_n.count == deg_u && u < v as usize) {
-                                    // let max_id = v_id.max(u);
-                                    for w in self.neighbours(v)? {
-                                        let w = w.dest();
-                                        if w == u as u64 || w == v {continue;}
-                                        if let Some((w_u, w_v)) = self.is_triangle(u as u64, v, w) {
-                                            // t += 1;
-                                            let triangle_edges = match (
-                                                self.is_triangle(v, w, u as u64),
-                                                self.is_triangle(u as u64, w, v),
-                                            ) {
-                                                (Some((u_v, u_w)), Some((v_u, v_w))) => {
-                                                    [u_v, u_w, v_u, v_w, w_u, w_v]
-                                                }
-                                                _ => {
-                                                    panic!("DBG reciprocal edges property broken ( u: {}, v: {}, w: {})", u, v, w)
-                                                },
-                                            };
-
-                                            for e in triangle_edges {
-                                                tris.get_mut(e).fetch_add(1, Ordering::Relaxed);
+                            let deg_v = self._node_degree(v);
+                            if deg_v > deg_u || (deg_v == deg_u && u < v) {
+                                // let max_id = v_id.max(u);
+                                for w in self.neighbours(v)? {
+                                    let w = w.dest();
+                                    if w == u || w == v {continue;}
+                                    if let Some((w_u, w_v)) = self.is_triangle(u, v, w) {
+                                        // t += 1;
+                                        let triangle_edges = match (
+                                            self.is_triangle(v, w, u),
+                                            self.is_triangle(u, w, v),
+                                        ) {
+                                            (Some((u_v, u_w)), Some((v_u, v_w))) => {
+                                                [u_v, u_w, v_u, v_w, w_u, w_v]
                                             }
-                                        } else {
-                                            // p += 1;
+                                            _ => {
+                                                panic!("DBG reciprocal edges property broken ( u: {}, v: {}, w: {})", u, v, w)
+                                            },
+                                        };
+
+                                        for e in triangle_edges {
+                                            tris.get_mut(e).fetch_add(1, Ordering::Relaxed);
                                         }
+                                    } else {
+                                        // p += 1;
                                     }
                                 }
                             }
@@ -1987,7 +1989,7 @@ where
         })
         .unwrap();
 
-        let stack = SharedQueueMut::<(u64, usize)>::from_shared_slice(edge_stack.slice);
+        let stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(edge_stack.slice);
 
         // Algorithm 2 - sentinel value is 0
         // blank (u64, usize) value
@@ -2008,6 +2010,8 @@ where
                 let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
                 res.push(scope.spawn(move |_| -> Vec<u64> {
                     let mut test = vec![0u64; 16];
+                    //FIXME: edge list should decrease in length as edges are removed to avoid
+                    //iteration of residual edges
                     for k in 1..16 {
                         for u in start..end {
                             for edge_offset in *(index_ptr.get(u))..*(index_ptr.get(u + 1)) {
@@ -2017,7 +2021,7 @@ where
                                         edge_offset < *index_ptr.get(u) {
                                         panic!("impossible edge in init section {} @ {}", edge_offset, u);
                                     }
-                                    stack.push((u as u64, edge_offset));
+                                    stack.push((u, edge_offset));
                                 }
                                 if t_count == 0 {
                                     *removed.get_mut(edge_offset) = true;
@@ -2026,108 +2030,79 @@ where
                         }
                         while let Some((u, offset)) = stack.pop() {
                             // FIXME: Possible data race in stack read write
-                            if offset > *index_ptr.get(u as usize + 1) || 
-                                offset < *index_ptr.get(u as usize) {
-                                panic!("impossible edge in pop section {} @ {} < {} - {} >", offset, u, *index_ptr.get(u as usize), *index_ptr.get(u as usize + 1));
+                            if offset > *index_ptr.get(u + 1) || 
+                                offset < *index_ptr.get(u) {
+                                panic!("impossible edge in pop section {} @ {} < {} - {} >", offset, u, *index_ptr.get(u), *index_ptr.get(u + 1));
                             }
-                            *removed.get_mut(offset) = true;
+                            // FIXME: is this line messing up multithreded?
+                            if *removed.get(offset) {
+                                *trussness.get_mut(offset) = k - 1;
+                                test[(k - 1) as usize] += 1;
+                                continue;
+                            } else {
+                                *removed.get_mut(offset) = true;
+                            }
+
                             let v = graph_ptr.get(offset).dest();
                             let v_n = match self.neighbours(v) {
                                 Ok(i) => i,
                                 Err(e) => panic!("error getting neighbour iter for {}: {}", v, e),
                             };
-                            for w in v_n {
-                                let w = w.dest();
-                                if w == u || w == v {continue;}
-                                if let Some((w_u, w_v)) = self.is_triangle(u, v, w) {
+                            for edge in v_n {
+                                let w = edge.dest();
+                                if w == edge.orig() || w == u {continue;}
+                                if let Some((w_u, _)) = self.is_triangle(u, v, w) {
                                     // FIXME: Can only one of the triangles be residual?
-                                    let tri_edges: [(u64, usize); 5] = match (
+                                    let tri_edges: [(usize, usize); 3] = match (
                                         self.is_triangle(v, w, u),
                                         self.is_triangle(u, w, v),
                                     ) {
-                                        (Some((_, u_w)), Some((v_u, v_w))) => 
-                                            [(v, v_w),(w, w_u),(u, u_w),(v, v_u),(w, w_v)],
+                                        (Some((u_v, _)), Some((_, v_w))) => {
+                                            let mut arr = [(u, u_v), (v, v_w),(w, w_u)];
+                                            arr.sort_unstable_by_key(|(node, _)| *node);
+                                            arr
+                                        },
                                         _ => {
-                                            // println!("(u, v) offset -> {}", offset);
-                                            // print!("Neighbours {}", u);
-                                            // let mut u_n = self.neighbours(u).unwrap();
-                                            // while let Some(p) = u_n.next_with_offset() {
-                                            //     print!(" ({}, {})", p.0, p.1.dest());
-                                            // }
-                                            // println!();
-                                            // print!("Neighbours {}", v);
-                                            // let mut v_n = self.neighbours(v).unwrap();
-                                            // while let Some(p) = v_n.next_with_offset() {
-                                            //     print!(" ({}, {})", p.0, p.1.dest());
-                                            // }
-                                            // println!();
-                                            // print!("Neighbours {}", w);
-                                            // let mut w_n = self.neighbours(w).unwrap();
-                                            // while let Some(p) = w_n.next_with_offset() {
-                                            //     print!(" ({}, {})", p.0, p.1.dest());
-                                            // }
-                                            // println!();
-                                            panic!("DBG reciprocal edge property broken (u: {} v: {} w: {}, w_u: {}, w_v: {})", u, v, w, w_u, w_v);
+                                            panic!("DBG reciprocal edge property broken (u: {} v: {} w: {}, w_u: {})", u, v, w, w_u);
                                         }
                                     };
+                                    for (_, offset) in tri_edges {
+                                        if tris.get_mut(offset).load(Ordering::Relaxed) == 0 {
+                                            continue;
+                                        }
+                                    }
+
                                     for (orig, offset) in tri_edges {
                                         if orig == _z.0 && offset == _z.1 {
                                             break;
                                         }
-                                        if let Ok(previous_t_count) =
-                                            tris.get_mut(offset).fetch_update(
+                                        if tris.get_mut(offset).fetch_update(
                                                 Ordering::SeqCst,
                                                 Ordering::SeqCst,
-                                                |t| match t.cmp(&1) {
-                                                    std::cmp::Ordering::Greater => Some(t - 1),
-                                                    std::cmp::Ordering::Equal => {
-                                                        *removed.get_mut(offset) = true;
-                                                        Some(t - 1)
+                                                |t| 
+                                                {
+                                                    if t == k {
+                                                        stack.push((orig, offset));
                                                     }
-                                                    std::cmp::Ordering::Less => None,
-                                                },
-                                            )
-                                        {
-                                            if previous_t_count == k {
-                                                if offset > *index_ptr.get(orig as usize + 1) || 
-                                                    offset < *index_ptr.get(orig as usize) {
-                                                    panic!("impossible edge in extend section {} @ {}", offset, orig);
+                                                    match t.cmp(&1) {
+                                                        std::cmp::Ordering::Greater => Some(t - 1),
+                                                        std::cmp::Ordering::Equal => {
+                                                            *removed.get_mut(offset) = true;
+                                                            Some(t - 1)
+                                                        }
+                                                        std::cmp::Ordering::Less => None,
+                                                    }
                                                 }
-                                                stack.push((orig, offset));
-                                            }
+                                            ).is_err()
+                                        {
+                                            // FIXME: abort
                                         }
                                     }
-                                    // // FIXME: Can only one of the triangles be residual?
-                                    // let tri_edges: [(u64, usize); 5] = match (
-                                    //     self.is_triangle(v, w, u),
-                                    //     self.is_triangle(u, w, v),
-                                    // ) {
-                                    //     (Some((_, u_w)), Some((v_u, v_w))) => {
-                                    //         match (removed.get(v_w), removed.get(w_u)) {
-                                    //             (true, true) => {
-                                    //                 match (
-                                    //                     removed.get(v_u),
-                                    //                     removed.get(u_w),
-                                    //                     removed.get(w_v),
-                                    //                 ) {
-                                    //                     (true, true, true) => [
-                                    //                         (u, u_w),
-                                    //                         (v, v_u),
-                                    //                         (v, v_w),
-                                    //                         (w, w_u),
-                                    //                         (w, w_v),
-                                    //                     ],
-                                    //                     _ => [(v, v_w), (w, w_u), _z, _z, _z],
-                                    //                 }
-                                    //             }
-                                    //             _ => [_z, _z, _z, _z, _z],
-                                    //         }
-                                    //     }
-                                    //     _ => panic!("DBG reciprocal edge property broken (u: {} v: {} w: {})", u, v, w),
-                                    // };
+                                }
+                                if tris.get(offset).load(Ordering::SeqCst) == 0 {
+                                    break;
                                 }
                             }
-
                             *trussness.get_mut(offset) = k - 1;
                             test[(k - 1) as usize] += 1;
                         }
@@ -2156,6 +2131,351 @@ where
             None,
         )
     }
+
+    fn init_procedural_memory_pkt(
+        &self,
+        mmap: u8,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<bool>,
+            AbstractedProceduralMemoryMut<bool>,
+            AbstractedProceduralMemoryMut<bool>,
+            AbstractedProceduralMemoryMut<AtomicU8>,
+        ),
+        Error,
+    > {
+        let edge_count = self.width();
+        let node_count = self.size() - 1;
+
+        let template_fn = self.graph_cache.graph_filename.clone();
+        let eo_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
+        let o_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(2))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(4))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(5))?;
+        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(6))?;
+        let in_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(7))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
+
+        let eo_v: Vec<usize> = Vec::<usize>::new();
+        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, eo_v, node_count, mmap > 2)?;
+
+        let o_v: Vec<usize> = Vec::<usize>::new();
+        let origin = SharedSliceMut::<usize>::abst_mem_mut(o_fn, o_v, edge_count, mmap > 0)?;
+
+        let c_v: Vec<usize> = Vec::<usize>::new();
+        let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, c_v, edge_count, mmap > 2)?;
+
+        let n_v: Vec<usize> = Vec::<usize>::new();
+        let next = SharedSliceMut::<usize>::abst_mem_mut(n_fn, n_v, edge_count, mmap > 2)?;
+
+        let p_v: Vec<bool> = Vec::<bool>::new();
+        let processed = SharedSliceMut::<bool>::abst_mem_mut(p_fn, p_v, edge_count, mmap > 3)?;
+
+        let ic_v: Vec<bool> = Vec::<bool>::new();
+        let in_curr = SharedSliceMut::<bool>::abst_mem_mut(ic_fn, ic_v, edge_count, mmap > 3)?;
+
+        let in_v: Vec<bool> = Vec::<bool>::new();
+        let in_next = SharedSliceMut::<bool>::abst_mem_mut(in_fn, in_v, edge_count, mmap > 3)?;
+
+        let s_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
+        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(s_fn, s_v, edge_count, true)?;
+
+        Ok((edge_out, origin, curr, next, processed, in_curr, in_next, s))
+    }
+
+    pub fn pkt(&self, mmap: u8) -> Result<String, Error> {
+        let node_count = self.size() - 1;
+        let edge_count = self.width();
+        let threads = self.thread_count.max(1) as usize;
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.index.as_ptr() as *const usize,
+            node_count + 1,
+        ));
+        let graph_ptr = Arc::new(SharedSlice::<T>::new(
+            self.graph.as_ptr() as *const T,
+            edge_count,
+        ));
+
+        // Shared arrays
+        let (edge_out, origin, curr, next, processed, in_curr, in_next, s) =
+            self.init_procedural_memory_pkt(mmap)?;
+
+        // Allocate memory for thread local arrays
+        let template_fn = self.graph_cache.graph_filename.clone();
+        let thread_num: usize = self.thread_count as usize;
+        let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
+        for i in 0..thread_num {
+            let x_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(8 + i))?;
+            let x_v: Vec<usize> = Vec::<usize>::new();
+            x.push(SharedSliceMut::<usize>::abst_mem_mut(x_fn, x_v, node_count, mmap > 0)?)
+        }
+        let x = Arc::new(x);
+
+        // Thread syncronization
+        let synchronize = Arc::new(Barrier::new(thread_num));
+
+        // ParTriangle-AM4
+        thread::scope(|scope| {
+            for tid in 0..threads {
+                // eid is unnecessary as graph + index alwready do the job
+                let graph_ptr = Arc::clone(&graph_ptr);
+                let index_ptr = Arc::clone(&index_ptr);
+                let mut x = x[tid].slice;
+                let mut eo = edge_out.slice;
+                let mut s = s.slice.clone();
+                let mut origin = origin.slice;
+                let mut curr = curr.slice;
+                let mut next = next.slice;
+                let mut in_curr = in_curr.slice;
+                let mut in_next = in_next.slice;
+                let mut processed = processed.slice;
+                let synchronize = Arc::clone(&synchronize);
+                let thread_load = node_count.div_ceil(threads);
+                let begin = tid * thread_load;
+                if begin >= index_ptr.len() {
+                    break;
+                }
+                // last vertex isn't iterated hence index_ptr.len() - 2
+                let end = std::cmp::min(begin + thread_load, index_ptr.len() - 2);
+                scope.spawn(move |_| -> Result<(), Error> {
+                    // initialize s, edge_out, x, curr, next, in_curr, in_next & processed
+                    let mut edges_start = *index_ptr.get(begin);
+                    for u in begin..end {
+                        let mut eo_at_end = true;
+                        let edges_stop = *index_ptr.get(u + 1);
+                        for edge_offset in edges_start..edges_stop {
+
+                            s.get_mut(edge_offset).store(0, Ordering::Relaxed);
+                            *origin.get_mut(edge_offset) = u;
+                            *curr.get_mut(edge_offset) = 0;
+                            *next.get_mut(edge_offset) = 0;
+                            *in_curr.get_mut(edge_offset) = false;
+                            *in_next.get_mut(edge_offset) = false;
+                            *processed.get_mut(edge_offset) = false;
+
+                            let v = graph_ptr.get(edge_offset).dest();
+                            if v < u {
+
+                                *x.get_mut(v) = 0;
+
+                            } else {
+
+                                eo_at_end = false;
+                                *eo.get_mut(u) = edge_offset;
+                                *x.get_mut(v) = 0;
+                                for j in edge_offset + 1..edges_stop {
+
+                                    s.get_mut(j).store(0, Ordering::Relaxed);
+                                    *origin.get_mut(edge_offset) = u;
+                                    *curr.get_mut(j) = 0;
+                                    *next.get_mut(j) = 0;
+                                    *in_curr.get_mut(j) = false;
+                                    *in_next.get_mut(j) = false;
+                                    *processed.get_mut(j) = false;
+
+                                    let v = graph_ptr.get(j).dest();
+                                    *x.get_mut(v) = 0;
+
+                                }
+                                break;
+
+                            }
+                        }
+                        if eo_at_end {
+                            *eo.get_mut(u) = edges_stop;
+                        }
+                        edges_start = edges_stop;
+                    }
+
+                    synchronize.wait();
+
+                    edges_start = *index_ptr.get(begin);
+                    for u in begin..end {
+                        let edges_stop = *index_ptr.get(u + 1);
+                        for j in *eo.get(u)..edges_stop {
+                            *x.get_mut(graph_ptr.get(j).dest()) = j + 1;
+                        }
+                        for j in edges_start..*eo.get(u) {
+                            let v = graph_ptr.get(j).dest();
+                            for k in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
+                                let w = graph_ptr.get(k).dest();
+                                if w < u {
+                                    break;
+                                }
+
+                                let w_u = *x.get(w);
+                                if w_u > 0 {
+                                    s.get(j).fetch_add(1, Ordering::Relaxed);
+                                    s.get(k).fetch_add(1, Ordering::Relaxed);
+                                    s.get(w_u).fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+
+                        for j in *eo.get(u)..edges_stop {
+                            *x.get_mut(graph_ptr.get(j).dest()) = 0;
+                        }
+                        edges_start = edges_stop;
+                    }
+                    // println!("thred found {} triangles and {} misses", t, p);
+                    Ok(())
+                });
+            }
+        })
+        .unwrap();
+
+        let mut todo = edge_count;
+        let mut l = 0;
+        let buff_size = 4096;
+        thread::scope(|scope| {
+            for tid in 0..threads {
+                let graph_ptr = Arc::clone(&graph_ptr);
+                let index_ptr = Arc::clone(&index_ptr);
+                let s = s.slice.clone();
+                let origin = origin.slice;
+                let mut x = x[tid].slice;
+                let mut curr_slice = curr.slice;
+                let mut curr = SharedQueueMut::from_shared_slice(curr.slice);
+                let mut next_slice = next.slice;
+                let mut next = SharedQueueMut::from_shared_slice(next.slice);
+                let mut in_curr = in_curr.slice;
+                let mut in_next = in_next.slice;
+                let mut processed = processed.slice;
+                let synchronize = Arc::clone(&synchronize);
+                let thread_load = edge_count.div_ceil(threads);
+                let begin = tid * thread_load;
+                if begin >= index_ptr.len() {
+                    break;
+                }
+                // last vertex isn't iterated hence index_ptr.len() - 2
+                let end = std::cmp::min(begin + thread_load, graph_ptr.len());
+                // shared variables
+                scope.spawn(move |_| -> Result<(), Error> {
+                    while todo > 0 {
+                        // Scan
+                        let mut buff = [buff_size];
+                        let mut i = 0;
+                        for e in begin..end {
+                            if s.get(e).load(Ordering::Relaxed) == l {
+                                buff[i] = e;
+                                *in_curr.get_mut(e) = true;
+                                i += 1;
+                            }
+                            if i == buff_size {
+                                curr.push_slice(buff.as_slice());
+                                i = 0;
+                            }
+                        }
+                        if i > 0 {
+                                curr.push_slice(buff.as_slice());
+                                i = 0;
+                        }
+
+                        synchronize.wait();
+
+                        while !curr.is_empty() {
+                            todo -= curr.len();
+                            // ProcessSubLevel
+                            let thread_load = curr.len().div_ceil(threads);
+                            let begin = tid * thread_load;
+                            // last vertex isn't iterated hence index_ptr.len() - 2
+                            let end = std::cmp::min(begin + thread_load, curr.len());
+                            let to_process = match curr.slice(0, curr.len()) {
+                                Some(i) => i,
+                                None => panic!("error reading curr in pkt")
+                            };
+
+                            for e_idx in begin..end {
+                                let u_v = *to_process.get(e_idx);
+                                let u = *origin.get(u_v);
+                                let v = graph_ptr.get(u_v).dest();
+                                let edges_start = *index_ptr.get(u);
+                                let edges_stop = *index_ptr.get(u + 1);
+                                for j in edges_start..edges_stop {
+                                    *x.get_mut(graph_ptr.get(j).dest()) = j + 1;
+                                }
+                                for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
+                                    let w = graph_ptr.get(v_w).dest();
+                                    if *x.get(w) == 0 {
+                                        continue;
+                                    }
+                                    let w_u = *x.get(w);
+                                    if *processed.get(v_w) || *processed.get(w_u) {
+                                        continue;
+                                    }
+                                    if s.get(v_w).load(Ordering::Relaxed) > l && ((u_v < w_u && *in_curr.get(w_u)) || !*in_curr.get(w_u)) {
+                                        let prev_l_v_w = s.get(v_w).fetch_sub(1, Ordering::SeqCst);
+                                        if prev_l_v_w == l + 1 {
+                                            *in_next.get_mut(v_w) = true;
+                                            buff[i] = v_w;
+                                            i += 1;
+                                            if i == buff_size {
+                                                next.push_slice(buff.as_slice());
+                                                i = 0;
+                                            }
+                                        }
+                                        if prev_l_v_w <= l {
+                                            s.get(v_w).fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    }
+                                }
+
+                                for j in edges_start..edges_stop {
+                                    *x.get_mut(graph_ptr.get(j).dest()) = 0;
+                                }
+
+                            }
+                            if i > 0 {
+                                next.push_slice(buff.as_slice());
+                                i = 0;
+                            }
+                            for e_idx in begin..end {
+                                let edge = *to_process.get(e_idx);
+                                *processed.get_mut(edge) = true;
+                                *in_curr.get_mut(edge) = false;
+                            }
+
+                            synchronize.wait();
+
+                            if tid == 0 {
+                                // prepare for next iteration
+                                let aux_slice = curr_slice;
+                                let in_aux = in_curr;
+                                curr_slice = next_slice;
+                                next_slice = aux_slice;
+                                curr = next;
+                                next = SharedQueueMut::from_shared_slice(next_slice);
+                                in_curr = in_next;
+                                in_next = in_aux;
+                            }
+
+                            synchronize.wait();
+                        }
+                        curr = SharedQueueMut::from_shared_slice(curr_slice);
+                        l -= 1;
+                    }
+
+                    // Finish
+
+
+                    Ok(())
+                });
+            }
+        })
+        .unwrap();
+
+
+        cache_file_name(
+            self.graph_cache.graph_filename.clone(),
+            FileType::KTruss,
+            None,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -2171,9 +2491,9 @@ pub struct NeighbourIter<
 > {
     edge_ptr: *const T,
     _orig_edge_ptr: *const T,
-    _orig_id_ptr: *const u64,
-    id: u64,
-    pub count: u64,
+    _orig_id_ptr: *const usize,
+    id: usize,
+    pub count: usize,
     offset: usize,
     _phantom: std::marker::PhantomData<U>,
 }
@@ -2184,10 +2504,10 @@ pub struct EdgeIter<
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
 > {
     edge_ptr: *const T,
-    id_ptr: *const u64,
-    id: u64,
-    end: u64,
-    count: u64,
+    id_ptr: *const usize,
+    id: usize,
+    end: usize,
+    count: usize,
     _phantom: std::marker::PhantomData<U>,
 }
 
@@ -2196,19 +2516,19 @@ impl<
     U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
 > NeighbourIter<T, U>
 {
-    fn new(edge_mmap: *const T, id_mmap: *const u64, node_id: u64) -> Self {
+    fn new(edge_mmap: *const T, id_mmap: *const usize, node_id: usize) -> Self {
         let _orig_edge_ptr = edge_mmap;
         let _orig_id_ptr = id_mmap;
-        let id_ptr = unsafe { id_mmap.add(node_id as usize) };
+        let id_ptr = unsafe { id_mmap.add(node_id) };
         let offset = unsafe { id_ptr.read_unaligned() };
 
         NeighbourIter {
-            edge_ptr: unsafe { edge_mmap.add(offset as usize) },
+            edge_ptr: unsafe { edge_mmap.add(offset) },
             _orig_edge_ptr,
             _orig_id_ptr,
             id: node_id,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            offset: offset as usize,
+            offset,
             _phantom: std::marker::PhantomData::<U>,
         }
     }
@@ -2227,7 +2547,7 @@ impl<
         self.count -= 1;
         let next: (usize, U);
         unsafe {
-            next = (self.offset + self.count as usize, U::new(self.id, self.edge_ptr.add(self.count as usize).read_unaligned()));
+            next = (self.offset + self.count, U::new(self.id, self.edge_ptr.add(self.count).read_unaligned()));
         };
         Some(next)
     }
@@ -2260,7 +2580,7 @@ impl<
         self.count -= 1;
         let next: U;
         unsafe {
-            next = U::new(self.id, self.edge_ptr.add(self.count as usize).read_unaligned());
+            next = U::new(self.id, self.edge_ptr.add(self.count).read_unaligned());
         };
         Some(next)
     }
@@ -2290,7 +2610,7 @@ impl<
 
     #[inline(always)]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = (self.count) as usize;
+        let remaining = self.count;
         (remaining, Some(remaining))
     }
 }
@@ -2301,10 +2621,10 @@ impl<
 > EdgeIter<T, U>
 {
     #[inline(always)]
-    fn new(edge_mmap: *const T, id_mmap: *const u64, start: u64, end: u64) -> Self {
-        let id_ptr = unsafe { id_mmap.add(start as usize) };
+    fn new(edge_mmap: *const T, id_mmap: *const usize, start: usize, end: usize) -> Self {
+        let id_ptr = unsafe { id_mmap.add(start) };
         let offset = unsafe { id_ptr.read_unaligned() };
-        let edge_ptr = unsafe { edge_mmap.add(offset as usize) };
+        let edge_ptr = unsafe { edge_mmap.add(offset) };
 
         EdgeIter {
             edge_ptr,
@@ -2348,7 +2668,7 @@ impl<
 
     #[inline(always)]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = (self.end - self.id) as usize;
+        let remaining = self.end - self.id;
         (remaining, Some(remaining))
     }
 }
@@ -2379,7 +2699,7 @@ impl<
         unsafe {
             slice::from_raw_parts(
                 self.graph.as_ptr() as *const T,
-                (self.size() * 8) as usize / self.edge_size,
+                self.size() * 8 / self.edge_size,
             )
         }
     }

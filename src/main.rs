@@ -284,7 +284,7 @@ fn parse_bytes_mmaped(
         let node = line_str.split_whitespace().collect::<Vec<&str>>();
 
         let mut node = node.iter().peekable();
-        let id: u64 = node.next().unwrap().parse()?;
+        let id: usize = node.next().unwrap().parse()?;
 
         let _node_lengh = node.next(); // length
         let _node_color = node.next(); // color value

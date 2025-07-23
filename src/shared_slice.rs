@@ -181,6 +181,15 @@ impl<T> SharedSliceMut<T> {
             mmap,
         ))
     }
+    pub unsafe fn cast<U>(&self) -> Option<SharedSliceMut<U>> {
+        if std::mem::size_of::<T>() != std::mem::size_of::<U>() {
+            return None;
+        }
+        Some(SharedSliceMut {
+            ptr: self.ptr as *mut U,
+            len: self.len,
+        })
+    }
     pub fn get_mut(&mut self, idx: usize) -> &mut T {
         assert!(idx < self.len);
         unsafe { &mut *self.ptr.add(idx) }
@@ -273,6 +282,19 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
         self.len.load(Ordering::Relaxed) == 0
     }
     // FIXME: In concurrent push pops reads and writes may give undefined behaviour? push_async?
+    pub fn push_slice(&mut self, slice: &[T]) -> Option<usize> {
+        let write_idx = self.write.fetch_add(slice.len(), Ordering::SeqCst);
+        if write_idx < self.max {
+            unsafe {
+                std::ptr::copy_nonoverlapping(slice.as_ptr(), self.ptr.add(write_idx), slice.len());
+            };
+            self.len.fetch_add(slice.len(), Ordering::SeqCst);
+            Some(write_idx)
+        } else {
+            // println!("Failed to push");
+            None
+        }
+    }
     pub fn push(&mut self, el: T) -> Option<usize> {
         let write_idx = self.write.fetch_add(1, Ordering::SeqCst);
         if write_idx < self.max {
