@@ -1,4 +1,5 @@
 use memmap::{Mmap, MmapMut, MmapOptions};
+use rand::seq::IndexedRandom;
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},
@@ -15,7 +16,7 @@ pub struct SharedSlice<T> {
     len: usize,
 }
 
-pub struct _AbstractedProceduralMemory<T> {
+pub struct AbstractedProceduralMemory<T> {
     pub slice: SharedSlice<T>,
     mmap: Mmap,
     _vec: Vec<T>,
@@ -96,12 +97,12 @@ impl<T> SharedSlice<T> {
         let end = if end > self.len { self.len } else { end };
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
-    pub fn _abstract_mem(
+    pub fn abstract_mem(
         mfn: String,
         vec: Vec<T>,
         len: usize,
         mmapped: bool,
-    ) -> Result<_AbstractedProceduralMemory<T>, Error> {
+    ) -> Result<AbstractedProceduralMemory<T>, Error> {
         let file = OpenOptions::new().read(true).open(mfn)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
 
@@ -127,7 +128,7 @@ impl<T> SharedSlice<T> {
                 SharedSlice::<T>::new(vec.as_ptr(), len)
             }
         };
-        Ok(_AbstractedProceduralMemory {
+        Ok(AbstractedProceduralMemory {
             slice,
             _vec: vec,
             mmap,
@@ -284,14 +285,19 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
     // FIXME: In concurrent push pops reads and writes may give undefined behaviour? push_async?
     pub fn push_slice(&mut self, slice: &[T]) -> Option<usize> {
         let write_idx = self.write.fetch_add(slice.len(), Ordering::SeqCst);
-        if write_idx < self.max {
+        if write_idx + slice.len() < self.max {
             unsafe {
                 std::ptr::copy_nonoverlapping(slice.as_ptr(), self.ptr.add(write_idx), slice.len());
             };
             self.len.fetch_add(slice.len(), Ordering::SeqCst);
             Some(write_idx)
         } else {
-            // println!("Failed to push");
+            println!(
+                "Failed to push write_idx {} slice len {}",
+                write_idx,
+                slice.len()
+            );
+            self.write.fetch_sub(slice.len(), Ordering::SeqCst);
             None
         }
     }

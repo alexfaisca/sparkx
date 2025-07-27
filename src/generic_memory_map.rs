@@ -1,19 +1,20 @@
 use crate::node::EdgeType;
 use crate::shared_slice::{
-    AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut, SharedQueueMut,
+    AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedQueueMut, SharedSlice,
+    SharedSliceMut,
 };
 
 use bitfield::bitfield;
 use bytemuck::{Pod, Zeroable};
 use core::{fmt, panic};
-use std::sync::Barrier;
 use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use regex::Regex;
 use static_assertions::const_assert;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicUsize};
 use std::{
     any::type_name,
     collections::HashMap,
@@ -143,6 +144,8 @@ enum FileType {
     KmerSortedTmp,
     KCore,
     KTruss,
+    EdgeReciprocal,
+    EdgeOver,
 }
 
 fn cache_file_name(
@@ -198,6 +201,8 @@ fn cache_file_name(
             Some(i) => format!("{}_{}_{}.{}", "ktruss_tmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "ktruss", id, "mmap"),
         },
+        FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
+        FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
     };
 
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
@@ -1072,8 +1077,7 @@ where
                                 })
                                 .is_ok()
                             {
-                                let edge_idx =
-                                    next_edge.get(v).fetch_add(1, Ordering::Relaxed);
+                                let edge_idx = next_edge.get(v).fetch_add(1, Ordering::Relaxed);
                                 stack.push(graph.get(edge_idx).dest());
                             } else {
                                 stack.pop();
@@ -1126,10 +1130,8 @@ where
             i => i,
         };
 
-        let index_ptr = SharedSlice::<usize>::new(
-            self.graph.index.as_ptr() as *const usize,
-            self.graph.size(),
-        );
+        let index_ptr =
+            SharedSlice::<usize>::new(self.graph.index.as_ptr() as *const usize, self.graph.size());
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
             self.graph.graph.as_ptr() as *const T,
             self.graph.width(),
@@ -1209,8 +1211,7 @@ where
                                 })
                                 .is_ok()
                             {
-                                let edge_idx =
-                                    next_edge[v].fetch_add(1, Ordering::Relaxed);
+                                let edge_idx = next_edge[v].fetch_add(1, Ordering::Relaxed);
                                 stack.push(graph_ptr.get(edge_idx).dest());
                             } else {
                                 stack.pop();
@@ -1330,11 +1331,15 @@ where
         ))
     }
 
-    pub fn _edges_in_range(&self, start_node: usize, end_node: usize) -> Result<EdgeIter<T, U>, Error> {
+    pub fn _edges_in_range(
+        &self,
+        start_node: usize,
+        end_node: usize,
+    ) -> Result<EdgeIter<T, U>, Error> {
         if start_node > end_node {
             panic!("error invalid range, beginning after end");
         }
-        if start_node > self.size()|| end_node > self.size() {
+        if start_node > self.size() || end_node > self.size() {
             panic!("error invalid range");
         }
 
@@ -1355,61 +1360,60 @@ where
             loop {
                 if let Some((index, n)) = iter.next_with_offset() {
                     if index_a.is_none() {
-                        match (if switch {v} else {u}).cmp(&n.dest()) {
-                                std::cmp::Ordering::Less => { 
-                                    return None; },
-                                std::cmp::Ordering::Equal => {
-                                    if let Some(b) = index_b {
-                                        return Some((index, b));
-                                    }
-                                    index_a = Some(index);
-                                },
-                                _ => {},
-                            };
-                    } else {
-                        match (if switch {u} else {v}).cmp(&n.dest()) {
-                                std::cmp::Ordering::Less => { 
-                                    return None; },
-                                std::cmp::Ordering::Equal => {
-                                    if let Some(a) = index_a {
-                                        return Some(if switch {(index, a)} else {(a, index)});
-                                    }
+                        match (if switch { v } else { u }).cmp(&n.dest()) {
+                            std::cmp::Ordering::Less => {
+                                return None;
+                            }
+                            std::cmp::Ordering::Equal => {
+                                if let Some(b) = index_b {
+                                    return Some((index, b));
                                 }
-                                _ => {},
-                            };
-
+                                index_a = Some(index);
+                            }
+                            _ => {}
+                        };
+                    } else {
+                        match (if switch { u } else { v }).cmp(&n.dest()) {
+                            std::cmp::Ordering::Less => {
+                                return None;
+                            }
+                            std::cmp::Ordering::Equal => {
+                                if let Some(a) = index_a {
+                                    return Some(if switch { (index, a) } else { (a, index) });
+                                }
+                            }
+                            _ => {}
+                        };
                     }
                 } else {
                     return None;
                 }
                 if let Some((index, n)) = iter.next_back_with_offset() {
                     if index_b.is_none() {
-                        match (if switch {u} else {v}).cmp(&n.dest()) {
-                                std::cmp::Ordering::Greater => return None,
-                                std::cmp::Ordering::Equal => {
-                                    if let Some(a) = index_a {
-                                        return Some((a, index));
-                                    }
-                                    index_b = Some(index);
-                                },
-                                _ => {},
-                            };
-                    } else {
-                        match (if switch {v} else {u}).cmp(&n.dest()) {
-                                std::cmp::Ordering::Greater => return None,
-                                std::cmp::Ordering::Equal => {
-                                    if let Some(b) = index_b {
-                                        return Some(if switch {(b, index)} else {(index, b)});
-                                    }
+                        match (if switch { u } else { v }).cmp(&n.dest()) {
+                            std::cmp::Ordering::Greater => return None,
+                            std::cmp::Ordering::Equal => {
+                                if let Some(a) = index_a {
+                                    return Some((a, index));
                                 }
-                                _ => {},
-                            };
-
+                                index_b = Some(index);
+                            }
+                            _ => {}
+                        };
+                    } else {
+                        match (if switch { v } else { u }).cmp(&n.dest()) {
+                            std::cmp::Ordering::Greater => return None,
+                            std::cmp::Ordering::Equal => {
+                                if let Some(b) = index_b {
+                                    return Some(if switch { (b, index) } else { (index, b) });
+                                }
+                            }
+                            _ => {}
+                        };
                     }
                 } else {
                     return None;
                 }
-
             }
         }
         None
@@ -1875,9 +1879,10 @@ where
     ) -> Result<
         (
             AbstractedProceduralMemoryMut<AtomicU8>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
             AbstractedProceduralMemoryMut<(usize, usize)>,
             AbstractedProceduralMemoryMut<u8>,
-            AbstractedProceduralMemoryMut<bool>,
         ),
         Error,
     > {
@@ -1885,30 +1890,34 @@ where
 
         let template_fn = self.graph_cache.graph_filename.clone();
         let t_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(0))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
-        let r_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
+        let el_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
+        let ei_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(2))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
         let e_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
 
         let t_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, t_v, edge_count, mmap > 0)?;
 
-        let s_v: Vec<(usize, usize)> = Vec::<(usize, usize)>::new();
-        let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(s_fn, s_v, edge_count * 4, mmap > 1)?;
+        let el_v: Vec<usize> = Vec::<usize>::new();
+        let edge_list = SharedSliceMut::<usize>::abst_mem_mut(el_fn, el_v, edge_count, mmap > 1)?;
 
-        let r_v: Vec<bool> = Vec::<bool>::new();
-        let removed = SharedSliceMut::<bool>::abst_mem_mut(r_fn, r_v, edge_count, mmap > 3)?;
+        let ei_v: Vec<usize> = Vec::<usize>::new();
+        let edge_index = SharedSliceMut::<usize>::abst_mem_mut(ei_fn, ei_v, edge_count, mmap > 1)?;
+
+        let s_v: Vec<(usize, usize)> = Vec::<(usize, usize)>::new();
+        let stack =
+            SharedSliceMut::<(usize, usize)>::abst_mem_mut(s_fn, s_v, edge_count * 4, mmap > 2)?;
 
         let e_v: Vec<u8> = Vec::<u8>::new();
         let edge_trussness = SharedSliceMut::<u8>::abst_mem_mut(e_fn, e_v, edge_count, true)?;
 
-        Ok((tri_count, stack, edge_trussness, removed))
+        Ok((tri_count, edge_list, edge_index, stack, edge_trussness))
     }
 
     pub fn k_truss_decomposition(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
         let threads = self.thread_count.max(1) as usize;
-        let thread_load = node_count.div_ceil(threads);
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
             node_count + 1,
@@ -1919,16 +1928,27 @@ where
         ));
 
         // Shared atomic & simple arrays for counts and trussness
-        let (triangle_count, edge_stack, edge_trussness, edge_removed) =
+        let (triangle_count, edges, edge_index, edge_stack, edge_trussness) =
             self.init_procedural_memory_k_truss_decomposition(mmap)?;
+
+        let edge_reciprocal = self.clone().get_edge_reciprocal()?;
+        let edge_out = self.clone().get_edge_dest_id_over_source()?;
+
+        // Thread syncronization
+        let synchronize = Arc::new(Barrier::new(threads));
 
         // Algorithm 1 - adjusted for directed scheme
         thread::scope(|scope| {
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
+                let graph_ptr = Arc::clone(&graph_ptr);
                 let mut trussness = edge_trussness.slice;
                 let mut tris = triangle_count.slice.clone();
-                let mut removed = edge_removed.slice;
+                let mut edges = edges.slice;
+                let mut edge_index = edge_index.slice;
+                let eo = edge_out.slice;
+                let er = edge_reciprocal.slice;
+                let synchronize = Arc::clone(&synchronize);
                 let thread_load = node_count.div_ceil(threads);
                 let start = tid * thread_load;
                 if start >= index_ptr.len() {
@@ -1943,46 +1963,44 @@ where
                         *trussness.get_mut(idx) = 0;
                         *tris.get_mut(idx) = AtomicU8::new(0);
                     }
-                    // count triangles
-                    // let mut t = 0;
-                    // let mut p = 0;
-                    for u in start..end {
-                        let mut u_neighbours = self.neighbours(u)?;
-                        let deg_u = self._node_degree(u);
-                        while let Some ((edge_idx, edge)) = u_neighbours.next_with_offset() {
-                            *removed.get_mut(edge_idx) = false;
-                            let v = edge.dest();
-                            let deg_v = self._node_degree(v);
-                            if deg_v > deg_u || (deg_v == deg_u && u < v) {
-                                // let max_id = v_id.max(u);
-                                for w in self.neighbours(v)? {
-                                    let w = w.dest();
-                                    if w == u || w == v {continue;}
-                                    if let Some((w_u, w_v)) = self.is_triangle(u, v, w) {
-                                        // t += 1;
-                                        let triangle_edges = match (
-                                            self.is_triangle(v, w, u),
-                                            self.is_triangle(u, w, v),
-                                        ) {
-                                            (Some((u_v, u_w)), Some((v_u, v_w))) => {
-                                                [u_v, u_w, v_u, v_w, w_u, w_v]
-                                            }
-                                            _ => {
-                                                panic!("DBG reciprocal edges property broken ( u: {}, v: {}, w: {})", u, v, w)
-                                            },
-                                        };
 
-                                        for e in triangle_edges {
-                                            tris.get_mut(e).fetch_add(1, Ordering::Relaxed);
-                                        }
-                                    } else {
-                                        // p += 1;
-                                    }
+                    synchronize.wait();
+                    let mut neighbours = HashMap::<usize, usize>::new();
+                    for u in start..end {
+                        for j in *eo.get(u)..*index_ptr.get(u + 1) {
+                            let w = *graph_ptr.get(j);
+                            *edges.get_mut(j) = j;
+                            *edge_index.get_mut(j) = j;
+                            neighbours.insert(w.dest(), j);
+                        }
+                        for u_v in *index_ptr.get(u)..*eo.get(u) {
+                            *edges.get_mut(u_v) = u_v;
+                            *edge_index.get_mut(u_v) = u_v;
+                            let v = *graph_ptr.get(u_v);
+                            let v = v.dest();
+                            if u == v {
+                                continue;
+                            }
+                            for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
+                                let w = graph_ptr.get(v_w).dest();
+                                if w <= u {
+                                    break;
                                 }
+                                let w_u = match neighbours.get(&w) {
+                                    Some(i) => *i,
+                                    None => continue,
+                                };
+
+                                tris.get(u_v).fetch_add(1, Ordering::Relaxed);
+                                tris.get(v_w).fetch_add(1, Ordering::Relaxed);
+                                tris.get(w_u).fetch_add(1, Ordering::Relaxed);
+                                tris.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
+                                tris.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
+                                tris.get(*er.get(w_u)).fetch_add(1, Ordering::Relaxed);
                             }
                         }
+                        neighbours.clear();
                     }
-                    // println!("thred found {} triangles and {} misses", t, p);
                     Ok(())
                 });
             }
@@ -1994,135 +2012,81 @@ where
         // Algorithm 2 - sentinel value is 0
         // blank (u64, usize) value
         let _z = (0, usize::MAX);
-        thread::scope(|scope| {
-            let mut res = vec![];
-            for tid in 0..threads {
-                let graph_ptr = Arc::clone(&graph_ptr);
-                let index_ptr = Arc::clone(&index_ptr);
-                let mut trussness = edge_trussness.slice;
-                let mut tris = triangle_count.slice.clone();
-                let mut removed = edge_removed.slice;
-                let mut stack = stack.clone();
-                let start = tid * thread_load;
-                if start >= index_ptr.len() {
-                    break;
+        let mut edges = edges.slice;
+        let mut edge_index = edge_index.slice;
+        let mut edge_count = edge_count;
+        let er = edge_reciprocal.slice;
+        let mut trussness = edge_trussness.slice;
+        let tris = triangle_count.slice.clone();
+        let mut stack = stack.clone();
+        let mut test = vec![0u64; 16];
+        // max node degree is 16
+        for k in 1..16 {
+            if edge_count == 0 {
+                break;
+            }
+            let mut idx = 0;
+            while idx < edge_count {
+                let edge_offset = *edge_index.get(idx);
+                let t_count = tris.get(edge_offset).load(Ordering::Relaxed);
+                if t_count == k {
+                    let u = graph_ptr.get(*er.get(edge_offset)).dest();
+                    stack.push((u, edge_offset));
+                    idx += 1;
+                } else if t_count == 0 {
+                    edge_count -= 1;
+                    let e_index = *edge_index.get(edge_count);
+                    let r_index = *edges.get(edge_offset);
+                    *edge_index.get_mut(edge_count) = *edge_index.get(r_index);
+                    *edge_index.get_mut(r_index) = e_index;
+                    *edges.get_mut(edge_offset) = edge_count;
+                    *edges.get_mut(e_index) = r_index;
+                    // store edge trussness
+                    *trussness.get_mut(edge_offset) = k - 1;
+                    test[k as usize - 1] += 1;
+                    continue;
+                } else {
+                    idx += 1;
                 }
-                let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
-                res.push(scope.spawn(move |_| -> Vec<u64> {
-                    let mut test = vec![0u64; 16];
-                    //FIXME: edge list should decrease in length as edges are removed to avoid
-                    //iteration of residual edges
-                    for k in 1..16 {
-                        for u in start..end {
-                            for edge_offset in *(index_ptr.get(u))..*(index_ptr.get(u + 1)) {
-                                let t_count = tris.get(edge_offset).load(Ordering::Relaxed);
-                                if t_count == k - 1 {
-                                    if edge_offset > *index_ptr.get(u + 1) || 
-                                        edge_offset < *index_ptr.get(u) {
-                                        panic!("impossible edge in init section {} @ {}", edge_offset, u);
-                                    }
-                                    stack.push((u, edge_offset));
-                                }
-                                if t_count == 0 {
-                                    *removed.get_mut(edge_offset) = true;
-                                }
-                            }
+            }
+            let mut neighbours = HashMap::<usize, usize>::new();
+            while let Some((u, offset)) = stack.pop() {
+                tris.get(offset).store(0, Ordering::Relaxed);
+                let v = graph_ptr.get(offset).dest();
+                for u_w in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                    let w = graph_ptr.get(u_w).dest();
+                    if w != u && w != v {
+                        neighbours.insert(w, u_w);
+                    }
+                }
+                for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
+                    let w = graph_ptr.get(v_w).dest();
+                    if w == v {
+                        continue;
+                    }
+                    let u_w = match neighbours.get(&w) {
+                        Some(i) => *i,
+                        None => continue,
+                    };
+
+                    let w_u = *er.get(u_w);
+                    if tris.get(v_w).load(Ordering::Relaxed) != 0
+                        && tris.get(w_u).load(Ordering::Relaxed) != 0
+                    {
+                        let prev_w_u = tris.get(w_u).fetch_sub(1, Ordering::Relaxed);
+                        let prev_v_w = tris.get(v_w).fetch_sub(1, Ordering::Relaxed);
+                        if prev_w_u == k + 1 {
+                            stack.push((w, w_u));
                         }
-                        while let Some((u, offset)) = stack.pop() {
-                            // FIXME: Possible data race in stack read write
-                            if offset > *index_ptr.get(u + 1) || 
-                                offset < *index_ptr.get(u) {
-                                panic!("impossible edge in pop section {} @ {} < {} - {} >", offset, u, *index_ptr.get(u), *index_ptr.get(u + 1));
-                            }
-                            // FIXME: is this line messing up multithreded?
-                            if *removed.get(offset) {
-                                *trussness.get_mut(offset) = k - 1;
-                                test[(k - 1) as usize] += 1;
-                                continue;
-                            } else {
-                                *removed.get_mut(offset) = true;
-                            }
-
-                            let v = graph_ptr.get(offset).dest();
-                            let v_n = match self.neighbours(v) {
-                                Ok(i) => i,
-                                Err(e) => panic!("error getting neighbour iter for {}: {}", v, e),
-                            };
-                            for edge in v_n {
-                                let w = edge.dest();
-                                if w == edge.orig() || w == u {continue;}
-                                if let Some((w_u, _)) = self.is_triangle(u, v, w) {
-                                    // FIXME: Can only one of the triangles be residual?
-                                    let tri_edges: [(usize, usize); 3] = match (
-                                        self.is_triangle(v, w, u),
-                                        self.is_triangle(u, w, v),
-                                    ) {
-                                        (Some((u_v, _)), Some((_, v_w))) => {
-                                            let mut arr = [(u, u_v), (v, v_w),(w, w_u)];
-                                            arr.sort_unstable_by_key(|(node, _)| *node);
-                                            arr
-                                        },
-                                        _ => {
-                                            panic!("DBG reciprocal edge property broken (u: {} v: {} w: {}, w_u: {})", u, v, w, w_u);
-                                        }
-                                    };
-                                    for (_, offset) in tri_edges {
-                                        if tris.get_mut(offset).load(Ordering::Relaxed) == 0 {
-                                            continue;
-                                        }
-                                    }
-
-                                    for (orig, offset) in tri_edges {
-                                        if orig == _z.0 && offset == _z.1 {
-                                            break;
-                                        }
-                                        if tris.get_mut(offset).fetch_update(
-                                                Ordering::SeqCst,
-                                                Ordering::SeqCst,
-                                                |t| 
-                                                {
-                                                    if t == k {
-                                                        stack.push((orig, offset));
-                                                    }
-                                                    match t.cmp(&1) {
-                                                        std::cmp::Ordering::Greater => Some(t - 1),
-                                                        std::cmp::Ordering::Equal => {
-                                                            *removed.get_mut(offset) = true;
-                                                            Some(t - 1)
-                                                        }
-                                                        std::cmp::Ordering::Less => None,
-                                                    }
-                                                }
-                                            ).is_err()
-                                        {
-                                            // FIXME: abort
-                                        }
-                                    }
-                                }
-                                if tris.get(offset).load(Ordering::SeqCst) == 0 {
-                                    break;
-                                }
-                            }
-                            *trussness.get_mut(offset) = k - 1;
-                            test[(k - 1) as usize] += 1;
+                        if prev_v_w == k + 1 {
+                            stack.push((v, v_w));
                         }
                     }
-                    test
-                }));
-            }
-            let joined_res: Vec<Vec<u64>> = res
-                .into_iter()
-                .map(|v| v.join().expect("error thread panicked"))
-                .collect();
-            let mut r = vec![0u64; 16];
-            for i in 0..16 {
-                for v in joined_res.clone() {
-                    r[i] += v[i];
                 }
+                neighbours.clear();
             }
-            println!("k-trussness {:?}", r);
-        })
-        .unwrap();
+        }
+        println!("k-trussness {:?}", test);
         edge_trussness.flush()?;
 
         cache_file_name(
@@ -2132,19 +2096,12 @@ where
         )
     }
 
-    fn init_procedural_memory_pkt(
+    fn init_procedural_memory_build_reciprocal(
         &self,
-        mmap: u8,
     ) -> Result<
         (
             AbstractedProceduralMemoryMut<usize>,
             AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<bool>,
-            AbstractedProceduralMemoryMut<bool>,
-            AbstractedProceduralMemoryMut<bool>,
-            AbstractedProceduralMemoryMut<AtomicU8>,
         ),
         Error,
     > {
@@ -2152,20 +2109,187 @@ where
         let node_count = self.size() - 1;
 
         let template_fn = self.graph_cache.graph_filename.clone();
-        let eo_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
-        let o_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(2))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
-        let n_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(4))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(5))?;
-        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(6))?;
-        let in_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(7))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
+        let er_fn = cache_file_name(template_fn.clone(), FileType::EdgeReciprocal, None)?;
+        let eo_fn = cache_file_name(template_fn.clone(), FileType::EdgeOver, None)?;
+
+        let er_v: Vec<usize> = Vec::<usize>::new();
+        let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(er_fn, er_v, edge_count, true)?;
 
         let eo_v: Vec<usize> = Vec::<usize>::new();
-        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, eo_v, node_count, mmap > 2)?;
+        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, eo_v, node_count, true)?;
 
-        let o_v: Vec<usize> = Vec::<usize>::new();
-        let origin = SharedSliceMut::<usize>::abst_mem_mut(o_fn, o_v, edge_count, mmap > 0)?;
+        Ok((edge_reciprocal, edge_out))
+    }
+
+    fn build_reciprocal_edge_index(
+        self,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
+        ),
+        Error,
+    > {
+        let node_count = self.size() - 1;
+        let edge_count = self.width();
+        let threads = self.thread_count.max(1) as usize;
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.index.as_ptr() as *const usize,
+            node_count + 1,
+        ));
+        let graph_ptr = Arc::new(SharedSlice::<T>::new(
+            self.graph.as_ptr() as *const T,
+            edge_count,
+        ));
+        let (er, eo) = self.init_procedural_memory_build_reciprocal()?;
+        let synchronize = Arc::new(Barrier::new(threads));
+        thread::scope(|scope| {
+            for tid in 0..threads {
+                let graph_ptr = Arc::clone(&graph_ptr);
+                let index_ptr = Arc::clone(&index_ptr);
+                let mut er = er.slice;
+                let mut eo = eo.slice;
+                let synchronize = Arc::clone(&synchronize);
+                let thread_load = node_count.div_ceil(threads);
+                let begin = tid * thread_load;
+                if begin >= index_ptr.len() {
+                    break;
+                }
+                let end = std::cmp::min(begin + thread_load, index_ptr.len() - 1);
+                scope.spawn(move |_| -> Result<(), Error> {
+                    let mut edges_start = *index_ptr.get(begin);
+                    for u in begin..end {
+                        let mut eo_at_end = true;
+                        let edges_stop = *index_ptr.get(u + 1);
+                        for edge_offset in edges_start..edges_stop {
+                            let v = graph_ptr.get(edge_offset).dest();
+                            if v > u {
+                                eo_at_end = false;
+                                *eo.get_mut(u) = edge_offset;
+                                break;
+                            }
+                            // FIXME: add section u == v to update edge_reciprocal array?
+                        }
+                        if eo_at_end {
+                            *eo.get_mut(u) = edges_stop;
+                        }
+                        edges_start = edges_stop;
+                    }
+
+                    synchronize.wait();
+
+                    for u in begin..end {
+                        for edge_offset in *eo.get(u)..*index_ptr.get(u + 1) {
+                            let v = graph_ptr.get(edge_offset).dest();
+                            let mut floor = *index_ptr.get(v);
+                            let mut ceil = *eo.get(v);
+                            // binary search on neighbours w, where w < v
+                            let reciprocal = loop {
+                                if floor > ceil {
+                                    panic!("error couldn't find reciprocal for edge {}, u: ({}) -> v: ({})", edge_offset, u, v);
+                                }
+                                let m = floor + (ceil - floor).div_floor(2);
+                                let dest = graph_ptr.get(m).dest();
+                                match dest.cmp(&u) {
+                                    std::cmp::Ordering::Greater => ceil = m - 1,
+                                    std::cmp::Ordering::Less => floor = m + 1,
+                                    _ => break m,
+                                }
+                            };
+                            *er.get_mut(edge_offset) = reciprocal;
+                            *er.get_mut(reciprocal) = edge_offset;
+                        }
+                    }
+
+                    Ok(())
+                });
+            }
+        })
+        .unwrap();
+        er.flush()?;
+        eo.flush()?;
+        Ok((er, eo))
+    }
+
+    fn get_edge_reciprocal(&self) -> Result<AbstractedProceduralMemory<usize>, Error> {
+        let fn_template = self.graph_cache.graph_filename.clone();
+        let er_fn = cache_file_name(fn_template.clone(), FileType::EdgeReciprocal, None)?;
+        let dud = Vec::new();
+        let er = match OpenOptions::new().read(true).open(er_fn.as_str()) {
+            Ok(i) => SharedSlice::<usize>::abstract_mem(
+                er_fn,
+                dud,
+                i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
+                true,
+            ),
+            Err(_) => {
+                self.clone().build_reciprocal_edge_index()?;
+                match OpenOptions::new().read(true).open(er_fn.as_str()) {
+                    Ok(i) => SharedSlice::<usize>::abstract_mem(
+                        er_fn,
+                        dud,
+                        i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
+                        true,
+                    ),
+                    Err(e) => panic!("error creating abstractmemory for edge_reciprocal {}", e),
+                }
+            }
+        };
+
+        er
+    }
+
+    fn get_edge_dest_id_over_source(&self) -> Result<AbstractedProceduralMemory<usize>, Error> {
+        let fn_template = self.graph_cache.graph_filename.clone();
+        let eo_fn = cache_file_name(fn_template.clone(), FileType::EdgeOver, None)?;
+        let dud = Vec::new();
+        let eo = match OpenOptions::new().read(true).open(eo_fn.as_str()) {
+            Ok(i) => SharedSlice::<usize>::abstract_mem(
+                eo_fn,
+                dud,
+                i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
+                true,
+            ),
+            Err(_) => {
+                self.clone().build_reciprocal_edge_index()?;
+                match OpenOptions::new().read(true).open(eo_fn.as_str()) {
+                    Ok(i) => SharedSlice::<usize>::abstract_mem(
+                        eo_fn,
+                        dud,
+                        i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
+                        true,
+                    ),
+                    Err(e) => panic!("error creating abstractmemory for edge_over {}", e),
+                }
+            }
+        };
+
+        eo
+    }
+
+    fn init_procedural_memory_pkt(
+        &self,
+        mmap: u8,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<bool>,
+            AbstractedProceduralMemoryMut<bool>,
+            AbstractedProceduralMemoryMut<bool>,
+            AbstractedProceduralMemoryMut<AtomicI8>,
+        ),
+        Error,
+    > {
+        let edge_count = self.width();
+
+        let template_fn = self.graph_cache.graph_filename.clone();
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(2))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
+        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(4))?;
+        let in_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(5))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
 
         let c_v: Vec<usize> = Vec::<usize>::new();
         let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, c_v, edge_count, mmap > 2)?;
@@ -2182,10 +2306,10 @@ where
         let in_v: Vec<bool> = Vec::<bool>::new();
         let in_next = SharedSliceMut::<bool>::abst_mem_mut(in_fn, in_v, edge_count, mmap > 3)?;
 
-        let s_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
-        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(s_fn, s_v, edge_count, true)?;
+        let s_v: Vec<AtomicI8> = Vec::<AtomicI8>::new();
+        let s = SharedSliceMut::<AtomicI8>::abst_mem_mut(s_fn, s_v, edge_count, true)?;
 
-        Ok((edge_out, origin, curr, next, processed, in_curr, in_next, s))
+        Ok((curr, next, processed, in_curr, in_next, s))
     }
 
     pub fn pkt(&self, mmap: u8) -> Result<String, Error> {
@@ -2202,8 +2326,9 @@ where
         ));
 
         // Shared arrays
-        let (edge_out, origin, curr, next, processed, in_curr, in_next, s) =
-            self.init_procedural_memory_pkt(mmap)?;
+        let (curr, next, processed, in_curr, in_next, s) = self.init_procedural_memory_pkt(mmap)?;
+        let edge_reciprocal = self.clone().get_edge_reciprocal()?;
+        let edge_out = self.clone().get_edge_dest_id_over_source()?;
 
         // Allocate memory for thread local arrays
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -2212,7 +2337,12 @@ where
         for i in 0..thread_num {
             let x_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(8 + i))?;
             let x_v: Vec<usize> = Vec::<usize>::new();
-            x.push(SharedSliceMut::<usize>::abst_mem_mut(x_fn, x_v, node_count, mmap > 0)?)
+            x.push(SharedSliceMut::<usize>::abst_mem_mut(
+                x_fn,
+                x_v,
+                node_count,
+                mmap > 0,
+            )?)
         }
         let x = Arc::new(x);
 
@@ -2226,101 +2356,71 @@ where
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let index_ptr = Arc::clone(&index_ptr);
                 let mut x = x[tid].slice;
-                let mut eo = edge_out.slice;
+                let eo = edge_out.slice;
                 let mut s = s.slice.clone();
-                let mut origin = origin.slice;
+                let er = edge_reciprocal.slice;
                 let mut curr = curr.slice;
                 let mut next = next.slice;
                 let mut in_curr = in_curr.slice;
                 let mut in_next = in_next.slice;
                 let mut processed = processed.slice;
                 let synchronize = Arc::clone(&synchronize);
-                let thread_load = node_count.div_ceil(threads);
-                let begin = tid * thread_load;
-                if begin >= index_ptr.len() {
-                    break;
-                }
-                // last vertex isn't iterated hence index_ptr.len() - 2
-                let end = std::cmp::min(begin + thread_load, index_ptr.len() - 2);
                 scope.spawn(move |_| -> Result<(), Error> {
                     // initialize s, edge_out, x, curr, next, in_curr, in_next & processed
-                    let mut edges_start = *index_ptr.get(begin);
-                    for u in begin..end {
-                        let mut eo_at_end = true;
-                        let edges_stop = *index_ptr.get(u + 1);
-                        for edge_offset in edges_start..edges_stop {
-
-                            s.get_mut(edge_offset).store(0, Ordering::Relaxed);
-                            *origin.get_mut(edge_offset) = u;
-                            *curr.get_mut(edge_offset) = 0;
-                            *next.get_mut(edge_offset) = 0;
-                            *in_curr.get_mut(edge_offset) = false;
-                            *in_next.get_mut(edge_offset) = false;
-                            *processed.get_mut(edge_offset) = false;
-
-                            let v = graph_ptr.get(edge_offset).dest();
-                            if v < u {
-
-                                *x.get_mut(v) = 0;
-
-                            } else {
-
-                                eo_at_end = false;
-                                *eo.get_mut(u) = edge_offset;
-                                *x.get_mut(v) = 0;
-                                for j in edge_offset + 1..edges_stop {
-
-                                    s.get_mut(j).store(0, Ordering::Relaxed);
-                                    *origin.get_mut(edge_offset) = u;
-                                    *curr.get_mut(j) = 0;
-                                    *next.get_mut(j) = 0;
-                                    *in_curr.get_mut(j) = false;
-                                    *in_next.get_mut(j) = false;
-                                    *processed.get_mut(j) = false;
-
-                                    let v = graph_ptr.get(j).dest();
-                                    *x.get_mut(v) = 0;
-
-                                }
-                                break;
-
-                            }
-                        }
-                        if eo_at_end {
-                            *eo.get_mut(u) = edges_stop;
-                        }
-                        edges_start = edges_stop;
+                    let init_thread_load = node_count.div_ceil(threads);
+                    let init_begin = tid * init_thread_load;
+                    let init_end =
+                        std::cmp::min(init_begin + init_thread_load, graph_ptr.len() - 1);
+                    let thread_load = node_count.div_ceil(threads);
+                    let begin = tid * thread_load;
+                    // last vertex isn't iterated hence index_ptr.len() - 2
+                    let end = std::cmp::min(begin + thread_load, index_ptr.len() - 2);
+                    for edge_offset in init_begin..init_end {
+                        *s.get_mut(edge_offset) = AtomicI8::new(0);
+                        *curr.get_mut(edge_offset) = 0;
+                        *next.get_mut(edge_offset) = 0;
+                        *in_curr.get_mut(edge_offset) = false;
+                        *in_next.get_mut(edge_offset) = false;
+                        *processed.get_mut(edge_offset) = false;
+                        *x.get_mut(graph_ptr.get(edge_offset).dest()) = 0;
                     }
 
                     synchronize.wait();
 
-                    edges_start = *index_ptr.get(begin);
                     for u in begin..end {
                         let edges_stop = *index_ptr.get(u + 1);
-                        for j in *eo.get(u)..edges_stop {
+                        let eo_u = *eo.get(u);
+                        for j in eo_u..edges_stop {
                             *x.get_mut(graph_ptr.get(j).dest()) = j + 1;
                         }
-                        for j in edges_start..*eo.get(u) {
-                            let v = graph_ptr.get(j).dest();
-                            for k in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
-                                let w = graph_ptr.get(k).dest();
-                                if w < u {
+                        for u_v in *index_ptr.get(u)..eo_u {
+                            let v = graph_ptr.get(u_v).dest();
+                            if v == u {
+                                break;
+                            }
+                            for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
+                                let w = graph_ptr.get(v_w).dest();
+                                if w <= u {
                                     break;
                                 }
 
-                                let w_u = *x.get(w);
-                                if w_u > 0 {
-                                    s.get(j).fetch_add(1, Ordering::Relaxed);
-                                    s.get(k).fetch_add(1, Ordering::Relaxed);
-                                    s.get(w_u).fetch_add(1, Ordering::Relaxed);
-                                }
+                                let w_u = match x.get(w).cmp(&0) {
+                                    std::cmp::Ordering::Equal => continue,
+                                    _ => *x.get(w) - 1,
+                                };
+
+                                s.get(u_v).fetch_add(1, Ordering::Relaxed);
+                                s.get(v_w).fetch_add(1, Ordering::Relaxed);
+                                s.get(w_u).fetch_add(1, Ordering::Relaxed);
+                                s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
+                                s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
+                                s.get(*er.get(w_u)).fetch_add(1, Ordering::Relaxed);
                             }
                         }
 
-                        for j in *eo.get(u)..edges_stop {
+                        for j in eo_u..edges_stop {
                             *x.get_mut(graph_ptr.get(j).dest()) = 0;
                         }
-                        edges_start = edges_stop;
                     }
                     // println!("thred found {} triangles and {} misses", t, p);
                     Ok(())
@@ -2329,15 +2429,17 @@ where
         })
         .unwrap();
 
-        let mut todo = edge_count;
-        let mut l = 0;
+        let mut l: i8 = 1;
         let buff_size = 4096;
+        let total_duds = Arc::new(AtomicUsize::new(0));
+
         thread::scope(|scope| {
+            let mut res = Vec::new();
             for tid in 0..threads {
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let index_ptr = Arc::clone(&index_ptr);
                 let s = s.slice.clone();
-                let origin = origin.slice;
+                let er = edge_reciprocal.slice;
                 let mut x = x[tid].slice;
                 let mut curr_slice = curr.slice;
                 let mut curr = SharedQueueMut::from_shared_slice(curr.slice);
@@ -2346,129 +2448,230 @@ where
                 let mut in_curr = in_curr.slice;
                 let mut in_next = in_next.slice;
                 let mut processed = processed.slice;
+                let total_duds = Arc::clone(&total_duds);
                 let synchronize = Arc::clone(&synchronize);
+                let mut todo = edge_count as i128;
                 let thread_load = edge_count.div_ceil(threads);
                 let begin = tid * thread_load;
                 if begin >= index_ptr.len() {
                     break;
                 }
-                // last vertex isn't iterated hence index_ptr.len() - 2
                 let end = std::cmp::min(begin + thread_load, graph_ptr.len());
                 // shared variables
-                scope.spawn(move |_| -> Result<(), Error> {
+                res.push(scope.spawn(move |_| -> Result<Vec<u64>, Error> {
+                    let mut res = vec![0_u64; 20];
+                    let mut buff = vec![0; buff_size];
+                    let mut i = 0;
+                    for e in begin..end {
+                        if s.get(e).load(Ordering::Relaxed) == 0 {
+                            *processed.get_mut(e) = true;
+                            i += 1;
+                        }
+                    }
+                    total_duds.fetch_add(i, Ordering::SeqCst);
+                    i = 0;
+                    synchronize.wait();
+                    // println!("skipped {}", total_duds.load(Ordering::Relaxed));
+                    todo -= total_duds.load(Ordering::Relaxed) as i128;
+
                     while todo > 0 {
+                        // println!("remaining {}", todo);
                         // Scan
-                        let mut buff = [buff_size];
-                        let mut i = 0;
                         for e in begin..end {
                             if s.get(e).load(Ordering::Relaxed) == l {
                                 buff[i] = e;
                                 *in_curr.get_mut(e) = true;
                                 i += 1;
                             }
+                            // else if s.get(e).load(Ordering::Relaxed) > 2 {
+                            //     println!(
+                            //         "for e: {} it isn't curr_l: {} l: {}",
+                            //         e,
+                            //         l,
+                            //         s.get(e).load(Ordering::Relaxed)
+                            //     );
+                            // }
                             if i == buff_size {
                                 curr.push_slice(buff.as_slice());
                                 i = 0;
                             }
                         }
                         if i > 0 {
-                                curr.push_slice(buff.as_slice());
-                                i = 0;
+                            curr.push_slice(&buff[0..i]);
+                            i = 0;
                         }
-
                         synchronize.wait();
 
-                        while !curr.is_empty() {
-                            todo -= curr.len();
+                        let mut to_process = match curr.slice(0, curr.len()) {
+                            Some(i) => i,
+                            None => panic!("error reading curr in pkt"),
+                        };
+                        while to_process.len() != 0 {
+                            todo -= to_process.len() as i128;
                             // ProcessSubLevel
                             let thread_load = curr.len().div_ceil(threads);
                             let begin = tid * thread_load;
-                            // last vertex isn't iterated hence index_ptr.len() - 2
                             let end = std::cmp::min(begin + thread_load, curr.len());
-                            let to_process = match curr.slice(0, curr.len()) {
-                                Some(i) => i,
-                                None => panic!("error reading curr in pkt")
-                            };
 
                             for e_idx in begin..end {
                                 let u_v = *to_process.get(e_idx);
-                                let u = *origin.get(u_v);
+
+                                let u = graph_ptr.get(*er.get(u_v)).dest();
                                 let v = graph_ptr.get(u_v).dest();
+
                                 let edges_start = *index_ptr.get(u);
                                 let edges_stop = *index_ptr.get(u + 1);
+
+                                // mark u neighbours
                                 for j in edges_start..edges_stop {
-                                    *x.get_mut(graph_ptr.get(j).dest()) = j + 1;
+                                    let w = graph_ptr.get(j).dest();
+                                    if w != u {
+                                        *x.get_mut(w) = *er.get(j) + 1;
+                                    }
                                 }
+
                                 for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
                                     let w = graph_ptr.get(v_w).dest();
                                     if *x.get(w) == 0 {
                                         continue;
                                     }
-                                    let w_u = *x.get(w);
+                                    let w_u = *x.get(w) - 1;
                                     if *processed.get(v_w) || *processed.get(w_u) {
                                         continue;
                                     }
-                                    if s.get(v_w).load(Ordering::Relaxed) > l && ((u_v < w_u && *in_curr.get(w_u)) || !*in_curr.get(w_u)) {
+
+                                    // if l > 2 {
+                                    //     println!("u {} v {} w {}", u, v, w);
+                                    // }
+
+                                    if s.get(v_w).load(Ordering::Relaxed) > l
+                                        && s.get(w_u).load(Ordering::Relaxed) > l
+                                    {
                                         let prev_l_v_w = s.get(v_w).fetch_sub(1, Ordering::SeqCst);
                                         if prev_l_v_w == l + 1 {
                                             *in_next.get_mut(v_w) = true;
                                             buff[i] = v_w;
                                             i += 1;
                                             if i == buff_size {
-                                                next.push_slice(buff.as_slice());
+                                                next.push_slice(&buff[..]);
                                                 i = 0;
                                             }
                                         }
                                         if prev_l_v_w <= l {
                                             s.get(v_w).fetch_add(1, Ordering::SeqCst);
                                         }
+                                        let prev_l_w_u = s.get(w_u).fetch_sub(1, Ordering::SeqCst);
+                                        if prev_l_w_u == l + 1 {
+                                            *in_next.get_mut(w_u) = true;
+                                            buff[i] = w_u;
+                                            i += 1;
+                                            if i == buff_size {
+                                                next.push_slice(&buff[..]);
+                                                i = 0;
+                                            }
+                                        }
+                                        if prev_l_w_u <= l {
+                                            s.get(w_u).fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    } else if s.get(v_w).load(Ordering::Relaxed) > l
+                                        && ((u_v < w_u && *in_curr.get(w_u)) || !*in_curr.get(w_u))
+                                    {
+                                        let prev_l_v_w = s.get(v_w).fetch_sub(1, Ordering::SeqCst);
+                                        if prev_l_v_w == l + 1 {
+                                            *in_next.get_mut(v_w) = true;
+                                            buff[i] = v_w;
+                                            i += 1;
+                                            if i == buff_size {
+                                                next.push_slice(&buff[..]);
+                                                i = 0;
+                                            }
+                                        }
+                                        if prev_l_v_w <= l {
+                                            s.get(v_w).fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    } else if s.get(w_u).load(Ordering::Relaxed) > l
+                                        && ((u_v < v_w && *in_curr.get(v_w)) || !*in_curr.get(v_w))
+                                    {
+                                        let prev_l_w_u = s.get(w_u).fetch_sub(1, Ordering::SeqCst);
+                                        if prev_l_w_u == l + 1 {
+                                            *in_next.get_mut(w_u) = true;
+                                            buff[i] = w_u;
+                                            i += 1;
+                                            if i == buff_size {
+                                                next.push_slice(&buff[..]);
+                                                i = 0;
+                                            }
+                                        }
+                                        if prev_l_w_u <= l {
+                                            s.get(w_u).fetch_add(1, Ordering::SeqCst);
+                                        }
                                     }
                                 }
 
+                                // unmark u neighbours
                                 for j in edges_start..edges_stop {
                                     *x.get_mut(graph_ptr.get(j).dest()) = 0;
                                 }
-
                             }
                             if i > 0 {
-                                next.push_slice(buff.as_slice());
+                                next.push_slice(&buff[0..i]);
                                 i = 0;
                             }
                             for e_idx in begin..end {
                                 let edge = *to_process.get(e_idx);
                                 *processed.get_mut(edge) = true;
-                                *in_curr.get_mut(edge) = false;
+                                *in_curr.get_mut(edge) = false; // FIXME: this can be removed?
+                            }
+                            // println
+                            for _e in begin..end {
+                                res[l as usize] += 1;
                             }
 
                             synchronize.wait();
 
-                            if tid == 0 {
-                                // prepare for next iteration
-                                let aux_slice = curr_slice;
-                                let in_aux = in_curr;
-                                curr_slice = next_slice;
-                                next_slice = aux_slice;
-                                curr = next;
-                                next = SharedQueueMut::from_shared_slice(next_slice);
-                                in_curr = in_next;
-                                in_next = in_aux;
-                            }
+                            // prepare for next iteration
+                            let aux_slice = curr_slice;
+                            let in_aux = in_curr;
+                            curr_slice = next_slice;
+                            next_slice = aux_slice;
+                            curr = next;
+                            next = SharedQueueMut::from_shared_slice(next_slice);
+                            in_curr = in_next;
+                            in_next = in_aux;
+
+                            to_process = match curr.slice(0, curr.len()) {
+                                Some(i) => i,
+                                None => panic!("error couldn't get new to_process vec"),
+                            };
 
                             synchronize.wait();
                         }
                         curr = SharedQueueMut::from_shared_slice(curr_slice);
-                        l -= 1;
+                        l += 1;
                     }
 
-                    // Finish
+                    // FIXME: Finish by storing k-truss values
+                    let thread_load = edge_count.div_ceil(threads);
+                    let begin = tid * thread_load;
+                    // last vertex isn't iterated hence index_ptr.len() - 2
+                    let _end = std::cmp::min(begin + thread_load, curr.len());
 
-
-                    Ok(())
-                });
+                    Ok(res)
+                }));
             }
+            let joined_res: Vec<Vec<u64>> = res
+                .into_iter()
+                .map(|v| v.join().expect("error thread panicked").expect("error1"))
+                .collect();
+            let mut r = vec![0u64; 16];
+            for i in 0..16 {
+                for v in joined_res.clone() {
+                    r[i] += v[i];
+                }
+            }
+            println!("k-trussness {:?}", r);
         })
         .unwrap();
-
 
         cache_file_name(
             self.graph_cache.graph_filename.clone(),
@@ -2547,7 +2750,10 @@ impl<
         self.count -= 1;
         let next: (usize, U);
         unsafe {
-            next = (self.offset + self.count, U::new(self.id, self.edge_ptr.add(self.count).read_unaligned()));
+            next = (
+                self.offset + self.count,
+                U::new(self.id, self.edge_ptr.add(self.count).read_unaligned()),
+            );
         };
         Some(next)
     }
@@ -2880,6 +3086,8 @@ impl fmt::Display for FileType {
             FileType::KmerSortedTmp => "KmerSortedTmp",
             FileType::KCore => "KCore",
             FileType::KTruss => "KTruss",
+            FileType::EdgeReciprocal => "EdgeReciprocal",
+            FileType::EdgeOver => "EdgeOver",
         };
         write!(f, "{}", s)
     }

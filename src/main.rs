@@ -1,3 +1,4 @@
+#![feature(int_roundings)]
 mod abstract_graph;
 mod generic_memory_map;
 mod node;
@@ -346,7 +347,8 @@ fn parse_bytes_mmaped(
     let euler_trail = EulerTrail::new(graph_mmaped.clone())?;
     euler_trail.find_eulerian_cycle(2)?;
     graph_mmaped.compute_k_core_liu_et_al(5)?;
-    graph_mmaped.k_truss_decomposition(5)?;
+    graph_mmaped.pkt(7)?;
+    graph_mmaped.k_truss_decomposition(7)?;
     Ok(graph_mmaped)
 }
 
