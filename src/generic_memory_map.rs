@@ -1613,7 +1613,6 @@ where
         let out_slice = out;
         let core = Arc::new(core);
 
-        // parallel edge labeling: partition vertices among threads and write edge core values
         thread::scope(|scope| {
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
@@ -1668,7 +1667,7 @@ where
         let template_fn = self.graph_cache.graph_filename.clone();
         let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
         let ni_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(5))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
+        let a_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
         let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
         let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
         let fs_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(4))?;
@@ -1679,11 +1678,11 @@ where
         let ni_v: Vec<usize> = Vec::<usize>::new();
         let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, ni_v, node_count, mmap > 3)?;
 
-        let p_v: Vec<AtomicBool> = Vec::<AtomicBool>::new();
-        let peeled = SharedSliceMut::<AtomicBool>::abst_mem_mut(p_fn, p_v, node_count, mmap > 1)?;
+        let a_v: Vec<AtomicBool> = Vec::<AtomicBool>::new();
+        let alive = SharedSliceMut::<AtomicBool>::abst_mem_mut(a_fn, a_v, node_count, mmap > 1)?;
 
         let c_v: Vec<u8> = Vec::<u8>::new();
-        let core = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
+        let coreness = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
 
         let f_v: Vec<usize> = Vec::<usize>::new();
         let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, f_v, edge_count, mmap > 3)?;
@@ -1692,48 +1691,89 @@ where
         let frontier_swap =
             SharedSliceMut::<usize>::abst_mem_mut(fs_fn, fs_v, edge_count, mmap > 3)?;
 
-        Ok((degree, node_index, peeled, core, frontier, frontier_swap))
+        Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
     }
 
     pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
+
         if node_count == 0 {
             return Err(Error::new(
                 std::io::ErrorKind::Other,
                 "Graph has no vertices",
             ));
         }
+
+        let threads = self.thread_count.max(1) as usize;
+        let thread_load = node_count.div_ceil(threads);
+
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
+
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
             self.graph.as_ptr() as *const T,
             edge_count,
         ));
 
-        let (mut degree, _node_index, mut peeled, core, frontier, swap) =
+        let (degree, _node_index, alive, coreness, frontier, swap) =
             self.init_procedural_memory_liu_et_al(mmap)?;
-        for u in 0..node_count {
-            let d = (index_ptr.get(u + 1) - index_ptr.get(u)) as u8;
-            degree.get_mut(u).store(d, Ordering::Relaxed);
-            peeled.get_mut(u).store(false, Ordering::Relaxed);
-        }
+
+        // Initialize
+        thread::scope(|s| {
+            for tid in 0..threads {
+                let start = tid * thread_load;
+                let end = std::cmp::min(start + thread_load, node_count);
+                let index_ptr = &index_ptr;
+                // Clone references as atomics don't implement COpy trait
+                let mut degree = degree.slice.clone();
+                let mut alive = alive.slice.clone();
+                // let mut coreness = coreness.slice;
+                s.spawn(move |_| {
+                    for u in start..end {
+                        *degree.get_mut(u) =
+                            AtomicU8::new((index_ptr.get(u + 1) - index_ptr.get(u)) as u8);
+                        *alive.get_mut(u) = AtomicBool::new(true);
+                    }
+                });
+            }
+            let _ = degree._flush_async();
+            let _ = alive._flush_async();
+        })
+        .unwrap();
+
+        // ditch node sampling as graphs are inherintely sparse
+        // use veertical granularity control:
+        // When peeling a low-degree vertex 𝑣, we
+        // place all its active neighbors in a FIFO queue, referred to as the local
+        // queue of 𝑣, and process all vertices in the local queue sequentially.
+        // When we decrementing the induced degree of a neighbor 𝑢, if 𝑑˜ [𝑢]
+        // drops to 𝑘 (line 6 in Alg. 3), instead of adding 𝑢 to Fnext , we add 𝑢 to
+        // the local queue. This allows 𝑢 to be processed in the same subround
+        // as 𝑣, rather than waiting for the next subround. We refer to this
+        // process as a local search at 𝑣.
 
         // --- Core-peeling loop (Liu et al. algorithm) ---
         let mut k = 1u8;
         let mut remaining = node_count; // number of vertices not yet peeled
         let mut frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
         let mut swap = SharedQueueMut::<usize>::from_shared_slice(swap.slice);
+
+        let index_ptr = &index_ptr;
+        let graph_ptr = &graph_ptr;
+        let degree = &degree;
+        let alive = &alive.slice;
         while remaining > 0 {
+            let mut coreness = coreness.slice;
             // Build initial frontier = all vertices with degree <= k that are still active.
             // FIXME:: Abstract frontier to RAM with fallback mmap
             for u in 0..node_count {
-                if !peeled.get(u).load(Ordering::Relaxed)
+                if alive.get(u).load(Ordering::Relaxed)
                     && degree.get(u).load(Ordering::Relaxed) <= k
                 {
-                    peeled.get(u).store(true, Ordering::Relaxed);
+                    alive.get(u).store(false, Ordering::Relaxed);
                     let _ = frontier.push(u);
                 }
             }
@@ -1750,12 +1790,11 @@ where
             while !frontier.is_empty() {
                 // Threaded peel: each thread handles a chunk of the frontier.
                 let frontier_len = frontier.len();
-                let num_threads = self.thread_count.max(1) as usize;
-                let chunk_size = frontier_len.div_ceil(num_threads);
+                let chunk_size = frontier_len.div_ceil(threads);
                 let _ = thread::scope(|s| {
                     let mut handles = Vec::new();
                     // Spawn threads processing chunks of 'frontier'
-                    for tid in 0..num_threads {
+                    for tid in 0..threads {
                         let start = tid * chunk_size;
                         if start >= frontier_len {
                             break;
@@ -1770,14 +1809,12 @@ where
                         let offsets = &index_ptr;
                         let neighbors = &graph_ptr;
                         let degree = &degree;
-                        let peeled = &peeled;
                         let mut swap = swap.clone();
-                        let mut c = SharedSliceMut::<u8>::from_shared_slice(core.slice);
                         handles.push(s.spawn(move |_| {
                             for i in 0..chunk.len() {
                                 // Set coreness and decrement neighbour degrees
                                 let u = *chunk.get(i);
-                                *c.get_mut(u) = k;
+                                *coreness.get_mut(u) = k;
                                 // For each neighbor v of u:
                                 let off_u = *offsets.get(u) as usize;
                                 let off_up = *offsets.get(u) as usize;
@@ -1789,7 +1826,7 @@ where
                                     if old == k + 1 {
                                         // Mark peeled and add to local next frontier if not already done
                                         let was_peeled =
-                                            peeled.get(v).swap(true, Ordering::Relaxed);
+                                            alive.get(v).swap(false, Ordering::Relaxed);
                                         if !was_peeled {
                                             let _ = swap.push(v);
                                         }
@@ -1818,7 +1855,7 @@ where
                 _ => panic!("error overflow when adding to k ({} - {})", k, 1),
             };
         }
-        core.flush()?;
+        coreness.flush()?;
 
         // --- Compute per-edge core labels and write output ---
         // Create an output memory-mapped buffer for edge labels (u32 per directed edge).
@@ -1835,38 +1872,29 @@ where
             .open(&output_filename)?;
         outfile.set_len(edge_count as u64 * std::mem::size_of::<u8>() as u64)?;
         let (out, _mmap): (SharedSliceMut<u8>, MmapMut) = SharedSliceMut::from_file(&outfile)?;
-        let out_slice = out;
-        let core = Arc::new(core);
 
         // parallel edge labeling: partition vertices among threads and write edge core values
         thread::scope(|scope| {
             let threads = self.thread_count.max(1) as usize;
-            for t in 0..threads {
-                let index_ptr = Arc::clone(&index_ptr);
-                let graph_ptr = Arc::clone(&graph_ptr);
-                let core = Arc::new(&core);
-                let core = Arc::clone(&core);
-                let start = node_count * t / threads;
-                let end = if t == threads - 1 {
-                    node_count
-                } else {
-                    node_count * (t + 1) / threads
-                };
-                let mut out_ptr = out_slice;
+            for tid in 0..threads {
+                let index_ptr = &index_ptr;
+                let graph_ptr = &graph_ptr;
+                let coreness = &coreness.slice;
+                let start = thread_load * tid;
+                let end = std::cmp::min(start + thread_load, node_count);
+                let mut edge_coreness = out;
                 scope.spawn(move |_| {
                     for u in start..end {
-                        let core_u = *core.get(u);
-                        let out_begin = *index_ptr.get(u);
-                        let out_end = *index_ptr.get(u + 1);
-                        for e in out_begin..out_end {
-                            let v = (*graph_ptr.get(e)).dest();
-                            // determine edge's core = min(core[u], core[v])
-                            let core_val = if *core.get(u) < *core.get(v) {
+                        let core_u = *coreness.get(u);
+                        for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                            let v = graph_ptr.get(e).dest();
+                            // edge_coreness = min(core[u], core[v])
+                            let core_val = if *coreness.get(u) < *coreness.get(v) {
                                 core_u
                             } else {
-                                *core.get(v)
+                                *coreness.get(v)
                             };
-                            *out_ptr.get_mut(e) = core_val;
+                            *edge_coreness.get_mut(e) = core_val;
                         }
                     }
                 });
@@ -2460,9 +2488,7 @@ where
                 let s = s.slice.clone();
                 let er = edge_reciprocal.slice;
                 let mut x = x[tid].slice;
-                let mut curr_slice = curr.slice;
                 let mut curr = SharedQueueMut::from_shared_slice(curr.slice);
-                let mut next_slice = next.slice;
                 let mut next = SharedQueueMut::from_shared_slice(next.slice);
                 let mut in_curr = in_curr.slice;
                 let mut in_next = in_next.slice;
@@ -2650,12 +2676,10 @@ where
                             synchronize.wait();
 
                             // prepare for next iteration
-                            let aux_slice = curr_slice;
-                            let in_aux = in_curr;
-                            curr_slice = next_slice;
-                            next_slice = aux_slice;
+                            let aux = curr;
                             curr = next;
-                            next = SharedQueueMut::from_shared_slice(next_slice);
+                            next = aux.clear();
+                            let in_aux = in_curr;
                             in_curr = in_next;
                             in_next = in_aux;
 
@@ -2666,19 +2690,13 @@ where
 
                             synchronize.wait();
                         }
-                        curr = SharedQueueMut::from_shared_slice(curr_slice);
+                        curr = curr.clear();
                         l = match l.overflowing_add(1) {
                             (r, false) => r,
                             _ => panic!("error overflow when adding to l ({} - {})", l, 1),
                         };
+                        synchronize.wait();
                     }
-
-                    // FIXME: Finish by storing k-truss values
-                    let thread_load = edge_count.div_ceil(threads);
-                    let begin = tid * thread_load;
-                    // last vertex isn't iterated hence index_ptr.len() - 2
-                    let _end = std::cmp::min(begin + thread_load, curr.len());
-
                     Ok(res)
                 }));
             }
