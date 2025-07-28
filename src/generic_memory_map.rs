@@ -1432,7 +1432,7 @@ where
         mmap: u8,
     ) -> Result<
         (
-            AbstractedProceduralMemoryMut<AtomicU8>,
+            AbstractedProceduralMemoryMut<u8>,
             AbstractedProceduralMemoryMut<usize>,
             AbstractedProceduralMemoryMut<u8>,
             AbstractedProceduralMemoryMut<usize>,
@@ -1447,8 +1447,8 @@ where
         let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
         let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
 
-        let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
-        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
+        let d_v: Vec<u8> = Vec::<u8>::new();
+        let degree = SharedSliceMut::<u8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
 
         let n_v: Vec<usize> = Vec::<usize>::new();
         let node = SharedSliceMut::<usize>::abst_mem_mut(n_fn, n_v, node_count, mmap > 1)?;
@@ -1465,6 +1465,8 @@ where
     pub fn _compute_k_core_bz(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
+        let threads = self.thread_count.max(1) as usize;
+        let thread_load = node_count.div_ceil(threads);
         if node_count == 0 {
             return Err(Error::new(
                 std::io::ErrorKind::Other,
@@ -1485,32 +1487,25 @@ where
 
         // initialize degree and bins count vecs
         let mut bins: Vec<usize> = match thread::scope(|scope| {
-            let threads = self.thread_count.max(1) as usize;
-            let mut bins = Vec::new();
-            let mut max_vecs = Vec::new();
-            for t in 0..threads {
+            let mut bins = vec![0usize; 20];
+            let mut max_vecs = vec![];
+
+            for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
-                let deg_arr = &degree;
-                let start = node_count * t / threads;
-                let end = if t == threads - 1 {
-                    node_count
-                } else {
-                    node_count * (t + 1) / threads
-                };
+                let mut deg_arr = degree.slice;
+
+                let start = tid * thread_load;
+                let end = (start + thread_load).min(node_count);
+
                 max_vecs.push(scope.spawn(move |_| {
                     let mut bins: Vec<usize> = vec![0; 1];
                     for v in start..end {
                         let deg = index_ptr.get(v + 1) - index_ptr.get(v);
                         if deg > u8::MAX as usize {
-                            panic!("error degree is {} when it should be at maximum 16", deg);
+                            panic!("error degree({}) == {} but theoretical max is 16", v, deg);
                         }
-                        if deg >= bins.len() {
-                            bins.resize_with(deg + 1, || 0usize);
-                            bins[deg] += 1;
-                        } else {
-                            bins[deg] += 1;
-                        }
-                        deg_arr.get(v).store(deg as u8, Ordering::Relaxed);
+                        bins[deg] += 1;
+                        *deg_arr.get_mut(v) = deg as u8;
                     }
                     bins
                 }));
@@ -1522,11 +1517,7 @@ where
                     Err(e) => panic!("error getting thread bin count {:?}", e),
                 };
                 for (degree, count) in bin.iter().enumerate() {
-                    if bins.len() <= degree {
-                        bins.push(*count);
-                    } else {
-                        bins[degree] += *count;
-                    }
+                    bins[degree] += *count;
                 }
             });
             bins
@@ -1537,7 +1528,18 @@ where
             }
             _ => panic!("error calculating max degree"),
         };
-        let max_degree = bins.len() - 1;
+
+        let max_degree = match bins
+            .iter()
+            .enumerate()
+            .max_by_key(|(deg, c)| *deg * (if **c != 0 { 1 } else { 0 }))
+        {
+            Some((deg, _)) => {
+                bins.resize(deg + 1, 0);
+                deg
+            }
+            None => panic!("error couldn't get max degree"),
+        };
 
         // prefix sum to get starting indices for each degree
         let mut start_index = 0usize;
@@ -1549,7 +1551,7 @@ where
         // `bins[d]` now holds the starting index in `vert` for vertices of degree d.
         // fill node array with vertices ordered by degree
         for v in 0..node_count {
-            let d = degree.get(v).load(Ordering::Relaxed) as usize;
+            let d = *degree.get(v) as usize;
             let idx = bins[d] as usize;
             *node.get_mut(idx) = v;
             *pos.get_mut(v) = idx;
@@ -1565,38 +1567,32 @@ where
         bins[0] = 0;
 
         // peel vertices in order of increasing current degree
+        let mut degree = degree.slice;
         for i in 0..node_count {
             let v = *node.get(i);
-            let deg_v = degree.get(v).load(Ordering::Relaxed);
+            let deg_v = *degree.get(v);
             *core.get_mut(v) = deg_v; // coreness of v
 
             // iterate outgoing neighbors of v
-            let out_start = *index_ptr.get(v);
-            let out_end = *index_ptr.get(v + 1);
-            for e in out_start..out_end {
+            for e in *index_ptr.get(v)..*index_ptr.get(v + 1) {
                 let u = (*graph_ptr.get(e)).dest();
-                let _ = degree
-                    .get(u)
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                        if x > deg_v {
-                            // swap u's position node array to maintain order
-                            let u_pos = *pos.get(u);
-                            let new_pos = bins[x as usize];
-                            // bins[old_deg] points to start of nodes with degree >= old_deg
-                            // swap the node at new_pos with u to move u into the bucket of (u_new_degree)
-                            let w = *node.get(new_pos);
-                            if u != w {
-                                *node.get_mut(u_pos) = w;
-                                *pos.get_mut(w) = u_pos;
-                                *node.get_mut(new_pos) = u;
-                                *pos.get_mut(u) = new_pos;
-                            }
-                            bins[x as usize] += 1;
-                            Some(x - 1)
-                        } else {
-                            None // don't update
-                        }
-                    });
+                let deg_u = *degree.get(u);
+                if deg_u > deg_v {
+                    // swap u's position node array to maintain order
+                    let u_pos = *pos.get(u);
+                    let new_pos = bins[deg_u as usize];
+                    // bins[deg_u] points to start of nodes with degree >= old_deg
+                    // swap the node at new_pos with u to move u into the bucket of (u_new_degree)
+                    let w = *node.get(new_pos);
+                    if u != w {
+                        *node.get_mut(u_pos) = w;
+                        *pos.get_mut(w) = u_pos;
+                        *node.get_mut(new_pos) = u;
+                        *pos.get_mut(u) = new_pos;
+                    }
+                    bins[deg_u as usize] += 1;
+                    *degree.get_mut(u) = deg_u - 1;
+                }
             }
         }
         core.flush()?;
@@ -1619,27 +1615,20 @@ where
 
         // parallel edge labeling: partition vertices among threads and write edge core values
         thread::scope(|scope| {
-            let threads = self.thread_count.max(1) as usize;
-            for t in 0..threads {
+            for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
                 let graph_ptr = Arc::clone(&graph_ptr);
-                let core = Arc::new(&core);
-                let core = Arc::clone(&core);
-                let start = node_count * t / threads;
-                let end = if t == threads - 1 {
-                    node_count
-                } else {
-                    node_count * (t + 1) / threads
-                };
                 let mut out_ptr = out_slice;
+                let core = Arc::clone(&core);
+
+                let start = tid * thread_load;
+                let end = (start + thread_load).min(node_count);
                 scope.spawn(move |_| {
                     for u in start..end {
                         let core_u = *core.get(u);
-                        let out_begin = *index_ptr.get(u);
-                        let out_end = *index_ptr.get(u + 1);
-                        for e in out_begin..out_end {
+                        for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
                             let v = (*graph_ptr.get(e)).dest();
-                            // determine edge's core = min(core[u], core[v])
+                            // edge core = min(core[u], core[v])
                             let core_val = if *core.get(u) < *core.get(v) {
                                 core_u
                             } else {
@@ -1665,6 +1654,7 @@ where
     ) -> Result<
         (
             AbstractedProceduralMemoryMut<AtomicU8>,
+            AbstractedProceduralMemoryMut<usize>,
             AbstractedProceduralMemoryMut<AtomicBool>,
             AbstractedProceduralMemoryMut<u8>,
             AbstractedProceduralMemoryMut<usize>,
@@ -1677,6 +1667,7 @@ where
 
         let template_fn = self.graph_cache.graph_filename.clone();
         let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
+        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(5))?;
         let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
         let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
         let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
@@ -1684,6 +1675,9 @@ where
 
         let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
         let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
+
+        let ni_v: Vec<usize> = Vec::<usize>::new();
+        let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, ni_v, node_count, mmap > 3)?;
 
         let p_v: Vec<AtomicBool> = Vec::<AtomicBool>::new();
         let peeled = SharedSliceMut::<AtomicBool>::abst_mem_mut(p_fn, p_v, node_count, mmap > 1)?;
@@ -1698,7 +1692,7 @@ where
         let frontier_swap =
             SharedSliceMut::<usize>::abst_mem_mut(fs_fn, fs_v, edge_count, mmap > 3)?;
 
-        Ok((degree, peeled, core, frontier, frontier_swap))
+        Ok((degree, node_index, peeled, core, frontier, frontier_swap))
     }
 
     pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Error> {
@@ -1719,7 +1713,7 @@ where
             edge_count,
         ));
 
-        let (mut degree, mut peeled, core, frontier, swap) =
+        let (mut degree, _node_index, mut peeled, core, frontier, swap) =
             self.init_procedural_memory_liu_et_al(mmap)?;
         for u in 0..node_count {
             let d = (index_ptr.get(u + 1) - index_ptr.get(u)) as u8;
@@ -1730,10 +1724,11 @@ where
         // --- Core-peeling loop (Liu et al. algorithm) ---
         let mut k = 1u8;
         let mut remaining = node_count; // number of vertices not yet peeled
+        let mut frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
+        let mut swap = SharedQueueMut::<usize>::from_shared_slice(swap.slice);
         while remaining > 0 {
             // Build initial frontier = all vertices with degree <= k that are still active.
             // FIXME:: Abstract frontier to RAM with fallback mmap
-            let mut frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
             for u in 0..node_count {
                 if !peeled.get(u).load(Ordering::Relaxed)
                     && degree.get(u).load(Ordering::Relaxed) <= k
@@ -1744,15 +1739,16 @@ where
             }
             // If no vertices at this k, increment k and try again.
             if frontier.is_empty() {
-                k += 1;
+                k = match k.overflowing_add(1) {
+                    (r, false) => r,
+                    _ => panic!("error overflow when adding to k ({} - {})", k, 1),
+                };
                 continue;
             }
             // Process subrounds for current k: peel all vertices with degree k.
             // FIXME: stack struct isn't being shared by threads, only memory location
-            let mut swap_slice = swap.slice;
             while !frontier.is_empty() {
                 // Threaded peel: each thread handles a chunk of the frontier.
-                let swap = SharedQueueMut::<usize>::from_shared_slice(swap_slice);
                 let frontier_len = frontier.len();
                 let num_threads = self.thread_count.max(1) as usize;
                 let chunk_size = frontier_len.div_ceil(num_threads);
@@ -1803,13 +1799,24 @@ where
                         }));
                     }
                 });
+
                 // Decrement remaining count and prepare for next subround
-                remaining -= frontier.len();
+                remaining = match remaining.overflowing_sub(frontier.len()) {
+                    (r, false) => r,
+                    _ => panic!(
+                        "error overflow when decreasing remaining ({} - {})",
+                        remaining,
+                        frontier.len()
+                    ),
+                };
                 let r = frontier;
                 frontier = swap;
-                swap_slice = unsafe { r.raw_slice() };
+                swap = r.clear();
             }
-            k += 1;
+            k = match k.overflowing_add(1) {
+                (r, false) => r,
+                _ => panic!("error overflow when adding to k ({} - {})", k, 1),
+            };
         }
         core.flush()?;
 
@@ -2032,9 +2039,18 @@ where
                 if t_count == k {
                     let u = graph_ptr.get(*er.get(edge_offset)).dest();
                     stack.push((u, edge_offset));
-                    idx += 1;
+                    idx = match idx.overflowing_add(1) {
+                        (r, false) => r,
+                        _ => panic!("error overflow adding to idx ({} + {})", idx, 1),
+                    };
                 } else if t_count == 0 {
-                    edge_count -= 1;
+                    edge_count = match edge_count.overflowing_sub(1) {
+                        (r, false) => r,
+                        _ => panic!(
+                            "error overflow subtracting to edge_count ({} - {})",
+                            edge_count, 1
+                        ),
+                    };
                     let e_index = *edge_index.get(edge_count);
                     let r_index = *edges.get(edge_offset);
                     *edge_index.get_mut(edge_count) = *edge_index.get(r_index);
@@ -2046,7 +2062,10 @@ where
                     test[k as usize - 1] += 1;
                     continue;
                 } else {
-                    idx += 1;
+                    idx = match idx.overflowing_add(1) {
+                        (r, false) => r,
+                        _ => panic!("error overflow adding to idx ({} + {})", idx, 1),
+                    };
                 }
             }
             let mut neighbours = HashMap::<usize, usize>::new();
@@ -2450,7 +2469,7 @@ where
                 let mut processed = processed.slice;
                 let total_duds = Arc::clone(&total_duds);
                 let synchronize = Arc::clone(&synchronize);
-                let mut todo = edge_count as i128;
+                let mut todo = edge_count;
                 let thread_load = edge_count.div_ceil(threads);
                 let begin = tid * thread_load;
                 if begin >= index_ptr.len() {
@@ -2465,32 +2484,30 @@ where
                     for e in begin..end {
                         if s.get(e).load(Ordering::Relaxed) == 0 {
                             *processed.get_mut(e) = true;
+                            res[0] += 1;
                             i += 1;
                         }
                     }
                     total_duds.fetch_add(i, Ordering::SeqCst);
                     i = 0;
                     synchronize.wait();
-                    // println!("skipped {}", total_duds.load(Ordering::Relaxed));
-                    todo -= total_duds.load(Ordering::Relaxed) as i128;
+
+                    todo = match todo.overflowing_sub(total_duds.load(Ordering::Relaxed)) {
+                        (r, false) => r,
+                        _ => panic!(
+                            "error overflow when decrementing todo ({} - {})",
+                            todo,
+                            total_duds.load(Ordering::Relaxed)
+                        ),
+                    };
 
                     while todo > 0 {
-                        // println!("remaining {}", todo);
-                        // Scan
                         for e in begin..end {
                             if s.get(e).load(Ordering::Relaxed) == l {
                                 buff[i] = e;
                                 *in_curr.get_mut(e) = true;
                                 i += 1;
                             }
-                            // else if s.get(e).load(Ordering::Relaxed) > 2 {
-                            //     println!(
-                            //         "for e: {} it isn't curr_l: {} l: {}",
-                            //         e,
-                            //         l,
-                            //         s.get(e).load(Ordering::Relaxed)
-                            //     );
-                            // }
                             if i == buff_size {
                                 curr.push_slice(buff.as_slice());
                                 i = 0;
@@ -2507,7 +2524,14 @@ where
                             None => panic!("error reading curr in pkt"),
                         };
                         while to_process.len() != 0 {
-                            todo -= to_process.len() as i128;
+                            todo = match todo.overflowing_sub(to_process.len()) {
+                                (r, false) => r,
+                                _ => panic!(
+                                    "error overflow when decrementing todo ({} - {})",
+                                    todo,
+                                    to_process.len()
+                                ),
+                            };
                             // ProcessSubLevel
                             let thread_load = curr.len().div_ceil(threads);
                             let begin = tid * thread_load;
@@ -2539,10 +2563,6 @@ where
                                     if *processed.get(v_w) || *processed.get(w_u) {
                                         continue;
                                     }
-
-                                    // if l > 2 {
-                                    //     println!("u {} v {} w {}", u, v, w);
-                                    // }
 
                                     if s.get(v_w).load(Ordering::Relaxed) > l
                                         && s.get(w_u).load(Ordering::Relaxed) > l
@@ -2647,7 +2667,10 @@ where
                             synchronize.wait();
                         }
                         curr = SharedQueueMut::from_shared_slice(curr_slice);
-                        l += 1;
+                        l = match l.overflowing_add(1) {
+                            (r, false) => r,
+                            _ => panic!("error overflow when adding to l ({} - {})", l, 1),
+                        };
                     }
 
                     // FIXME: Finish by storing k-truss values
@@ -2661,7 +2684,7 @@ where
             }
             let joined_res: Vec<Vec<u64>> = res
                 .into_iter()
-                .map(|v| v.join().expect("error thread panicked").expect("error1"))
+                .map(|v| v.join().expect("error thread panicked").expect("error ??1"))
                 .collect();
             let mut r = vec![0u64; 16];
             for i in 0..16 {

@@ -354,4 +354,10 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
     pub unsafe fn raw_slice(&self) -> SharedSliceMut<T> {
         SharedSliceMut::new(self.ptr, self.max)
     }
+    pub fn clear(self) -> Self {
+        self.read.store(0, Ordering::SeqCst);
+        self.write.store(0, Ordering::SeqCst);
+        self.len.store(0, Ordering::SeqCst);
+        self
+    }
 }
