@@ -1498,7 +1498,7 @@ where
                 let end = (start + thread_load).min(node_count);
 
                 max_vecs.push(scope.spawn(move |_| {
-                    let mut bins: Vec<usize> = vec![0; 1];
+                    let mut bins: Vec<usize> = vec![0; 20];
                     for v in start..end {
                         let deg = index_ptr.get(v + 1) - index_ptr.get(v);
                         if deg > u8::MAX as usize {
@@ -1614,6 +1614,7 @@ where
         let core = Arc::new(core);
 
         thread::scope(|scope| {
+            let mut res = vec![];
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
                 let graph_ptr = Arc::clone(&graph_ptr);
@@ -1622,7 +1623,8 @@ where
 
                 let start = tid * thread_load;
                 let end = (start + thread_load).min(node_count);
-                scope.spawn(move |_| {
+                res.push(scope.spawn(move |_| -> Vec<u64> {
+                    let mut res = vec![0u64; 20];
                     for u in start..end {
                         let core_u = *core.get(u);
                         for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
@@ -1634,10 +1636,23 @@ where
                                 *core.get(v)
                             };
                             *out_ptr.get_mut(e) = core_val;
+                            res[core_val as usize] += 1;
                         }
                     }
-                });
+                    res
+                }));
             }
+            let joined_res: Vec<Vec<u64>> = res
+                .into_iter()
+                .map(|v| v.join().expect("error thread panicked"))
+                .collect();
+            let mut r = vec![0u64; 16];
+            for i in 0..16 {
+                for v in joined_res.clone() {
+                    r[i] += v[i];
+                }
+            }
+            println!("k-cores {:?}", r);
         })
         .unwrap();
 
@@ -1722,25 +1737,40 @@ where
             self.init_procedural_memory_liu_et_al(mmap)?;
 
         // Initialize
-        thread::scope(|s| {
+        let total_dead_nodes = thread::scope(|s| -> usize {
+            let mut dead_nodes = vec![];
             for tid in 0..threads {
                 let start = tid * thread_load;
                 let end = std::cmp::min(start + thread_load, node_count);
+
                 let index_ptr = &index_ptr;
                 // Clone references as atomics don't implement COpy trait
                 let mut degree = degree.slice.clone();
                 let mut alive = alive.slice.clone();
-                // let mut coreness = coreness.slice;
-                s.spawn(move |_| {
+
+                dead_nodes.push(s.spawn(move |_| -> usize {
+                    let mut dead_nodes = 0;
                     for u in start..end {
-                        *degree.get_mut(u) =
-                            AtomicU8::new((index_ptr.get(u + 1) - index_ptr.get(u)) as u8);
-                        *alive.get_mut(u) = AtomicBool::new(true);
+                        let deg_u = index_ptr.get(u + 1) - index_ptr.get(u);
+                        *degree.get_mut(u) = AtomicU8::new(deg_u as u8);
+                        if deg_u == 0 {
+                            *alive.get_mut(u) = AtomicBool::new(false);
+                            dead_nodes += 1;
+                        } else {
+                            *alive.get_mut(u) = AtomicBool::new(true);
+                        }
                     }
-                });
+                    dead_nodes
+                }));
             }
+            let mut total_dead_nodes = 0;
+            dead_nodes
+                .into_iter()
+                .map(|e| e.join().expect("error"))
+                .for_each(|e| total_dead_nodes += e);
             let _ = degree._flush_async();
             let _ = alive._flush_async();
+            total_dead_nodes
         })
         .unwrap();
 
@@ -1756,105 +1786,109 @@ where
         // process as a local search at 𝑣.
 
         // --- Core-peeling loop (Liu et al. algorithm) ---
+        // for nodes with degree <= 16 no bucketing is used
         let mut k = 1u8;
-        let mut remaining = node_count; // number of vertices not yet peeled
-        let mut frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
-        let mut swap = SharedQueueMut::<usize>::from_shared_slice(swap.slice);
+        let mut remaining = node_count - total_dead_nodes; // number of vertices not yet peeled
+        let frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
+        let swap = SharedQueueMut::<usize>::from_shared_slice(swap.slice);
+        let synchronize = Arc::new(Barrier::new(threads));
 
-        let index_ptr = &index_ptr;
-        let graph_ptr = &graph_ptr;
-        let degree = &degree;
-        let alive = &alive.slice;
-        while remaining > 0 {
-            let mut coreness = coreness.slice;
-            // Build initial frontier = all vertices with degree <= k that are still active.
-            // FIXME:: Abstract frontier to RAM with fallback mmap
-            for u in 0..node_count {
-                if alive.get(u).load(Ordering::Relaxed)
-                    && degree.get(u).load(Ordering::Relaxed) <= k
-                {
-                    alive.get(u).store(false, Ordering::Relaxed);
-                    let _ = frontier.push(u);
-                }
-            }
-            // If no vertices at this k, increment k and try again.
-            if frontier.is_empty() {
-                k = match k.overflowing_add(1) {
-                    (r, false) => r,
-                    _ => panic!("error overflow when adding to k ({} - {})", k, 1),
-                };
-                continue;
-            }
-            // Process subrounds for current k: peel all vertices with degree k.
-            // FIXME: stack struct isn't being shared by threads, only memory location
-            while !frontier.is_empty() {
-                // Threaded peel: each thread handles a chunk of the frontier.
-                let frontier_len = frontier.len();
-                let chunk_size = frontier_len.div_ceil(threads);
-                let _ = thread::scope(|s| {
-                    let mut handles = Vec::new();
-                    // Spawn threads processing chunks of 'frontier'
-                    for tid in 0..threads {
-                        let start = tid * chunk_size;
-                        if start >= frontier_len {
-                            break;
+        thread::scope(|s| {
+            for tid in 0..threads {
+                let start = tid * thread_load;
+                let end = std::cmp::min(start + thread_load, node_count);
+
+                let index_ptr = &index_ptr;
+                let graph_ptr = &graph_ptr;
+
+                let degree = &degree;
+                let alive = &alive.slice;
+                let mut coreness = coreness.slice;
+                let mut frontier = frontier.clone();
+                let mut swap = swap.clone();
+                let synchronize = Arc::clone(&synchronize);
+
+                s.spawn(move |_| {
+                    let _local_queue: Vec<usize> = vec![];
+                    while remaining > 0 {
+                        // Build initial frontier = all vertices with degree <= k that are still active.
+                        // FIXME:: Abstract frontier to RAM with fallback mmap
+                        for u in start..end {
+                            if alive.get(u).load(Ordering::Relaxed)
+                                && degree.get(u).load(Ordering::Relaxed) <= k
+                            {
+                                alive.get(u).store(false, Ordering::Relaxed);
+                                let _ = frontier.push(u);
+                            }
                         }
-                        let end = std::cmp::min(start + chunk_size, frontier_len);
-                        // Slice of vertices for this thread
-                        let chunk = match frontier.slice(start, end) {
-                            Some(i) => Arc::new(i),
-                            None => panic!("err getting frontier slice"),
-                        };
-                        // Clone references for move into thread
-                        let offsets = &index_ptr;
-                        let neighbors = &graph_ptr;
-                        let degree = &degree;
-                        let mut swap = swap.clone();
-                        handles.push(s.spawn(move |_| {
-                            for i in 0..chunk.len() {
-                                // Set coreness and decrement neighbour degrees
-                                let u = *chunk.get(i);
-                                *coreness.get_mut(u) = k;
-                                // For each neighbor v of u:
-                                let off_u = *offsets.get(u) as usize;
-                                let off_up = *offsets.get(u) as usize;
-                                for idx in off_u..off_up {
-                                    let v = neighbors.get(idx).dest();
-                                    // Atomically decrement v's degree
-                                    let old = degree.get(v).fetch_sub(1, Ordering::SeqCst);
-                                    // If old was k+1, then new degree is k => add v to next frontier
-                                    if old == k + 1 {
-                                        // Mark peeled and add to local next frontier if not already done
-                                        let was_peeled =
-                                            alive.get(v).swap(false, Ordering::Relaxed);
-                                        if !was_peeled {
-                                            let _ = swap.push(v);
+
+                        synchronize.wait();
+
+                        if frontier.is_empty() {
+                            k = match k.overflowing_add(1) {
+                                (r, false) => r,
+                                _ => panic!("error overflow when adding to k ({} + {})", k, 1),
+                            };
+                            continue;
+                        }
+
+                        // Process subrounds for current k: peel all vertices with degree k.
+                        // FIXME: stack struct isn't being shared by threads, only memory location
+                        while !frontier.is_empty() {
+                            remaining = match remaining.overflowing_sub(frontier.len()) {
+                                (r, false) => r,
+                                _ => panic!(
+                                    "error overflow when decreasing remaining ({} - {})",
+                                    remaining,
+                                    frontier.len()
+                                ),
+                            };
+
+                            let chunk_size = frontier.len().div_ceil(threads);
+
+                            for tid in 0..threads {
+                                let start = tid * chunk_size;
+                                let end = std::cmp::min(start + chunk_size, frontier.len());
+
+                                let chunk = match frontier.slice(start, end) {
+                                    Some(i) => Arc::new(i),
+                                    None => panic!("err getting frontier slice"),
+                                };
+
+                                for i in start..end {
+                                    // Set coreness and decrement neighbour degrees
+                                    let u = *chunk.get(i);
+                                    *coreness.get_mut(u) = k;
+                                    // For each neighbor v of u:
+                                    for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                                        let v = graph_ptr.get(idx).dest();
+                                        let old = degree.get(v).fetch_sub(1, Ordering::SeqCst);
+                                        if old == k + 1 {
+                                            let was_alive =
+                                                alive.get(v).swap(false, Ordering::Relaxed);
+                                            if was_alive {
+                                                let _ = swap.push(v);
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }));
+
+                            synchronize.wait();
+                            let r = frontier;
+                            frontier = swap;
+                            swap = r.clear();
+                            synchronize.wait();
+                        }
+                        k = match k.overflowing_add(1) {
+                            (r, false) => r,
+                            _ => panic!("error overflow when adding to k ({} + {})", k, 1),
+                        };
                     }
                 });
-
-                // Decrement remaining count and prepare for next subround
-                remaining = match remaining.overflowing_sub(frontier.len()) {
-                    (r, false) => r,
-                    _ => panic!(
-                        "error overflow when decreasing remaining ({} - {})",
-                        remaining,
-                        frontier.len()
-                    ),
-                };
-                let r = frontier;
-                frontier = swap;
-                swap = r.clear();
             }
-            k = match k.overflowing_add(1) {
-                (r, false) => r,
-                _ => panic!("error overflow when adding to k ({} - {})", k, 1),
-            };
-        }
+        })
+        .unwrap();
         coreness.flush()?;
 
         // --- Compute per-edge core labels and write output ---
@@ -1875,6 +1909,7 @@ where
 
         // parallel edge labeling: partition vertices among threads and write edge core values
         thread::scope(|scope| {
+            let mut res = vec![];
             let threads = self.thread_count.max(1) as usize;
             for tid in 0..threads {
                 let index_ptr = &index_ptr;
@@ -1883,7 +1918,8 @@ where
                 let start = thread_load * tid;
                 let end = std::cmp::min(start + thread_load, node_count);
                 let mut edge_coreness = out;
-                scope.spawn(move |_| {
+                res.push(scope.spawn(move |_| -> Vec<u64> {
+                    let mut res = vec![0u64; 20];
                     for u in start..end {
                         let core_u = *coreness.get(u);
                         for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
@@ -1895,10 +1931,23 @@ where
                                 *coreness.get(v)
                             };
                             *edge_coreness.get_mut(e) = core_val;
+                            res[core_val as usize] += 1;
                         }
                     }
-                });
+                    res
+                }));
             }
+            let joined_res: Vec<Vec<u64>> = res
+                .into_iter()
+                .map(|v| v.join().expect("error thread panicked"))
+                .collect();
+            let mut r = vec![0u64; 16];
+            for i in 0..16 {
+                for v in joined_res.clone() {
+                    r[i] += v[i];
+                }
+            }
+            println!("k-cores {:?}", r);
         })
         .unwrap();
 
