@@ -13,8 +13,6 @@ use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use regex::Regex;
 use static_assertions::const_assert;
-use std::sync::Barrier;
-use std::sync::atomic::{AtomicBool, AtomicI8, AtomicUsize};
 use std::{
     any::type_name,
     collections::HashMap,
@@ -27,8 +25,8 @@ use std::{
     process::Command,
     slice,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        Arc, Barrier, Mutex,
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
 };
 use zerocopy::*; // Using crossbeam for scoped threads
@@ -457,13 +455,17 @@ where
         };
 
         let mut reader = BufReader::new(sorted_file);
-
         let mut line = Vec::new();
 
-        while let l = reader.read_until(b'\n', &mut line) {
-            if !l.unwrap() > 0 {
-                break;
-            }
+        loop {
+            let () = match reader.read_until(b'\n', &mut line) {
+                Ok(i) => {
+                    if !i > 0 {
+                        break;
+                    }
+                }
+                Err(e) => panic!("error reading file {}", e),
+            };
             if let Ok(text) = std::str::from_utf8(&line) {
                 let mut parts = text.trim_end().splitn(2, '\t');
                 if let (Some(id_value), Some(kmer)) = (parts.next(), parts.next()) {
@@ -1351,14 +1353,14 @@ where
         ))
     }
 
-    fn is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
+    fn _is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
         let mut index_a = None;
         let mut index_b = None;
         let switch = v < u;
 
         if let Ok(mut iter) = self.neighbours(w) {
             loop {
-                if let Some((index, n)) = iter.next_with_offset() {
+                if let Some((index, n)) = iter._next_with_offset() {
                     if index_a.is_none() {
                         match (if switch { v } else { u }).cmp(&n.dest()) {
                             std::cmp::Ordering::Less => {
@@ -1388,7 +1390,7 @@ where
                 } else {
                     return None;
                 }
-                if let Some((index, n)) = iter.next_back_with_offset() {
+                if let Some((index, n)) = iter._next_back_with_offset() {
                     if index_b.is_none() {
                         match (if switch { u } else { v }).cmp(&n.dest()) {
                             std::cmp::Ordering::Greater => return None,
@@ -1427,18 +1429,7 @@ where
         self.graph_cache.graph_bytes // num edges
     }
 
-    fn _init_procedural_memory_bz(
-        &self,
-        mmap: u8,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<u8>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<u8>,
-            AbstractedProceduralMemoryMut<usize>,
-        ),
-        Error,
-    > {
+    fn _init_procedural_memory_bz(&self, mmap: u8) -> Result<ProceduralMemoryBZ, Error> {
         let node_count = self.size() - 1;
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -1662,20 +1653,7 @@ where
         Ok(output_filename)
     }
 
-    fn init_procedural_memory_liu_et_al(
-        &self,
-        mmap: u8,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<AtomicU8>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<AtomicBool>,
-            AbstractedProceduralMemoryMut<u8>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-        ),
-        Error,
-    > {
+    fn init_procedural_memory_liu_et_al(&self, mmap: u8) -> Result<ProceduralMemoryLiuEtAL, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
 
@@ -1740,7 +1718,7 @@ where
         let total_dead_nodes = thread::scope(|s| -> usize {
             let mut dead_nodes = vec![];
             for tid in 0..threads {
-                let start = tid * thread_load;
+                let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
 
                 let index_ptr = &index_ptr;
@@ -1795,7 +1773,7 @@ where
 
         thread::scope(|s| {
             for tid in 0..threads {
-                let start = tid * thread_load;
+                let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
 
                 let index_ptr = &index_ptr;
@@ -1811,6 +1789,7 @@ where
                 s.spawn(move |_| {
                     let _local_queue: Vec<usize> = vec![];
                     while remaining > 0 {
+                        synchronize.wait();
                         // Build initial frontier = all vertices with degree <= k that are still active.
                         // FIXME:: Abstract frontier to RAM with fallback mmap
                         for u in start..end {
@@ -1845,29 +1824,38 @@ where
                             };
 
                             let chunk_size = frontier.len().div_ceil(threads);
+                            let start = std::cmp::min(tid * chunk_size, frontier.len());
+                            let end = std::cmp::min(start + chunk_size, frontier.len());
 
-                            for tid in 0..threads {
-                                let start = tid * chunk_size;
-                                let end = std::cmp::min(start + chunk_size, frontier.len());
-
-                                let chunk = match frontier.slice(start, end) {
-                                    Some(i) => Arc::new(i),
-                                    None => panic!("err getting frontier slice"),
-                                };
-
-                                for i in start..end {
+                            if let Some(chunk) = frontier.slice(start, end) {
+                                for i in 0..end - start {
                                     // Set coreness and decrement neighbour degrees
                                     let u = *chunk.get(i);
                                     *coreness.get_mut(u) = k;
                                     // For each neighbor v of u:
+
                                     for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
                                         let v = graph_ptr.get(idx).dest();
-                                        let old = degree.get(v).fetch_sub(1, Ordering::SeqCst);
-                                        if old == k + 1 {
-                                            let was_alive =
-                                                alive.get(v).swap(false, Ordering::Relaxed);
-                                            if was_alive {
-                                                let _ = swap.push(v);
+                                        if let Ok(old) = degree.get(v).fetch_update(
+                                            Ordering::Relaxed,
+                                            Ordering::Relaxed,
+                                            |x| {
+                                                if x > k {
+                                                    match x.overflowing_sub(1) {
+                                                        (r, false) => Some(r),
+                                                        _ => None,
+                                                    }
+                                                } else {
+                                                    None
+                                                }
+                                            },
+                                        ) {
+                                            if old == k + 1 {
+                                                let life =
+                                                    alive.get(v).swap(false, Ordering::Relaxed);
+                                                if life {
+                                                    let _ = swap.push(v);
+                                                }
                                             }
                                         }
                                     }
@@ -1875,9 +1863,9 @@ where
                             }
 
                             synchronize.wait();
-                            let r = frontier;
-                            frontier = swap;
-                            swap = r.clear();
+
+                            swap = std::mem::replace(&mut frontier, swap).clear();
+
                             synchronize.wait();
                         }
                         k = match k.overflowing_add(1) {
@@ -1956,20 +1944,10 @@ where
 
         Ok(output_filename)
     }
-
     fn init_procedural_memory_k_truss_decomposition(
         &self,
         mmap: u8,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<AtomicU8>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<(usize, usize)>,
-            AbstractedProceduralMemoryMut<u8>,
-        ),
-        Error,
-    > {
+    ) -> Result<ProceduralMemoryKTDecomposition, Error> {
         let edge_count = self.width();
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -2002,6 +1980,7 @@ where
         let node_count = self.size() - 1;
         let edge_count = self.width();
         let threads = self.thread_count.max(1) as usize;
+        let thread_load = node_count.div_ceil(threads);
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
             node_count + 1,
@@ -2033,11 +2012,7 @@ where
                 let eo = edge_out.slice;
                 let er = edge_reciprocal.slice;
                 let synchronize = Arc::clone(&synchronize);
-                let thread_load = node_count.div_ceil(threads);
-                let start = tid * thread_load;
-                if start >= index_ptr.len() {
-                    break;
-                }
+                let start = std::cmp::min(tid * thread_load, index_ptr.len() - 1);
                 let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
                 scope.spawn(move |_| -> Result<(), Error> {
                     // initialize triangle_count with zeroes
@@ -2049,6 +2024,7 @@ where
                     }
 
                     synchronize.wait();
+
                     let mut neighbours = HashMap::<usize, usize>::new();
                     for u in start..end {
                         for j in *eo.get(u)..*index_ptr.get(u + 1) {
@@ -2228,7 +2204,10 @@ where
     > {
         let node_count = self.size() - 1;
         let edge_count = self.width();
+
         let threads = self.thread_count.max(1) as usize;
+        let thread_load = node_count.div_ceil(threads);
+
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
             node_count + 1,
@@ -2246,11 +2225,7 @@ where
                 let mut er = er.slice;
                 let mut eo = eo.slice;
                 let synchronize = Arc::clone(&synchronize);
-                let thread_load = node_count.div_ceil(threads);
-                let begin = tid * thread_load;
-                if begin >= index_ptr.len() {
-                    break;
-                }
+                let begin = std::cmp::min(tid * thread_load, index_ptr.len() - 1);
                 let end = std::cmp::min(begin + thread_load, index_ptr.len() - 1);
                 scope.spawn(move |_| -> Result<(), Error> {
                     let mut edges_start = *index_ptr.get(begin);
@@ -2331,7 +2306,6 @@ where
                 }
             }
         };
-
         er
     }
 
@@ -2359,24 +2333,10 @@ where
                 }
             }
         };
-
         eo
     }
 
-    fn init_procedural_memory_pkt(
-        &self,
-        mmap: u8,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<bool>,
-            AbstractedProceduralMemoryMut<bool>,
-            AbstractedProceduralMemoryMut<bool>,
-            AbstractedProceduralMemoryMut<AtomicI8>,
-        ),
-        Error,
-    > {
+    fn init_procedural_memory_pkt(&self, mmap: u8) -> Result<ProceduralMemoryPKT, Error> {
         let edge_count = self.width();
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -2402,8 +2362,8 @@ where
         let in_v: Vec<bool> = Vec::<bool>::new();
         let in_next = SharedSliceMut::<bool>::abst_mem_mut(in_fn, in_v, edge_count, mmap > 3)?;
 
-        let s_v: Vec<AtomicI8> = Vec::<AtomicI8>::new();
-        let s = SharedSliceMut::<AtomicI8>::abst_mem_mut(s_fn, s_v, edge_count, true)?;
+        let s_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
+        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(s_fn, s_v, edge_count, true)?;
 
         Ok((curr, next, processed, in_curr, in_next, s))
     }
@@ -2411,7 +2371,11 @@ where
     pub fn pkt(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
+
         let threads = self.thread_count.max(1) as usize;
+        let edge_load = edge_count.div_ceil(threads);
+        let node_load = node_count.div_ceil(threads);
+
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
             node_count + 1,
@@ -2428,9 +2392,8 @@ where
 
         // Allocate memory for thread local arrays
         let template_fn = self.graph_cache.graph_filename.clone();
-        let thread_num: usize = self.thread_count as usize;
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
-        for i in 0..thread_num {
+        for i in 0..threads {
             let x_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(8 + i))?;
             let x_v: Vec<usize> = Vec::<usize>::new();
             x.push(SharedSliceMut::<usize>::abst_mem_mut(
@@ -2443,7 +2406,7 @@ where
         let x = Arc::new(x);
 
         // Thread syncronization
-        let synchronize = Arc::new(Barrier::new(thread_num));
+        let synchronize = Arc::new(Barrier::new(threads));
 
         // ParTriangle-AM4
         thread::scope(|scope| {
@@ -2463,16 +2426,13 @@ where
                 let synchronize = Arc::clone(&synchronize);
                 scope.spawn(move |_| -> Result<(), Error> {
                     // initialize s, edge_out, x, curr, next, in_curr, in_next & processed
-                    let init_thread_load = node_count.div_ceil(threads);
-                    let init_begin = tid * init_thread_load;
-                    let init_end =
-                        std::cmp::min(init_begin + init_thread_load, graph_ptr.len() - 1);
-                    let thread_load = node_count.div_ceil(threads);
-                    let begin = tid * thread_load;
+                    let init_begin = tid * edge_load;
+                    let init_end = std::cmp::min(init_begin + edge_load, graph_ptr.len() - 1);
+                    let begin = tid * node_load;
                     // last vertex isn't iterated hence index_ptr.len() - 2
-                    let end = std::cmp::min(begin + thread_load, index_ptr.len() - 2);
+                    let end = std::cmp::min(begin + node_load, index_ptr.len() - 2);
                     for edge_offset in init_begin..init_end {
-                        *s.get_mut(edge_offset) = AtomicI8::new(0);
+                        *s.get_mut(edge_offset) = AtomicU8::new(0);
                         *curr.get_mut(edge_offset) = 0;
                         *next.get_mut(edge_offset) = 0;
                         *in_curr.get_mut(edge_offset) = false;
@@ -2518,16 +2478,17 @@ where
                             *x.get_mut(graph_ptr.get(j).dest()) = 0;
                         }
                     }
-                    // println!("thred found {} triangles and {} misses", t, p);
                     Ok(())
                 });
             }
         })
         .unwrap();
 
-        let mut l: i8 = 1;
+        let mut l: u8 = 1;
         let buff_size = 4096;
         let total_duds = Arc::new(AtomicUsize::new(0));
+        let curr = SharedQueueMut::from_shared_slice(curr.slice);
+        let next = SharedQueueMut::from_shared_slice(next.slice);
 
         thread::scope(|scope| {
             let mut res = Vec::new();
@@ -2537,25 +2498,22 @@ where
                 let s = s.slice.clone();
                 let er = edge_reciprocal.slice;
                 let mut x = x[tid].slice;
-                let mut curr = SharedQueueMut::from_shared_slice(curr.slice);
-                let mut next = SharedQueueMut::from_shared_slice(next.slice);
+                let mut curr = curr.clone();
+                let mut next = next.clone();
                 let mut in_curr = in_curr.slice;
                 let mut in_next = in_next.slice;
                 let mut processed = processed.slice;
                 let total_duds = Arc::clone(&total_duds);
                 let synchronize = Arc::clone(&synchronize);
                 let mut todo = edge_count;
-                let thread_load = edge_count.div_ceil(threads);
-                let begin = tid * thread_load;
-                if begin >= index_ptr.len() {
-                    break;
-                }
-                let end = std::cmp::min(begin + thread_load, graph_ptr.len());
-                // shared variables
+                let begin = tid * edge_load;
+                let end = std::cmp::min(begin + edge_load, graph_ptr.len());
                 res.push(scope.spawn(move |_| -> Result<Vec<u64>, Error> {
                     let mut res = vec![0_u64; 20];
                     let mut buff = vec![0; buff_size];
                     let mut i = 0;
+
+                    // Remove 0-triangle edges
                     for e in begin..end {
                         if s.get(e).load(Ordering::Relaxed) == 0 {
                             *processed.get_mut(e) = true;
@@ -2576,6 +2534,7 @@ where
                         ),
                     };
 
+                    // println!("triangles removed");
                     while todo > 0 {
                         for e in begin..end {
                             if s.get(e).load(Ordering::Relaxed) == l {
@@ -2598,6 +2557,7 @@ where
                             Some(i) => i,
                             None => panic!("error reading curr in pkt"),
                         };
+                        // println!("new cicle initialized {} {:?}", todo, curr.ptr);
                         while to_process.len() != 0 {
                             todo = match todo.overflowing_sub(to_process.len()) {
                                 (r, false) => r,
@@ -2607,6 +2567,8 @@ where
                                     to_process.len()
                                 ),
                             };
+                            synchronize.wait();
+
                             // ProcessSubLevel
                             let thread_load = curr.len().div_ceil(threads);
                             let begin = tid * thread_load;
@@ -2723,23 +2685,16 @@ where
                             }
 
                             synchronize.wait();
+                            next = std::mem::replace(&mut curr, next).clear();
+                            in_next = std::mem::replace(&mut in_curr, in_next);
 
-                            // prepare for next iteration
-                            let aux = curr;
-                            curr = next;
-                            next = aux.clear();
-                            let in_aux = in_curr;
-                            in_curr = in_next;
-                            in_next = in_aux;
-
+                            synchronize.wait();
                             to_process = match curr.slice(0, curr.len()) {
                                 Some(i) => i,
                                 None => panic!("error couldn't get new to_process vec"),
                             };
-
                             synchronize.wait();
                         }
-                        curr = curr.clear();
                         l = match l.overflowing_add(1) {
                             (r, false) => r,
                             _ => panic!("error overflow when adding to l ({} - {})", l, 1),
@@ -2833,7 +2788,7 @@ impl<
         })
     }
 
-    fn next_back_with_offset(&mut self) -> Option<(usize, U)> {
+    fn _next_back_with_offset(&mut self) -> Option<(usize, U)> {
         if self.count == 0 {
             return None;
         }
@@ -2848,7 +2803,7 @@ impl<
         Some(next)
     }
 
-    fn next_with_offset(&mut self) -> Option<(usize, U)> {
+    fn _next_with_offset(&mut self) -> Option<(usize, U)> {
         if self.count == 0 {
             return None;
         }
@@ -3182,3 +3137,36 @@ impl fmt::Display for FileType {
         write!(f, "{}", s)
     }
 }
+
+type ProceduralMemoryBZ = (
+    AbstractedProceduralMemoryMut<u8>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<u8>,
+    AbstractedProceduralMemoryMut<usize>,
+);
+
+type ProceduralMemoryLiuEtAL = (
+    AbstractedProceduralMemoryMut<AtomicU8>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<AtomicBool>,
+    AbstractedProceduralMemoryMut<u8>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<usize>,
+);
+
+type ProceduralMemoryKTDecomposition = (
+    AbstractedProceduralMemoryMut<AtomicU8>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<(usize, usize)>,
+    AbstractedProceduralMemoryMut<u8>,
+);
+
+type ProceduralMemoryPKT = (
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<bool>,
+    AbstractedProceduralMemoryMut<bool>,
+    AbstractedProceduralMemoryMut<bool>,
+    AbstractedProceduralMemoryMut<AtomicU8>,
+);

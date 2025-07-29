@@ -1,5 +1,4 @@
 use memmap::{Mmap, MmapMut, MmapOptions};
-use rand::seq::IndexedRandom;
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},
@@ -18,9 +17,9 @@ pub struct SharedSlice<T> {
 
 pub struct AbstractedProceduralMemory<T> {
     pub slice: SharedSlice<T>,
-    mmap: Mmap,
+    _mmap: Mmap,
     _vec: Vec<T>,
-    mmapped: bool,
+    _mmapped: bool,
 }
 
 pub struct AbstractedProceduralMemoryMut<T> {
@@ -131,15 +130,15 @@ impl<T> SharedSlice<T> {
         Ok(AbstractedProceduralMemory {
             slice,
             _vec: vec,
-            mmap,
-            mmapped,
+            _mmap: mmap,
+            _mmapped: mmapped,
         })
     }
 }
 
 #[derive(Copy)]
 pub struct SharedSliceMut<T> {
-    ptr: *mut T,
+    pub ptr: *mut T,
     len: usize,
 }
 
@@ -159,7 +158,7 @@ impl<T> SharedSliceMut<T> {
     pub fn new(ptr: *mut T, len: usize) -> Self {
         SharedSliceMut::<T> { ptr, len }
     }
-    pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
+    pub fn _from_shared_slice(slice: SharedSliceMut<T>) -> Self {
         SharedSliceMut::<T> {
             ptr: slice.ptr,
             len: slice.len,
@@ -182,7 +181,7 @@ impl<T> SharedSliceMut<T> {
             mmap,
         ))
     }
-    pub unsafe fn cast<U>(&self) -> Option<SharedSliceMut<U>> {
+    pub unsafe fn _cast<U>(&self) -> Option<SharedSliceMut<U>> {
         if std::mem::size_of::<T>() != std::mem::size_of::<U>() {
             return None;
         }
@@ -256,7 +255,7 @@ impl<T> SharedSliceMut<T> {
 
 #[derive(Clone)]
 pub struct SharedQueueMut<T> {
-    ptr: *mut T,
+    pub ptr: *mut T,
     max: usize,
     read: Arc<AtomicUsize>,
     write: Arc<AtomicUsize>,
@@ -351,7 +350,7 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
         };
         unsafe { Some(SharedSliceMut::new(self.ptr.add(start), end - start)) }
     }
-    pub unsafe fn raw_slice(&self) -> SharedSliceMut<T> {
+    pub unsafe fn _raw_slice(&self) -> SharedSliceMut<T> {
         SharedSliceMut::new(self.ptr, self.max)
     }
     pub fn clear(self) -> Self {
