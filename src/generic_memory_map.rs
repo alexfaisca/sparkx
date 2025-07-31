@@ -13,14 +13,12 @@ use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
 use rand::Rng;
-use rand::rngs::OsRng;
 use rand_distr::{Distribution, Poisson};
 use regex::Regex;
 use static_assertions::const_assert;
-use std::collections::{HashSet, VecDeque};
 use std::{
     any::type_name,
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     fmt::{Debug, Display},
     fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
@@ -46,6 +44,7 @@ pub trait EdgeOutOf {
     fn edge_type(&self) -> EdgeType;
 }
 
+#[expect(dead_code)]
 pub trait GraphEdge {
     fn new(orig: usize, out_edge: impl EdgeOutOf) -> Self;
     fn orig(&self) -> usize;
@@ -1575,6 +1574,7 @@ where
     }
 }
 
+#[expect(dead_code)]
 #[derive(Clone)]
 pub struct ApproxDirHKPR<
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
@@ -1584,11 +1584,12 @@ pub struct ApproxDirHKPR<
     pub t: f64,
     pub eps: f64,
     pub seed: usize,
-    pub _target_size: usize,
-    pub _target_vol: usize,
-    pub _target_conductance: f64,
+    pub target_size: usize,
+    pub target_vol: usize,
+    pub target_conductance: f64,
 }
 
+// #[expect(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum ApproxDirichletHeatKernelK {
     None,
@@ -1696,9 +1697,9 @@ impl<
             t,
             eps,
             seed,
-            _target_size: target_size,
-            _target_vol: target_vol,
-            _target_conductance: target_conductance,
+            target_size,
+            target_vol,
+            target_conductance,
         })
     }
 
@@ -1751,6 +1752,7 @@ impl<
         curr_node
     }
 
+    #[allow(clippy::unreachable)]
     pub fn compute(&self, big_k: ApproxDirichletHeatKernelK) -> Result<Community<usize>, Error> {
         let node_count = match self.graph.size().overflowing_sub(1) {
             (_, true) => panic!("error approx-dirchlet-hk |V| + 1 == 0"),
@@ -1771,6 +1773,7 @@ impl<
             )?,
             ApproxDirichletHeatKernelK::Mean => Self::f64_is_nomal(2. * self.t, "2. * t")?,
             ApproxDirichletHeatKernelK::Unlim => f64::infinity(),
+            #[expect(unreachable_patterns)]
             _ => panic!("error approx-dirchlet-hk unknown K {}", big_k),
         };
         let k = OrderedFloat(k);
