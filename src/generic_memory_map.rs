@@ -11,8 +11,10 @@ use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
+use ordered_float::OrderedFloat;
 use regex::Regex;
 use static_assertions::const_assert;
+use std::collections::{HashSet, VecDeque};
 use std::{
     any::type_name,
     collections::HashMap,
@@ -647,6 +649,7 @@ where
         });
 
         // generate writing sets
+        let chunk = 4096; // read 8 pages of 4KB at a time
         for (t_idx, t_begin, t_end) in cycle_offsets.iter() {
             let trail_ptr = match cycles.slice(*t_begin, *t_end) {
                 Some(i) => i.as_ptr(),
@@ -654,8 +657,7 @@ where
             };
             let trail_slice = SharedSlice::<u64>::new(trail_ptr, *t_end - *t_begin);
             let mut pos = 0; // pos in u64 terms
-            // read 8 pages of 4KB at a time
-            while let Some(next_slice) = trail_slice.slice(pos, pos + 4096) {
+            while let Some(next_slice) = trail_slice.slice(pos, pos + chunk) {
                 for (pos_idx, node) in next_slice.iter().enumerate() {
                     if let Some(head_v) = trail_heads.get_mut(node) {
                         let p_idx = pos_idx + pos + 1;
@@ -691,7 +693,7 @@ where
         }
 
         let mut output_len: HashMap<usize, (usize, usize)> = HashMap::new();
-        // in nodes u64
+        // in nodes usize
         let cycles_length: Vec<usize> = cycle_offsets.iter().map(|(_, b, e)| e - b).collect();
         for head_trail in trail_sets.keys() {
             output_len.insert(*head_trail, (*head_trail, 1));
@@ -1142,8 +1144,10 @@ where
         // atomic array for next unused edge index for each node and unread edge count
         let mut next_edge_vec: Vec<AtomicUsize> = Vec::with_capacity(node_count);
         next_edge_vec.resize_with(node_count, || AtomicUsize::new(0));
+
         let mut edge_count: Vec<AtomicU8> = Vec::with_capacity(node_count);
         edge_count.resize_with(node_count, || AtomicU8::new(0));
+
         for i in 0..node_count {
             next_edge_vec[i].store(*index_ptr.get(i), Ordering::Relaxed);
             edge_count[i].store(
@@ -1163,6 +1167,7 @@ where
             for _ in 0..self.graph.thread_count {
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let next_edge = Arc::clone(&next_edge);
+
                 let edge_count = Arc::clone(&edge_count);
                 let start_vertex_counter = Arc::clone(&start_vertex_counter);
                 let cycles_mutex = &cycles_mutex;
@@ -1242,6 +1247,344 @@ where
 }
 
 #[derive(Clone)]
+pub struct HKRelax<
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+> {
+    graph: GraphMemoryMap<T, U>,
+    pub n: usize,
+    pub t: f64,
+    pub eps: f64,
+    pub seed: Vec<usize>,
+    pub psis: Vec<f64>,
+}
+
+impl<T, U> HKRelax<T, U>
+where
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+{
+    fn compute_psis(n: usize, t: f64) -> Vec<f64> {
+        let mut psis = vec![0f64; n + 1];
+        psis[n] = 1f64;
+        for i in (0..n).rev() {
+            psis[i] = psis[i + 1] * t / (i as f64 + 1f64) + 1f64;
+        }
+        psis
+    }
+
+    fn f64_to_usize_safe(x: f64) -> Option<usize> {
+        if x.is_finite() && x >= 0.0 && x <= usize::MAX as f64 {
+            Some(x as usize) // truncates toward zero
+        } else {
+            None
+        }
+    }
+
+    fn compute_n(t: f64, eps: f64) -> usize {
+        if t < 0f64 || eps < 0f64 {
+            panic!(
+                "error computing n for hk-relax t and epsilon must be positive (params: t {}, eps: {})",
+                t, eps
+            );
+        }
+        let bound = eps / 2f64;
+        let n_plus_two = match i32::try_from(t.floor() as i64) {
+            Ok(n) => match n.overflowing_add(1) {
+                (r, false) => r,
+                (_, true) => panic!(
+                    "error computing n + 2 for hk-relax (n + 1 = {}) + 1 overflowed",
+                    n
+                ),
+            },
+            Err(e) => panic!(
+                "error computing n for hk-relax couldn't cast t: {} to i32: {}",
+                t, e
+            ),
+        };
+        let mut t_power_n_plus_one = t.powi(n_plus_two - 1);
+        let mut n_plus_one_factorial = match (2..n_plus_two).try_fold(1.0_f64, |acc, x| {
+            let res = acc * (x as f64);
+            if res.is_finite() { Some(res) } else { None }
+        }) {
+            Some(fac) => fac,
+            None => panic!("error computing n for hk-relax overflowed trying to compute (n + 1)!"),
+        };
+        let mut n_plus_two = n_plus_two as f64;
+
+        while (t_power_n_plus_one * n_plus_two / n_plus_one_factorial / (n_plus_two - t)) >= bound {
+            t_power_n_plus_one *= t;
+            n_plus_one_factorial *= n_plus_two;
+            n_plus_two += 1f64;
+        }
+
+        // convert the f64 value to usize and subtract 2 to obtain n
+        match Self::f64_to_usize_safe(n_plus_two) {
+            Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
+                (n, false) => n,
+                (_, true) => panic!(
+                    "error computing n for hk-relax overflowed trying to compute {} - 2",
+                    n_plus_two_usize
+                ),
+            },
+            None => panic!(
+                "error computing n for hk-relax can't convert {} to usize",
+                n_plus_two
+            ),
+        }
+    }
+
+    pub fn new(
+        graph: GraphMemoryMap<T, U>,
+        t: f64,
+        eps: f64,
+        seed: Vec<usize>,
+    ) -> Result<Self, Error> {
+        if t <= 0f64 || eps <= 0f64 || eps >= 1f64 || seed.is_empty() {
+            panic!("error hk-relax invalid parameters");
+        }
+        let n = Self::compute_n(t, eps);
+        println!("n computed to be {}", n);
+        Ok(HKRelax {
+            graph,
+            n,
+            t,
+            eps,
+            seed,
+            psis: Self::compute_psis(n, t),
+        })
+    }
+
+    pub fn _adjust_parameters(&self, t: f64, eps: f64, seed: Vec<usize>) -> Option<Self> {
+        if t <= 0f64 || eps <= 0f64 || eps >= 1f64 || seed.is_empty() {
+            return None;
+        }
+        let n = Self::compute_n(t, eps);
+        Some(HKRelax {
+            graph: self.graph.clone(),
+            n,
+            t,
+            eps,
+            seed,
+            psis: Self::compute_psis(n, t),
+        })
+    }
+
+    pub fn compute(&self) -> Result<Community<usize>, Error> {
+        let _node_count = match self.graph.size().overflowing_sub(1) {
+            (_, true) => {
+                panic!("error hk-relax node_count overflowing_sub");
+            }
+            (i, _) => {
+                if i == 0 {
+                    panic!("error hk-relax true node_count is zero");
+                }
+                i as f64
+            }
+        };
+        let n = self.n as f64;
+        let threshold_pre_u_pre_j = self.t.exp() * self.eps / n;
+        let mut x: HashMap<usize, f64> = HashMap::new();
+        let mut r: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+
+        let seed_len_f64 = self.seed.clone().len() as f64;
+        for seed_node in self.seed.iter() {
+            if r.contains_key(&(*seed_node, 0usize)) {
+                panic!(
+                    "error hk-relax {} seed node is present multiple times in seed array",
+                    seed_node
+                );
+            }
+            r.insert((*seed_node, 0usize), 1f64 / seed_len_f64);
+            queue.push_back((*seed_node, 0));
+        }
+
+        while let Some((v, j)) = queue.pop_front() {
+            let rvj = match r.get(&(v, j)) {
+                Some(i) => *i,
+                None => panic!(
+                    "error hk-relax ({}, {}) present in queue but not in residual",
+                    v, j
+                ),
+            };
+
+            // x[v] += rvj
+            match x.get_mut(&v) {
+                Some(x_v) => {
+                    *x_v += rvj;
+                }
+                None => {
+                    x.insert(v, rvj);
+                }
+            };
+
+            // r[(v, j)] = 0
+            match r.get_mut(&(v, j)) {
+                Some(rvj) => *rvj = 0f64,
+                None => panic!("error hk-relax r({}, {}) Some and None", v, j),
+            };
+
+            //  mass = (t*rvj/(float(j)+1.))/len(G[v])
+            let (deg_v, v_n) = match self.graph.neighbours(v) {
+                Ok(v_n) => (v_n.count as f64, v_n),
+                Err(e) => panic!("error hk-relax getting neighbours of {}: {}", v, e),
+            };
+            let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
+
+            for u in v_n {
+                let u = u.dest();
+                let next = (u, j + 1);
+                if j + 1 == self.n {
+                    //FIXME: is it guaranteed that x contains u if j + 1 == N???
+                    match x.get_mut(&u) {
+                        Some(x_u) => *x_u += rvj / deg_v,
+                        None => {
+                            x.insert(u, rvj / deg_v);
+                        }
+                    };
+                    continue;
+                }
+                let r_next = match r.get_mut(&next) {
+                    Some(r_next) => r_next,
+                    None => {
+                        r.insert(next, 0f64);
+                        match r.get_mut(&next) {
+                            Some(r_next) => r_next,
+                            None => panic!(
+                                "error hk-relax just insrted ({}, {}) into residual and got None",
+                                u,
+                                j + 1
+                            ),
+                        }
+                    }
+                };
+                let deg_u = self.graph.node_degree(u) as f64;
+                let threshold = threshold_pre_u_pre_j * deg_u / self.psis[j + 1];
+                if *r_next < threshold && *r_next + mass >= threshold {
+                    queue.push_back(next);
+                } else {
+                    // println!("nope");
+                }
+                *r_next += mass;
+            }
+        }
+
+        // println!("mass vector {:?}", x);
+        // collect mass vector
+        let mut s: Vec<(usize, f64)> = x
+            .keys()
+            .map(|v| (*v, x.get(v).unwrap() / self.graph.node_degree(*v) as f64))
+            .collect::<Vec<(usize, f64)>>();
+        // // sort by decreasing mass
+        // s.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
+        // // debug
+        // // println!("descending-ordered mass vector {:?}", s);
+        //
+        // let mut vol_s = 0usize;
+        // let mut vol_v_minus_s = self.graph.width();
+        // let mut cut_s = 0usize;
+        // let mut bestcond = 1f64;
+        // let mut community: HashSet<usize> = HashSet::new();
+        // let mut best_community: HashSet<usize> = HashSet::new();
+        //
+        // for (u, _) in s {
+        //     let u_n = match self.graph.neighbours(u) {
+        //         Ok(u_n) => {
+        //             vol_s = match vol_s.overflowing_add(u_n.count) {
+        //                 (r, false) => r,
+        //                 (_, true) => panic!(
+        //                     "error hk-relax overflow_add in vol_s sweep cut at node {}",
+        //                     u
+        //                 ),
+        //             };
+        //             vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.count) {
+        //                 (r, false) => r,
+        //                 (_, true) => panic!(
+        //                     "error hk-relax overflow_add in vol_v_minus_s sweep cut at node {}",
+        //                     u
+        //                 ),
+        //             };
+        //             u_n
+        //         }
+        //         Err(e) => panic!(
+        //             "error hk-relax sweep cut couldn't get {} neighbours: {}",
+        //             u, e
+        //         ),
+        //     };
+        //     // FIXME: How do edges to self interact with this calculation
+        //     community.insert(u);
+        //     for v in u_n {
+        //         if community.contains(&v.dest()) {
+        //             cut_s = match cut_s.overflowing_sub(1) {
+        //                 (r, false) => r,
+        //                 (_, true) => panic!(
+        //                     "error hk-relax overflow_sub in cut_s sweep cut at node {} in neighbour {}",
+        //                     u,
+        //                     v.dest()
+        //                 ),
+        //             };
+        //         } else {
+        //             cut_s = match cut_s.overflowing_add(1) {
+        //                 (r, false) => r,
+        //                 (_, true) => panic!(
+        //                     "error hk-relax overflow_add in sweep cut at node {} in neighbour {}",
+        //                     u,
+        //                     v.dest()
+        //                 ),
+        //             };
+        //         }
+        //     }
+        //     // debug
+        //     // println!(
+        //     //     "added {} to community: vol_s {} vol_v_minus_s {} cut_s {}\n curr set conductance is {} while best conductance is {}",
+        //     //     u,
+        //     //     vol_s,
+        //     //     vol_v_minus_s,
+        //     //     cut_s,
+        //     //     (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64),
+        //     //     bestcond
+        //     // );
+        //
+        //     if (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64) < bestcond {
+        //         bestcond = (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64);
+        //         best_community = community.iter().copied().collect();
+        //     }
+        // }
+        //
+        // println!(
+        //     "best community {:?}\n{{\n\tconductance {}\n\tsize {}\n\t graph size {}}}",
+        //     best_community,
+        //     bestcond,
+        //     best_community.len(),
+        //     self.graph.size()
+        // );
+
+        match self
+            .graph
+            .best_community_by_conductance_from_diffusion_vector(s.as_mut())
+        {
+            Ok(c) => {
+                println!(
+                    "best community {:?} {{\n\tsize: {}\n\twidth: {}\n\tconductance: {}\n}}",
+                    c.nodes, c.size, c.width, c.conductance
+                );
+                Ok(c)
+            }
+            Err(e) => panic!("error: {}", e),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Community<NodeId: Clone + Debug> {
+    pub nodes: HashSet<NodeId>,
+    pub size: usize,
+    pub width: usize,
+    pub conductance: f64,
+}
+
+#[derive(Clone)]
 pub struct GraphMemoryMap<
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
@@ -1287,7 +1630,7 @@ where
     }
 
     #[inline(always)]
-    pub fn _node_degree(&self, node_id: usize) -> usize {
+    pub fn node_degree(&self, node_id: usize) -> usize {
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             let begin = ptr.read_unaligned();
@@ -1351,6 +1694,104 @@ where
             start_node,
             end_node,
         ))
+    }
+
+    fn best_community_by_conductance_from_diffusion_vector(
+        &self,
+        diffusion: &mut Vec<(usize, f64)>,
+    ) -> Result<Community<usize>, Error> {
+        diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
+        // debug
+        // println!("descending-ordered mass vector {:?}", s);
+
+        let mut vol_s = 0usize;
+        let mut vol_v_minus_s = self.width();
+        let mut cut_s = 0usize;
+        let mut community: HashSet<usize> = HashSet::new();
+        let mut best_conductance = 1f64;
+        let mut best_community: Vec<usize> = Vec::new();
+        let mut best_size = 0usize;
+        let mut best_width = 0usize;
+
+        for (u, _) in diffusion {
+            let u_n = match self.neighbours(*u) {
+                Ok(u_n) => {
+                    vol_s = match vol_s.overflowing_add(u_n.count) {
+                        (r, false) => r,
+                        (_, true) => panic!(
+                            "error hk-relax overflow_add in vol_s sweep cut at node {}",
+                            u
+                        ),
+                    };
+                    vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.count) {
+                        (r, false) => r,
+                        (_, true) => panic!(
+                            "error hk-relax overflow_add in vol_v_minus_s sweep cut at node {}",
+                            u
+                        ),
+                    };
+                    u_n
+                }
+                Err(e) => panic!(
+                    "error hk-relax sweep cut couldn't get {} neighbours: {}",
+                    u, e
+                ),
+            };
+            // FIXME: How do edges to self interact with this calculation
+            match community.get(u) {
+                Some(_) => panic!(
+                    "error building best community from diffusion vector: {} is present multiple times",
+                    u
+                ),
+                None => community.insert(*u),
+            };
+            for v in u_n {
+                if community.contains(&v.dest()) {
+                    cut_s = match cut_s.overflowing_sub(1) {
+                        (r, false) => r,
+                        (_, true) => panic!(
+                            "error hk-relax overflow_sub in cut_s sweep cut at node {} in neighbour {}",
+                            u,
+                            v.dest()
+                        ),
+                    };
+                } else {
+                    cut_s = match cut_s.overflowing_add(1) {
+                        (r, false) => r,
+                        (_, true) => panic!(
+                            "error hk-relax overflow_add in sweep cut at node {} in neighbour {}",
+                            u,
+                            v.dest()
+                        ),
+                    };
+                }
+            }
+            // debug
+            // println!(
+            //     "added {} to community: vol_s {} vol_v_minus_s {} cut_s {}\n curr set conductance is {} while best conductance is {}",
+            //     u,
+            //     vol_s,
+            //     vol_v_minus_s,
+            //     cut_s,
+            //     (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64),
+            //     bestcond
+            // );
+
+            let conductance = (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64);
+            if conductance < best_conductance {
+                best_conductance = conductance;
+                best_community = community.iter().copied().collect();
+                best_width = vol_s;
+                best_size = community.len();
+            }
+        }
+
+        Ok(Community {
+            nodes: best_community.into_iter().collect(),
+            size: best_size,
+            width: best_width,
+            conductance: best_conductance,
+        })
     }
 
     fn _is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
@@ -1421,15 +1862,17 @@ where
         None
     }
 
+    /// returns number of entries in node index file (== |V| + 1)
     pub fn size(&self) -> usize {
         self.graph_cache.index_bytes // num nodes
     }
 
+    /// returns number of entries in edge file (== |E|)
     pub fn width(&self) -> usize {
         self.graph_cache.graph_bytes // num edges
     }
 
-    fn _init_procedural_memory_bz(&self, mmap: u8) -> Result<ProceduralMemoryBZ, Error> {
+    fn init_procedural_memory_bz(&self, mmap: u8) -> Result<ProceduralMemoryBZ, Error> {
         let node_count = self.size() - 1;
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -1453,11 +1896,10 @@ where
         Ok((degree, node, core, pos))
     }
 
-    pub fn _compute_k_core_bz(&self, mmap: u8) -> Result<String, Error> {
+    pub fn compute_k_core_bz(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
-        let threads = self.thread_count.max(1) as usize;
-        let thread_load = node_count.div_ceil(threads);
+
         if node_count == 0 {
             return Err(Error::new(
                 std::io::ErrorKind::Other,
@@ -1465,7 +1907,10 @@ where
             ));
         }
 
-        let (degree, mut node, mut core, mut pos) = self._init_procedural_memory_bz(mmap)?;
+        let threads = self.thread_count.max(1) as usize;
+        let thread_load = node_count.div_ceil(threads);
+
+        let (degree, mut node, mut core, mut pos) = self.init_procedural_memory_bz(mmap)?;
         // compute out-degrees in parallel
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
@@ -1483,10 +1928,11 @@ where
 
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
+
                 let mut deg_arr = degree.slice;
 
-                let start = tid * thread_load;
-                let end = (start + thread_load).min(node_count);
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
 
                 max_vecs.push(scope.spawn(move |_| {
                     let mut bins: Vec<usize> = vec![0; 20];
@@ -1602,18 +2048,19 @@ where
         outfile.set_len(edge_count as u64 * std::mem::size_of::<u8>() as u64)?;
         let (out, _mmap): (SharedSliceMut<u8>, MmapMut) = SharedSliceMut::from_file(&outfile)?;
         let out_slice = out;
-        let core = Arc::new(core);
 
         thread::scope(|scope| {
             let mut res = vec![];
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
                 let graph_ptr = Arc::clone(&graph_ptr);
-                let mut out_ptr = out_slice;
-                let core = Arc::clone(&core);
 
-                let start = tid * thread_load;
-                let end = (start + thread_load).min(node_count);
+                let mut out_ptr = out_slice;
+                let core = &core.slice;
+
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
+
                 res.push(scope.spawn(move |_| -> Vec<u64> {
                     let mut res = vec![0u64; 20];
                     for u in start..end {
@@ -1705,7 +2152,6 @@ where
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
-
         let graph_ptr = Arc::new(SharedSlice::<T>::new(
             self.graph.as_ptr() as *const T,
             edge_count,
@@ -1718,13 +2164,13 @@ where
         let total_dead_nodes = thread::scope(|s| -> usize {
             let mut dead_nodes = vec![];
             for tid in 0..threads {
-                let start = std::cmp::min(tid * thread_load, node_count);
-                let end = std::cmp::min(start + thread_load, node_count);
-
                 let index_ptr = &index_ptr;
-                // Clone references as atomics don't implement COpy trait
+
                 let mut degree = degree.slice.clone();
                 let mut alive = alive.slice.clone();
+
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
 
                 dead_nodes.push(s.spawn(move |_| -> usize {
                     let mut dead_nodes = 0;
@@ -1773,9 +2219,6 @@ where
 
         thread::scope(|s| {
             for tid in 0..threads {
-                let start = std::cmp::min(tid * thread_load, node_count);
-                let end = std::cmp::min(start + thread_load, node_count);
-
                 let index_ptr = &index_ptr;
                 let graph_ptr = &graph_ptr;
 
@@ -1784,7 +2227,11 @@ where
                 let mut coreness = coreness.slice;
                 let mut frontier = frontier.clone();
                 let mut swap = swap.clone();
+
                 let synchronize = Arc::clone(&synchronize);
+
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
 
                 s.spawn(move |_| {
                     let _local_queue: Vec<usize> = vec![];
@@ -1979,8 +2426,10 @@ where
     pub fn k_truss_decomposition(&self, mmap: u8) -> Result<String, Error> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
+
         let threads = self.thread_count.max(1) as usize;
         let thread_load = node_count.div_ceil(threads);
+
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.index.as_ptr() as *const usize,
             node_count + 1,
@@ -2005,20 +2454,25 @@ where
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
                 let graph_ptr = Arc::clone(&graph_ptr);
+
+                let eo = edge_out.slice;
+                let er = edge_reciprocal.slice;
+
                 let mut trussness = edge_trussness.slice;
                 let mut tris = triangle_count.slice.clone();
                 let mut edges = edges.slice;
                 let mut edge_index = edge_index.slice;
-                let eo = edge_out.slice;
-                let er = edge_reciprocal.slice;
+
                 let synchronize = Arc::clone(&synchronize);
-                let start = std::cmp::min(tid * thread_load, index_ptr.len() - 1);
-                let end = std::cmp::min(start + thread_load, index_ptr.len() - 1);
-                scope.spawn(move |_| -> Result<(), Error> {
+
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
+
+                scope.spawn(move |_| {
                     // initialize triangle_count with zeroes
-                    let t_begin = *index_ptr.get(start);
-                    let t_end = *index_ptr.get(end);
-                    for idx in t_begin..t_end {
+                    let edge_begin = *index_ptr.get(start);
+                    let edge_end = *index_ptr.get(end);
+                    for idx in edge_begin..edge_end {
                         *trussness.get_mut(idx) = 0;
                         *tris.get_mut(idx) = AtomicU8::new(0);
                     }
@@ -2061,7 +2515,6 @@ where
                         }
                         neighbours.clear();
                     }
-                    Ok(())
                 });
             }
         })
@@ -2071,7 +2524,6 @@ where
 
         // Algorithm 2 - sentinel value is 0
         // blank (u64, usize) value
-        let _z = (0, usize::MAX);
         let mut edges = edges.slice;
         let mut edge_index = edge_index.slice;
         let mut edge_count = edge_count;
@@ -2080,6 +2532,7 @@ where
         let tris = triangle_count.slice.clone();
         let mut stack = stack.clone();
         let mut test = vec![0u64; 16];
+
         // max node degree is 16
         for k in 1..16 {
             if edge_count == 0 {
@@ -2216,17 +2669,23 @@ where
             self.graph.as_ptr() as *const T,
             edge_count,
         ));
+
         let (er, eo) = self.init_procedural_memory_build_reciprocal()?;
+
         let synchronize = Arc::new(Barrier::new(threads));
+
         thread::scope(|scope| {
             for tid in 0..threads {
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let index_ptr = Arc::clone(&index_ptr);
+
                 let mut er = er.slice;
                 let mut eo = eo.slice;
+
                 let synchronize = Arc::clone(&synchronize);
-                let begin = std::cmp::min(tid * thread_load, index_ptr.len() - 1);
-                let end = std::cmp::min(begin + thread_load, index_ptr.len() - 1);
+
+                let begin = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(begin + thread_load, node_count);
                 scope.spawn(move |_| -> Result<(), Error> {
                     let mut edges_start = *index_ptr.get(begin);
                     for u in begin..end {
@@ -2424,13 +2883,13 @@ where
                 let mut in_next = in_next.slice;
                 let mut processed = processed.slice;
                 let synchronize = Arc::clone(&synchronize);
-                scope.spawn(move |_| -> Result<(), Error> {
+
+                let init_begin = std::cmp::min(tid * edge_load, edge_count);
+                let init_end = std::cmp::min(init_begin + edge_load, edge_count);
+                let begin = std::cmp::min(tid * node_load, node_count - 1); // is node and edge
+                let end = std::cmp::min(begin + node_load, node_count - 1); // limit accurate?
+                scope.spawn(move |_| {
                     // initialize s, edge_out, x, curr, next, in_curr, in_next & processed
-                    let init_begin = tid * edge_load;
-                    let init_end = std::cmp::min(init_begin + edge_load, graph_ptr.len() - 1);
-                    let begin = tid * node_load;
-                    // last vertex isn't iterated hence index_ptr.len() - 2
-                    let end = std::cmp::min(begin + node_load, index_ptr.len() - 2);
                     for edge_offset in init_begin..init_end {
                         *s.get_mut(edge_offset) = AtomicU8::new(0);
                         *curr.get_mut(edge_offset) = 0;
@@ -2478,7 +2937,6 @@ where
                             *x.get_mut(graph_ptr.get(j).dest()) = 0;
                         }
                     }
-                    Ok(())
                 });
             }
         })
@@ -2495,19 +2953,24 @@ where
             for tid in 0..threads {
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let index_ptr = Arc::clone(&index_ptr);
-                let s = s.slice.clone();
-                let er = edge_reciprocal.slice;
+
+                let mut todo = edge_count;
                 let mut x = x[tid].slice;
+
+                let s = s.slice.clone();
                 let mut curr = curr.clone();
                 let mut next = next.clone();
+                let er = edge_reciprocal.slice;
                 let mut in_curr = in_curr.slice;
                 let mut in_next = in_next.slice;
                 let mut processed = processed.slice;
+
                 let total_duds = Arc::clone(&total_duds);
                 let synchronize = Arc::clone(&synchronize);
-                let mut todo = edge_count;
-                let begin = tid * edge_load;
-                let end = std::cmp::min(begin + edge_load, graph_ptr.len());
+
+                let begin = std::cmp::min(tid * edge_load, edge_count);
+                let end = std::cmp::min(begin + edge_load, edge_count);
+
                 res.push(scope.spawn(move |_| -> Result<Vec<u64>, Error> {
                     let mut res = vec![0_u64; 20];
                     let mut buff = vec![0; buff_size];
@@ -2584,10 +3047,10 @@ where
                                 let edges_stop = *index_ptr.get(u + 1);
 
                                 // mark u neighbours
-                                for j in edges_start..edges_stop {
-                                    let w = graph_ptr.get(j).dest();
+                                for u_w in edges_start..edges_stop {
+                                    let w = graph_ptr.get(u_w).dest();
                                     if w != u {
-                                        *x.get_mut(w) = *er.get(j) + 1;
+                                        *x.get_mut(w) = *er.get(u_w) + 1;
                                     }
                                 }
 
@@ -2666,8 +3129,8 @@ where
                                 }
 
                                 // unmark u neighbours
-                                for j in edges_start..edges_stop {
-                                    *x.get_mut(graph_ptr.get(j).dest()) = 0;
+                                for u_w in edges_start..edges_stop {
+                                    *x.get_mut(graph_ptr.get(u_w).dest()) = 0;
                                 }
                             }
                             if i > 0 {

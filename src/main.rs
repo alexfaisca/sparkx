@@ -7,7 +7,7 @@ mod shared_slice;
 use clap::Parser;
 use core::panic;
 use generic_memory_map::{
-    DirectedEdge, EdgeOutOf, EulerTrail, GraphCache, GraphMemoryMap, OutEdgeRecord,
+    DirectedEdge, EdgeOutOf, EulerTrail, GraphCache, GraphMemoryMap, HKRelax, OutEdgeRecord,
 };
 use node::EdgeType;
 use petgraph::graphmap::DiGraphMap;
@@ -346,10 +346,12 @@ fn parse_bytes_mmaped(
 
     let euler_trail = EulerTrail::new(graph_mmaped.clone())?;
     euler_trail.find_eulerian_cycle(2)?;
-    graph_mmaped._compute_k_core_bz(5)?;
+    graph_mmaped.compute_k_core_bz(5)?;
     graph_mmaped.compute_k_core_liu_et_al(5)?;
     graph_mmaped.pkt(7)?;
     graph_mmaped.k_truss_decomposition(7)?;
+    let hk_relax = HKRelax::new(graph_mmaped.clone(), 40., 0.0001, vec![7112])?;
+    let _ = hk_relax.compute()?;
     Ok(graph_mmaped)
 }
 
