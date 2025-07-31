@@ -6,7 +6,7 @@ use crate::shared_slice::{
 
 use bitfield::bitfield;
 use bytemuck::{Pod, Zeroable};
-use core::{fmt, panic};
+use core::{f64, fmt, panic};
 use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
@@ -1246,6 +1246,18 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Community<NodeId: Copy + Debug> {
+    /// (s, h(s)), ∀ s ϵ S, where h(s) is the heat kernel diffusion for a given node s
+    pub nodes: Vec<(NodeId, f64)>,
+    /// |S|
+    pub size: usize,
+    /// vol(S)
+    pub width: usize,
+    /// ϕ(S)
+    pub conductance: f64,
+}
+
 #[derive(Clone)]
 pub struct HKRelax<
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
@@ -1264,32 +1276,95 @@ where
     T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
     U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
 {
-    fn compute_psis(n: usize, t: f64) -> Vec<f64> {
-        let mut psis = vec![0f64; n + 1];
-        psis[n] = 1f64;
-        for i in (0..n).rev() {
-            psis[i] = psis[i + 1] * t / (i as f64 + 1f64) + 1f64;
+    #[inline(always)]
+    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
+        if !val.is_normal() {
+            panic!(
+                "error hk-relax abnormal value at {} = {}",
+                op_description, val
+            );
         }
-        psis
+        Ok(val)
     }
 
     fn f64_to_usize_safe(x: f64) -> Option<usize> {
-        if x.is_finite() && x >= 0.0 && x <= usize::MAX as f64 {
+        if x.is_normal() && x > 0f64 && x <= usize::MAX as f64 {
             Some(x as usize) // truncates toward zero
         } else {
             None
         }
     }
 
-    fn compute_n(t: f64, eps: f64) -> usize {
-        if t < 0f64 || eps < 0f64 {
+    fn evaluate_params(
+        graph: GraphMemoryMap<T, U>,
+        t: f64,
+        eps: f64,
+        seed: Vec<usize>,
+    ) -> Result<(), Error> {
+        let node_count = match graph.size().overflowing_sub(1) {
+            (_, true) => {
+                panic!("error hk-relax invalid parameters: |V| == 0, the graph is empty");
+            }
+            (i, _) => {
+                if i == 0 {
+                    panic!(
+                        "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
+                    );
+                }
+                i
+            }
+        };
+        if !t.is_normal() || t <= 0f64 {
             panic!(
-                "error computing n for hk-relax t and epsilon must be positive (params: t {}, eps: {})",
-                t, eps
+                "error hk-relax invalid parameters: t == {} doesn't satisfy t > 0.0",
+                t
             );
         }
-        let bound = eps / 2f64;
-        let n_plus_two = match i32::try_from(t.floor() as i64) {
+        if !eps.is_normal() || eps <= 0f64 || eps >= 1f64 {
+            panic!(
+                "error hk-relax invalid parameters: ε == {} doesn't satisfy 0.0 < ε 1.0",
+                eps
+            );
+        }
+        if seed.is_empty() {
+            panic!(
+                "error hk-relax invalid parameters: seed_nodes.len() == 0, please provide at least one seed node"
+            );
+        }
+        for (idx, seed_node) in seed.iter().enumerate() {
+            if *seed_node > node_count - 1 {
+                panic!(
+                    "error hk-relax invalid parameters: id(seed_nodes[{}]) == {} but max_id(v in V) == {}",
+                    idx,
+                    seed_node,
+                    node_count - 1
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_psis(n: usize, t: f64) -> Result<Vec<f64>, Error> {
+        let mut psis = vec![0f64; n + 1];
+        psis[n] = 1f64;
+        for i in (0..n).rev() {
+            psis[i] = Self::f64_is_nomal(
+                psis[i + 1] * t / (i as f64 + 1f64) + 1f64,
+                format!(
+                    "{{at round: {}}} (psis[{} + 1] * t / (i + 1) + 1)",
+                    n - i + 1,
+                    i
+                )
+                .as_str(),
+            )?;
+        }
+        Ok(psis)
+    }
+
+    fn compute_n(t: f64, eps: f64) -> Result<usize, Error> {
+        let bound = Self::f64_is_nomal(eps / 2f64, "ε/2")?;
+
+        let n_plus_two_i32 = match i32::try_from(t.floor() as i64) {
             Ok(n) => match n.overflowing_add(1) {
                 (r, false) => r,
                 (_, true) => panic!(
@@ -1302,26 +1377,30 @@ where
                 t, e
             ),
         };
-        let mut t_power_n_plus_one = t.powi(n_plus_two - 1);
-        let mut n_plus_one_factorial = match (2..n_plus_two).try_fold(1.0_f64, |acc, x| {
+
+        let mut t_power_n_plus_one = Self::f64_is_nomal(t.powi(n_plus_two_i32 - 1), "t^(n + 1)")?;
+
+        let mut n_plus_one_fac = match (2..n_plus_two_i32).try_fold(1.0_f64, |acc, x| {
             let res = acc * (x as f64);
             if res.is_finite() { Some(res) } else { None }
         }) {
-            Some(fac) => fac,
+            Some(fac) => Self::f64_is_nomal(fac, "(n + 1)!")?,
             None => panic!("error computing n for hk-relax overflowed trying to compute (n + 1)!"),
         };
-        let mut n_plus_two = n_plus_two as f64;
 
-        while (t_power_n_plus_one * n_plus_two / n_plus_one_factorial / (n_plus_two - t)) >= bound {
-            t_power_n_plus_one *= t;
-            n_plus_one_factorial *= n_plus_two;
+        let mut n_plus_two = n_plus_two_i32 as f64;
+
+        while (t_power_n_plus_one * n_plus_two / n_plus_one_fac / (n_plus_two - t)) >= bound {
+            t_power_n_plus_one = Self::f64_is_nomal(t_power_n_plus_one * t, "t^(n + 1)")?;
+            n_plus_one_fac = Self::f64_is_nomal(n_plus_one_fac * n_plus_two, "(n + 1)!")?;
             n_plus_two += 1f64;
         }
 
-        // convert the f64 value to usize and subtract 2 to obtain n
+        // convert the f64 value to usize subtract 2 and output n
+        // FIXME: are there other methods to validate n?
         match Self::f64_to_usize_safe(n_plus_two) {
             Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
-                (n, false) => n,
+                (n, false) => Ok(n),
                 (_, true) => panic!(
                     "error computing n for hk-relax overflowed trying to compute {} - 2",
                     n_plus_two_usize
@@ -1340,10 +1419,11 @@ where
         eps: f64,
         seed: Vec<usize>,
     ) -> Result<Self, Error> {
-        if t <= 0f64 || eps <= 0f64 || eps >= 1f64 || seed.is_empty() {
-            panic!("error hk-relax invalid parameters");
-        }
-        let n = Self::compute_n(t, eps);
+        let () = match Self::evaluate_params(graph.clone(), t, eps, seed.clone()) {
+            Ok(_) => {}
+            Err(e) => panic!("error creating HKRelax instance: {}", e),
+        };
+        let n = Self::compute_n(t, eps)?;
         println!("n computed to be {}", n);
         Ok(HKRelax {
             graph,
@@ -1351,39 +1431,32 @@ where
             t,
             eps,
             seed,
-            psis: Self::compute_psis(n, t),
+            psis: Self::compute_psis(n, t)?,
         })
     }
 
-    pub fn _adjust_parameters(&self, t: f64, eps: f64, seed: Vec<usize>) -> Option<Self> {
-        if t <= 0f64 || eps <= 0f64 || eps >= 1f64 || seed.is_empty() {
-            return None;
-        }
-        let n = Self::compute_n(t, eps);
-        Some(HKRelax {
+    /// receives an instance of HKRelax for a given graph and parameters for t, epsilon and a
+    /// vector of seed nodes.
+    /// returns an instance of HKRelax for the same graph with parameters adjusted accordingly
+    pub fn _adjust_parameters(&self, t: f64, eps: f64, seed: Vec<usize>) -> Result<Self, Error> {
+        let () = match Self::evaluate_params(self.graph.clone(), t, eps, seed.clone()) {
+            Ok(_) => {}
+            Err(e) => panic!("error creating HKRelax instance: {}", e),
+        };
+        let n = Self::compute_n(t, eps)?;
+        Ok(HKRelax {
             graph: self.graph.clone(),
             n,
             t,
             eps,
             seed,
-            psis: Self::compute_psis(n, t),
+            psis: Self::compute_psis(n, t)?,
         })
     }
 
     pub fn compute(&self) -> Result<Community<usize>, Error> {
-        let _node_count = match self.graph.size().overflowing_sub(1) {
-            (_, true) => {
-                panic!("error hk-relax node_count overflowing_sub");
-            }
-            (i, _) => {
-                if i == 0 {
-                    panic!("error hk-relax true node_count is zero");
-                }
-                i as f64
-            }
-        };
         let n = self.n as f64;
-        let threshold_pre_u_pre_j = self.t.exp() * self.eps / n;
+        let threshold_pre_u_pre_j = Self::f64_is_nomal(self.t.exp() * self.eps / n, "e^t * ε / n")?;
         let mut x: HashMap<usize, f64> = HashMap::new();
         let mut r: HashMap<(usize, usize), f64> = HashMap::new();
         let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
@@ -1402,7 +1475,7 @@ where
 
         while let Some((v, j)) = queue.pop_front() {
             let rvj = match r.get(&(v, j)) {
-                Some(i) => *i,
+                Some(i) => Self::f64_is_nomal(*i, "r([v, j])")?,
                 None => panic!(
                     "error hk-relax ({}, {}) present in queue but not in residual",
                     v, j
@@ -1412,7 +1485,7 @@ where
             // x[v] += rvj
             match x.get_mut(&v) {
                 Some(x_v) => {
-                    *x_v += rvj;
+                    *x_v = Self::f64_is_nomal(*x_v + rvj, "x[v] + r([v, j])")?;
                 }
                 None => {
                     x.insert(v, rvj);
@@ -1430,17 +1503,25 @@ where
                 Ok(v_n) => (v_n.count as f64, v_n),
                 Err(e) => panic!("error hk-relax getting neighbours of {}: {}", v, e),
             };
-            let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
+
+            let mass = Self::f64_is_nomal(
+                self.t * rvj / (j as f64 + 1f64) / deg_v,
+                "t * r[(v, j)] / (j + 1) / deg_v",
+            )?;
 
             for u in v_n {
                 let u = u.dest();
                 let next = (u, j + 1);
                 if j + 1 == self.n {
-                    //FIXME: is it guaranteed that x contains u if j + 1 == N???
                     match x.get_mut(&u) {
-                        Some(x_u) => *x_u += rvj / deg_v,
+                        Some(x_u) => {
+                            *x_u = Self::f64_is_nomal(
+                                *x_u + rvj / deg_v,
+                                "x[u] + (r[(v, j)] / deg_v)",
+                            )?
+                        }
                         None => {
-                            x.insert(u, rvj / deg_v);
+                            x.insert(u, Self::f64_is_nomal(rvj / deg_v, "r[(v, j)] / deg_v")?);
                         }
                     };
                     continue;
@@ -1452,7 +1533,7 @@ where
                         match r.get_mut(&next) {
                             Some(r_next) => r_next,
                             None => panic!(
-                                "error hk-relax just insrted ({}, {}) into residual and got None",
+                                "error hk-relax just inserted ({}, {}) into residual and got None",
                                 u,
                                 j + 1
                             ),
@@ -1460,113 +1541,30 @@ where
                     }
                 };
                 let deg_u = self.graph.node_degree(u) as f64;
-                let threshold = threshold_pre_u_pre_j * deg_u / self.psis[j + 1];
+                let threshold = Self::f64_is_nomal(
+                    threshold_pre_u_pre_j * deg_u / self.psis[j + 1],
+                    "e^t * ε * deg_u / (n * psis[j + 1])",
+                )?;
+
                 if *r_next < threshold && *r_next + mass >= threshold {
                     queue.push_back(next);
-                } else {
-                    // println!("nope");
                 }
                 *r_next += mass;
             }
         }
 
-        // println!("mass vector {:?}", x);
-        // collect mass vector
         let mut s: Vec<(usize, f64)> = x
             .keys()
             .map(|v| (*v, x.get(v).unwrap() / self.graph.node_degree(*v) as f64))
             .collect::<Vec<(usize, f64)>>();
-        // // sort by decreasing mass
-        // s.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
-        // // debug
-        // // println!("descending-ordered mass vector {:?}", s);
-        //
-        // let mut vol_s = 0usize;
-        // let mut vol_v_minus_s = self.graph.width();
-        // let mut cut_s = 0usize;
-        // let mut bestcond = 1f64;
-        // let mut community: HashSet<usize> = HashSet::new();
-        // let mut best_community: HashSet<usize> = HashSet::new();
-        //
-        // for (u, _) in s {
-        //     let u_n = match self.graph.neighbours(u) {
-        //         Ok(u_n) => {
-        //             vol_s = match vol_s.overflowing_add(u_n.count) {
-        //                 (r, false) => r,
-        //                 (_, true) => panic!(
-        //                     "error hk-relax overflow_add in vol_s sweep cut at node {}",
-        //                     u
-        //                 ),
-        //             };
-        //             vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.count) {
-        //                 (r, false) => r,
-        //                 (_, true) => panic!(
-        //                     "error hk-relax overflow_add in vol_v_minus_s sweep cut at node {}",
-        //                     u
-        //                 ),
-        //             };
-        //             u_n
-        //         }
-        //         Err(e) => panic!(
-        //             "error hk-relax sweep cut couldn't get {} neighbours: {}",
-        //             u, e
-        //         ),
-        //     };
-        //     // FIXME: How do edges to self interact with this calculation
-        //     community.insert(u);
-        //     for v in u_n {
-        //         if community.contains(&v.dest()) {
-        //             cut_s = match cut_s.overflowing_sub(1) {
-        //                 (r, false) => r,
-        //                 (_, true) => panic!(
-        //                     "error hk-relax overflow_sub in cut_s sweep cut at node {} in neighbour {}",
-        //                     u,
-        //                     v.dest()
-        //                 ),
-        //             };
-        //         } else {
-        //             cut_s = match cut_s.overflowing_add(1) {
-        //                 (r, false) => r,
-        //                 (_, true) => panic!(
-        //                     "error hk-relax overflow_add in sweep cut at node {} in neighbour {}",
-        //                     u,
-        //                     v.dest()
-        //                 ),
-        //             };
-        //         }
-        //     }
-        //     // debug
-        //     // println!(
-        //     //     "added {} to community: vol_s {} vol_v_minus_s {} cut_s {}\n curr set conductance is {} while best conductance is {}",
-        //     //     u,
-        //     //     vol_s,
-        //     //     vol_v_minus_s,
-        //     //     cut_s,
-        //     //     (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64),
-        //     //     bestcond
-        //     // );
-        //
-        //     if (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64) < bestcond {
-        //         bestcond = (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64);
-        //         best_community = community.iter().copied().collect();
-        //     }
-        // }
-        //
-        // println!(
-        //     "best community {:?}\n{{\n\tconductance {}\n\tsize {}\n\t graph size {}}}",
-        //     best_community,
-        //     bestcond,
-        //     best_community.len(),
-        //     self.graph.size()
-        // );
 
         match self
             .graph
-            .best_community_by_conductance_from_diffusion_vector(s.as_mut())
+            .sweep_cut_over_diffusion_vector_by_conductance(s.as_mut())
         {
             Ok(c) => {
                 println!(
-                    "best community {:?} {{\n\tsize: {}\n\twidth: {}\n\tconductance: {}\n}}",
+                    "best community {:?} {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
                     c.nodes, c.size, c.width, c.conductance
                 );
                 Ok(c)
@@ -1574,14 +1572,6 @@ where
             Err(e) => panic!("error: {}", e),
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct Community<NodeId: Clone + Debug> {
-    pub nodes: HashSet<NodeId>,
-    pub size: usize,
-    pub width: usize,
-    pub conductance: f64,
 }
 
 #[derive(Clone)]
@@ -1696,9 +1686,9 @@ where
         ))
     }
 
-    fn best_community_by_conductance_from_diffusion_vector(
+    fn sweep_cut_over_diffusion_vector_by_conductance(
         &self,
-        diffusion: &mut Vec<(usize, f64)>,
+        diffusion: &mut [(usize, f64)],
     ) -> Result<Community<usize>, Error> {
         diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
         // debug
@@ -1709,11 +1699,11 @@ where
         let mut cut_s = 0usize;
         let mut community: HashSet<usize> = HashSet::new();
         let mut best_conductance = 1f64;
-        let mut best_community: Vec<usize> = Vec::new();
+        let mut best_community: Vec<(usize, f64)> = Vec::new();
         let mut best_size = 0usize;
         let mut best_width = 0usize;
 
-        for (u, _) in diffusion {
+        for (idx, (u, _)) in diffusion.iter().enumerate() {
             let u_n = match self.neighbours(*u) {
                 Ok(u_n) => {
                     vol_s = match vol_s.overflowing_add(u_n.count) {
@@ -1737,7 +1727,6 @@ where
                     u, e
                 ),
             };
-            // FIXME: How do edges to self interact with this calculation
             match community.get(u) {
                 Some(_) => panic!(
                     "error building best community from diffusion vector: {} is present multiple times",
@@ -1746,6 +1735,10 @@ where
                 None => community.insert(*u),
             };
             for v in u_n {
+                // if edge is (u, u) it doesn't influence delta(S)
+                if v.dest() == *u {
+                    continue;
+                }
                 if community.contains(&v.dest()) {
                     cut_s = match cut_s.overflowing_sub(1) {
                         (r, false) => r,
@@ -1766,28 +1759,18 @@ where
                     };
                 }
             }
-            // debug
-            // println!(
-            //     "added {} to community: vol_s {} vol_v_minus_s {} cut_s {}\n curr set conductance is {} while best conductance is {}",
-            //     u,
-            //     vol_s,
-            //     vol_v_minus_s,
-            //     cut_s,
-            //     (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64),
-            //     bestcond
-            // );
 
             let conductance = (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64);
             if conductance < best_conductance {
                 best_conductance = conductance;
-                best_community = community.iter().copied().collect();
+                best_community = diffusion[0..=idx].to_vec();
                 best_width = vol_s;
                 best_size = community.len();
             }
         }
 
         Ok(Community {
-            nodes: best_community.into_iter().collect(),
+            nodes: best_community,
             size: best_size,
             width: best_width,
             conductance: best_conductance,

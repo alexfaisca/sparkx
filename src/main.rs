@@ -350,7 +350,7 @@ fn parse_bytes_mmaped(
     graph_mmaped.compute_k_core_liu_et_al(5)?;
     graph_mmaped.pkt(7)?;
     graph_mmaped.k_truss_decomposition(7)?;
-    let hk_relax = HKRelax::new(graph_mmaped.clone(), 40., 0.0001, vec![7112])?;
+    let hk_relax = HKRelax::new(graph_mmaped.clone(), 40., 0.000001, vec![8])?;
     let _ = hk_relax.compute()?;
     Ok(graph_mmaped)
 }
