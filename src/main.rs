@@ -7,7 +7,8 @@ mod shared_slice;
 use clap::Parser;
 use core::panic;
 use generic_memory_map::{
-    DirectedEdge, EdgeOutOf, EulerTrail, GraphCache, GraphMemoryMap, HKRelax, OutEdgeRecord,
+    ApproxDirHKPR, DirectedEdge, EdgeOutOf, EulerTrail, GraphCache, GraphMemoryMap, HKRelax,
+    OutEdgeRecord,
 };
 use node::EdgeType;
 use petgraph::graphmap::DiGraphMap;
@@ -352,6 +353,11 @@ fn parse_bytes_mmaped(
     graph_mmaped.k_truss_decomposition(7)?;
     let hk_relax = HKRelax::new(graph_mmaped.clone(), 40., 0.000001, vec![8])?;
     let _ = hk_relax.compute()?;
+    let approx_dirichlet_hkpr =
+        ApproxDirHKPR::new(graph_mmaped.clone(), 0.01, 8, 10000, 40000, 0.09)?;
+    let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::None)?;
+    let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
+    let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Unlim)?;
     Ok(graph_mmaped)
 }
 

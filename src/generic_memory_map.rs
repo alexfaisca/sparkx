@@ -11,7 +11,10 @@ use crossbeam::thread;
 use fst::{Map, MapBuilder};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
-use ordered_float::OrderedFloat;
+use ordered_float::{Float, OrderedFloat};
+use rand::Rng;
+use rand::rngs::OsRng;
+use rand_distr::{Distribution, Poisson};
 use regex::Regex;
 use static_assertions::const_assert;
 use std::collections::{HashSet, VecDeque};
@@ -1475,20 +1478,20 @@ where
 
         while let Some((v, j)) = queue.pop_front() {
             let rvj = match r.get(&(v, j)) {
-                Some(i) => Self::f64_is_nomal(*i, "r([v, j])")?,
+                Some(i) => *i,
                 None => panic!(
                     "error hk-relax ({}, {}) present in queue but not in residual",
                     v, j
                 ),
             };
 
-            // x[v] += rvj
+            // x[v] += rvj && check if r[(v, j)] is normal
             match x.get_mut(&v) {
                 Some(x_v) => {
                     *x_v = Self::f64_is_nomal(*x_v + rvj, "x[v] + r([v, j])")?;
                 }
                 None => {
-                    x.insert(v, rvj);
+                    x.insert(v, Self::f64_is_nomal(rvj, "r([v, j])")?);
                 }
             };
 
@@ -1504,10 +1507,8 @@ where
                 Err(e) => panic!("error hk-relax getting neighbours of {}: {}", v, e),
             };
 
-            let mass = Self::f64_is_nomal(
-                self.t * rvj / (j as f64 + 1f64) / deg_v,
-                "t * r[(v, j)] / (j + 1) / deg_v",
-            )?;
+            // result checked when node is popped from queue
+            let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
 
             for u in v_n {
                 let u = u.dest();
@@ -1553,14 +1554,266 @@ where
             }
         }
 
-        let mut s: Vec<(usize, f64)> = x
+        let mut h: Vec<(usize, f64)> = x
             .keys()
             .map(|v| (*v, x.get(v).unwrap() / self.graph.node_degree(*v) as f64))
             .collect::<Vec<(usize, f64)>>();
 
         match self
             .graph
-            .sweep_cut_over_diffusion_vector_by_conductance(s.as_mut())
+            .sweep_cut_over_diffusion_vector_by_conductance(h.as_mut())
+        {
+            Ok(c) => {
+                println!(
+                    "best community {:?} {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                    c.nodes, c.size, c.width, c.conductance
+                );
+                Ok(c)
+            }
+            Err(e) => panic!("error: {}", e),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ApproxDirHKPR<
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+> {
+    graph: GraphMemoryMap<T, U>,
+    pub t: f64,
+    pub eps: f64,
+    pub seed: usize,
+    pub _target_size: usize,
+    pub _target_vol: usize,
+    pub _target_conductance: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ApproxDirichletHeatKernelK {
+    None,
+    Mean,
+    Unlim,
+}
+
+impl<
+    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
+    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+> ApproxDirHKPR<T, U>
+{
+    #[inline(always)]
+    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
+        if !val.is_normal() {
+            panic!(
+                "error hk-relax abnormal value at {} = {}",
+                op_description, val
+            );
+        }
+        Ok(val)
+    }
+
+    fn f64_to_usize_safe(x: f64) -> Option<usize> {
+        if x.is_normal() && x > 0f64 && x <= usize::MAX as f64 {
+            Some(x as usize) // truncates toward zero
+        } else {
+            None
+        }
+    }
+
+    fn evaluate_params(
+        graph: GraphMemoryMap<T, U>,
+        seed_node: usize,
+        eps: f64,
+        _target_size: usize,
+        _target_vol: usize,
+        target_conductance: f64,
+    ) -> Result<(), Error> {
+        let node_count = match graph.size().overflowing_sub(1) {
+            (_, true) => {
+                panic!("error hk-relax invalid parameters: |V| == 0, the graph is empty");
+            }
+            (i, _) => {
+                if i == 0 {
+                    panic!(
+                        "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
+                    );
+                }
+                i
+            }
+        };
+        if !eps.is_normal() || eps <= 0f64 || eps >= 1f64 {
+            panic!(
+                "error hk-relax invalid parameters: ε == {} doesn't satisfy 0.0 < ε 1.0",
+                eps
+            );
+        }
+        if !target_conductance.is_normal()
+            || target_conductance <= 0f64
+            || target_conductance >= 1f64
+        {
+            panic!(
+                "error hk-relax invalid parameters: target_conductance == {} doesn't satisfy 0.0 < target_conductance < 1.0",
+                target_conductance
+            );
+        }
+        if seed_node > node_count - 1 {
+            panic!(
+                "error hk-relax invalid parameters: id(seed_nodes) == {} but max_id(v in V) == {}",
+                seed_node,
+                node_count - 1
+            );
+        }
+        Ok(())
+    }
+
+    pub fn new(
+        graph: GraphMemoryMap<T, U>,
+        eps: f64,
+        seed: usize,
+        target_size: usize,
+        target_vol: usize,
+        target_conductance: f64,
+    ) -> Result<Self, Error> {
+        let () = Self::evaluate_params(
+            graph.clone(),
+            seed,
+            eps,
+            target_size,
+            target_vol,
+            target_conductance,
+        )?;
+        let t_formula = "(1. / target_conductance) * ln((2. * sqrt(target_vol)) / (1. - ε) + 2. * ε * target_size)";
+        let t = Self::f64_is_nomal(
+            (1. / target_conductance)
+                * f64::ln(
+                    (2. * f64::sqrt(target_vol as f64)) / (1. - eps)
+                        + 2. * eps * target_size as f64,
+                ),
+            t_formula,
+        )?;
+        Ok(ApproxDirHKPR {
+            graph,
+            t,
+            eps,
+            seed,
+            _target_size: target_size,
+            _target_vol: target_vol,
+            _target_conductance: target_conductance,
+        })
+    }
+
+    fn random_sample_poisson(lambda: f64, n: usize) -> Result<Vec<OrderedFloat<f64>>, Error> {
+        let mut rng = rand::rng();
+        let poisson = match Poisson::new(lambda) {
+            Ok(dist) => dist,
+            Err(e) => panic!(
+                "error approx-dirchlet-hk couldn't sample poission distribution: {}",
+                e
+            ),
+        };
+        Ok(poisson
+            .sample_iter(&mut rng)
+            .take(n)
+            .map(OrderedFloat)
+            .collect())
+    }
+
+    #[inline(always)]
+    fn random_neighbour(&self, deg_u: usize, u_n: NeighbourIter<T, U>) -> usize {
+        let inv_deg_u = 1. / deg_u as f64;
+        let random: f64 = rand::rng().random();
+        let mut idx_plus_one = 1f64;
+        for v in u_n {
+            if idx_plus_one * inv_deg_u > random {
+                return v.dest();
+            }
+            idx_plus_one += idx_plus_one;
+        }
+        panic!("error approx-dirchlet-hk didn't find random neighbour");
+    }
+
+    fn random_walk_seed(&self, k: usize, seed_node: usize) -> usize {
+        let mut curr_node = seed_node;
+        for _ in 0..k {
+            let (deg_u, u_n) = match self.graph.neighbours(curr_node) {
+                Ok(u_n) => (u_n.count, u_n),
+                Err(e) => panic!(
+                    "error approx-dirchlet-hk couldn't get neighbours for {}: {}",
+                    curr_node, e
+                ),
+            };
+            if deg_u > 0 {
+                curr_node = self.random_neighbour(deg_u, u_n);
+            } else {
+                return curr_node;
+            }
+        }
+        curr_node
+    }
+
+    pub fn compute(&self, big_k: ApproxDirichletHeatKernelK) -> Result<Community<usize>, Error> {
+        let node_count = match self.graph.size().overflowing_sub(1) {
+            (_, true) => panic!("error approx-dirchlet-hk |V| + 1 == 0"),
+            (0, _) => panic!("error approx-dirchlet-hk |V| == 0"),
+            (i, _) => i as f64,
+        };
+
+        let r = Self::f64_is_nomal(
+            (16. / self.eps.powi(2)) * f64::ln(node_count),
+            "(16.0 / ε²) * ln(|V|)",
+        )?;
+        let one_over_r = Self::f64_is_nomal(1. / r, "1. / r")?;
+
+        let k = match big_k {
+            ApproxDirichletHeatKernelK::None => Self::f64_is_nomal(
+                2. * f64::ln(1. / self.eps) / (f64::ln(f64::ln(1. / self.eps))),
+                "2. * ln(1. / ε) / ln(ln(1. / ε))",
+            )?,
+            ApproxDirichletHeatKernelK::Mean => Self::f64_is_nomal(2. * self.t, "2. * t")?,
+            ApproxDirichletHeatKernelK::Unlim => f64::infinity(),
+            _ => panic!("error approx-dirchlet-hk unknown K {}", big_k),
+        };
+        let k = OrderedFloat(k);
+
+        let num_samples: usize = match Self::f64_to_usize_safe(r) {
+            Some(s) => s,
+            None => panic!("error approx-dirchlet-hk couldn't cast {} to usize", r),
+        };
+        let steps: Vec<OrderedFloat<f64>> = Self::random_sample_poisson(self.t, num_samples)?;
+        let mut aprox_hkpr_samples: HashMap<usize, f64> = HashMap::new();
+
+        for little_k in steps {
+            let OrderedFloat(little_k) = std::cmp::min(little_k, k);
+            let little_k_usize = match Self::f64_to_usize_safe(little_k) {
+                Some(val) => val,
+                None => panic!(
+                    "error approx-dirchlet-hk couldn't cast {} to usize",
+                    little_k
+                ),
+            };
+            let v = self.random_walk_seed(little_k_usize, self.seed);
+            match aprox_hkpr_samples.get_mut(&v) {
+                Some(v) => *v += one_over_r,
+                None => {
+                    aprox_hkpr_samples.insert(v, one_over_r);
+                }
+            };
+        }
+
+        // FIXME: Never normalized
+        let mut p: Vec<(usize, f64)> = aprox_hkpr_samples
+            .keys()
+            .map(|u| {
+                (
+                    *u,
+                    *aprox_hkpr_samples.get(u).unwrap() / self.graph.node_degree(*u) as f64,
+                )
+            })
+            .collect::<Vec<(usize, f64)>>();
+
+        match self
+            .graph
+            .sweep_cut_over_diffusion_vector_by_conductance(p.as_mut())
         {
             Ok(c) => {
                 println!(
@@ -3579,6 +3832,17 @@ impl fmt::Display for FileType {
             FileType::KTruss => "KTruss",
             FileType::EdgeReciprocal => "EdgeReciprocal",
             FileType::EdgeOver => "EdgeOver",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl fmt::Display for ApproxDirichletHeatKernelK {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ApproxDirichletHeatKernelK::None => "ApproxDirichletHeatKernelK::None",
+            ApproxDirichletHeatKernelK::Mean => "ApproxDirichletHeatKernelK::Mean",
+            ApproxDirichletHeatKernelK::Unlim => "ApproxDirichletHeatKernelK::Unlim",
         };
         write!(f, "{}", s)
     }
