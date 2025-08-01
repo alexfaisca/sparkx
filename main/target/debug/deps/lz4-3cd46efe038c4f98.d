@@ -1,0 +1,10 @@
+/home/alexandre/Documents/Thesis/code/target/debug/deps/liblz4-3cd46efe038c4f98.rmeta: /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/lib.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/liblz4.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/decoder.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/encoder.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/block/mod.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/../README.md
+
+/home/alexandre/Documents/Thesis/code/target/debug/deps/lz4-3cd46efe038c4f98.d: /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/lib.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/liblz4.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/decoder.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/encoder.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/block/mod.rs /home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/../README.md
+
+/home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/lib.rs:
+/home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/liblz4.rs:
+/home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/decoder.rs:
+/home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/encoder.rs:
+/home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/block/mod.rs:
+/home/alexandre/.config/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lz4-1.28.1/src/../README.md:

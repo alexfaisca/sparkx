@@ -1,8 +1,17 @@
 /target
 /cache
+/thesis_template
+/test
+/ggcat
+/books
 *.txt
 *.lz4
 *.py
 *.fasta
-Cargo.lock
+*.pdf
+*.lock
+*.ics
+*.tar
+*.gz
+*.zip
 
