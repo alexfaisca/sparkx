@@ -1,5 +1,5 @@
-/target
-/cache
+*/target/
+*/cache/
 /thesis_template
 /test
 /ggcat
