@@ -1,11 +1,8 @@
-use crate::node::EdgeType;
+use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedQueueMut, SharedSlice,
     SharedSliceMut,
 };
-
-use bitfield::bitfield;
-use bytemuck::{Pod, Zeroable};
 use core::{f64, fmt, panic};
 use crossbeam::thread;
 use fst::{Map, MapBuilder};
@@ -19,9 +16,8 @@ use static_assertions::const_assert;
 use std::{
     any::type_name,
     collections::{HashMap, HashSet, VecDeque},
-    fmt::{Debug, Display},
+    fmt::Debug,
     fs::{self, File, OpenOptions},
-    hash::{Hash, Hasher},
     io::{BufRead, BufReader, Error, Write},
     marker::PhantomData,
     path::Path,
@@ -38,90 +34,6 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 static CACHE_DIR: &str = "./cache/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
-
-pub trait EdgeOutOf {
-    fn dest(&self) -> usize;
-    fn edge_type(&self) -> EdgeType;
-}
-
-#[expect(dead_code)]
-pub trait GraphEdge {
-    fn new(orig: usize, out_edge: impl EdgeOutOf) -> Self;
-    fn orig(&self) -> usize;
-    fn dest(&self) -> usize;
-    fn edge_type(&self) -> EdgeType;
-}
-
-bitfield! {
-    #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Pod, Zeroable)]
-    #[repr(C)]
-    pub struct OutEdgeRecord(u64);
-    impl BitAnd;
-    impl BitOr;
-    impl BitXor;
-    impl new;
-    u64;
-    u64, from into EdgeType, edge_type, set_edge_type: 1, 0;
-    u64, dest_node, set_dest_node: 63, 2;
-}
-
-impl EdgeOutOf for OutEdgeRecord {
-    fn dest(&self) -> usize {
-        self.dest_node() as usize
-    }
-    fn edge_type(&self) -> EdgeType {
-        self.edge_type()
-    }
-}
-
-#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Pod, Zeroable)]
-#[repr(C)]
-pub struct DirectedEdge {
-    origin: usize,
-    edge: OutEdgeRecord,
-}
-
-impl DirectedEdge {
-    #[inline]
-    fn origin(&self) -> usize {
-        self.origin
-    }
-
-    #[inline]
-    fn dest(&self) -> usize {
-        self.edge.dest_node() as usize
-    }
-
-    #[inline]
-    fn edge_type(&self) -> EdgeType {
-        self.edge.edge_type()
-    }
-}
-
-impl GraphEdge for DirectedEdge {
-    #[inline]
-    fn new(origin: usize, out_edge: impl EdgeOutOf) -> DirectedEdge {
-        DirectedEdge {
-            origin,
-            edge: OutEdgeRecord::new(out_edge.edge_type(), out_edge.dest() as u64),
-        }
-    }
-
-    #[inline]
-    fn orig(&self) -> usize {
-        self.origin
-    }
-
-    #[inline]
-    fn dest(&self) -> usize {
-        self.dest()
-    }
-
-    #[inline]
-    fn edge_type(&self) -> EdgeType {
-        self.edge_type()
-    }
-}
 
 fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
@@ -225,7 +137,7 @@ fn cleanup_cache() -> Result<(), Error> {
     }
 }
 
-pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> {
+pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub graph_file: Arc<File>,
     pub index_file: Arc<File>,
     pub kmer_file: Arc<File>,
@@ -235,13 +147,11 @@ pub struct GraphCache<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + S
     pub graph_bytes: usize,
     pub index_bytes: usize,
     pub readonly: bool,
-    _marker: PhantomData<T>,
+    _marker1: PhantomData<Edge>,
+    _marker2: PhantomData<EdgeType>,
 }
 
-impl<T> GraphCache<T>
-where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-{
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
     fn init_cache_file_from_id_or_random(
         graph_id: Option<String>,
         target_type: FileType,
@@ -268,7 +178,7 @@ where
         ))
     }
 
-    pub fn init() -> Result<GraphCache<T>, Error> {
+    pub fn init() -> Result<GraphCache<EdgeType, Edge>, Error> {
         if !Path::new(CACHE_DIR).exists() {
             fs::create_dir_all(CACHE_DIR)?;
         }
@@ -312,7 +222,7 @@ where
             Err(e) => panic!("error couldnt open file {}: {}", index_filename, e),
         };
 
-        Ok(GraphCache::<T> {
+        Ok(GraphCache::<EdgeType, Edge> {
             graph_file: Arc::new(graph_file),
             index_file: Arc::new(index_file),
             kmer_file: Arc::new(kmer_file),
@@ -322,11 +232,12 @@ where
             graph_bytes: 0,
             index_bytes: 0,
             readonly: false,
-            _marker: PhantomData::<T>,
+            _marker1: PhantomData::<Edge>,
+            _marker2: PhantomData::<EdgeType>,
         })
     }
 
-    pub fn init_with_id(id: String) -> Result<GraphCache<T>, Error> {
+    pub fn init_with_id(id: String) -> Result<GraphCache<EdgeType, Edge>, Error> {
         if !Path::new(CACHE_DIR).exists() {
             fs::create_dir_all(CACHE_DIR)?;
         }
@@ -374,7 +285,7 @@ where
             Err(e) => panic!("error couldnt open file {}: {}", index_filename, e),
         };
 
-        Ok(GraphCache::<T> {
+        Ok(GraphCache::<EdgeType, Edge> {
             graph_file: Arc::new(graph_file),
             index_file: Arc::new(index_file),
             kmer_file: Arc::new(kmer_file),
@@ -384,11 +295,12 @@ where
             graph_bytes: 0,
             index_bytes: 0,
             readonly: false,
-            _marker: PhantomData::<T>,
+            _marker1: PhantomData::<Edge>,
+            _marker2: PhantomData::<EdgeType>,
         })
     }
 
-    pub fn open(filename: String) -> Result<GraphCache<T>, Error> {
+    pub fn open(filename: String) -> Result<GraphCache<EdgeType, Edge>, Error> {
         let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
         let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
         let kmer_filename = cache_file_name(filename.clone(), FileType::KmerTmp, None)?;
@@ -409,7 +321,7 @@ where
         let graph_len = graph_file.metadata().unwrap().len() as usize;
         let index_len = index_file.metadata().unwrap().len() as usize;
 
-        Ok(GraphCache::<T> {
+        Ok(GraphCache::<EdgeType, Edge> {
             graph_file: Arc::new(graph_file),
             index_file: Arc::new(index_file),
             kmer_file: Arc::new(kmer_file),
@@ -419,14 +331,12 @@ where
             graph_bytes: graph_len,
             index_bytes: index_len,
             readonly: true,
-            _marker: PhantomData::<T>,
+            _marker1: PhantomData::<Edge>,
+            _marker2: PhantomData::<EdgeType>,
         })
     }
 
-    pub fn write_node(&mut self, node_id: usize, data: &[T], label: &str) -> Result<(), Error>
-    where
-        T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf,
-    {
+    pub fn write_node(&mut self, node_id: usize, data: &[Edge], label: &str) -> Result<(), Error> {
         match node_id == self.index_bytes {
             true => {
                 writeln!(self.kmer_file, "{}\t{}", node_id, label)?;
@@ -598,19 +508,16 @@ impl FindDisjointSetsEulerTrails {
     }
 }
 
-pub struct EulerTrail<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> {
-    graph: GraphMemoryMap<T, U>,
+pub struct EulerTrail<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    graph: GraphMemoryMap<EdgeType, Edge>,
 }
 
-impl<T, U> EulerTrail<T, U>
+impl<EdgeType, Edge> EulerTrail<EdgeType, Edge>
 where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
 {
-    pub fn new(graph: GraphMemoryMap<T, U>) -> Result<EulerTrail<T, U>, Error> {
+    pub fn new(graph: GraphMemoryMap<EdgeType, Edge>) -> Result<EulerTrail<EdgeType, Edge>, Error> {
         Ok(EulerTrail { graph })
     }
 
@@ -1008,8 +915,8 @@ where
             0 => panic!("Graph has no vertices"),
             i => i,
         };
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.graph.as_ptr() as *const Edge,
             self.graph.width(),
         ));
 
@@ -1142,8 +1049,8 @@ where
 
         let index_ptr =
             SharedSlice::<usize>::new(self.graph.index.as_ptr() as *const usize, self.graph.size());
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.graph.as_ptr() as *const Edge,
             self.graph.width(),
         ));
 
@@ -1265,11 +1172,8 @@ pub struct Community<NodeId: Copy + Debug> {
 }
 
 #[derive(Clone)]
-pub struct HKRelax<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> {
-    graph: GraphMemoryMap<T, U>,
+pub struct HKRelax<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    graph: GraphMemoryMap<EdgeType, Edge>,
     pub n: usize,
     pub t: f64,
     pub eps: f64,
@@ -1277,10 +1181,10 @@ pub struct HKRelax<
     pub psis: Vec<f64>,
 }
 
-impl<T, U> HKRelax<T, U>
+impl<EdgeType, Edge> HKRelax<EdgeType, Edge>
 where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
 {
     #[inline(always)]
     fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
@@ -1302,7 +1206,7 @@ where
     }
 
     fn evaluate_params(
-        graph: GraphMemoryMap<T, U>,
+        graph: GraphMemoryMap<EdgeType, Edge>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
@@ -1420,7 +1324,7 @@ where
     }
 
     pub fn new(
-        graph: GraphMemoryMap<T, U>,
+        graph: GraphMemoryMap<EdgeType, Edge>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
@@ -1506,7 +1410,7 @@ where
 
             //  mass = (t*rvj/(float(j)+1.))/len(G[v])
             let (deg_v, v_n) = match self.graph.neighbours(v) {
-                Ok(v_n) => (v_n.count as f64, v_n),
+                Ok(v_n) => (v_n.remaining_neighbours() as f64, v_n),
                 Err(e) => panic!("error hk-relax getting neighbours of {}: {}", v, e),
             };
 
@@ -1580,11 +1484,8 @@ where
 
 #[expect(dead_code)]
 #[derive(Clone)]
-pub struct ApproxDirHKPR<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> {
-    graph: GraphMemoryMap<T, U>,
+pub struct ApproxDirHKPR<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    graph: GraphMemoryMap<EdgeType, Edge>,
     pub t: f64,
     pub eps: f64,
     pub seed: usize,
@@ -1601,11 +1502,7 @@ pub enum ApproxDirichletHeatKernelK {
     Unlim,
 }
 
-impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> ApproxDirHKPR<T, U>
-{
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeType, Edge> {
     #[inline(always)]
     fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
         if !val.is_normal() {
@@ -1626,7 +1523,7 @@ impl<
     }
 
     fn evaluate_params(
-        graph: GraphMemoryMap<T, U>,
+        graph: GraphMemoryMap<EdgeType, Edge>,
         seed_node: usize,
         eps: f64,
         _target_size: usize,
@@ -1672,7 +1569,7 @@ impl<
     }
 
     pub fn new(
-        graph: GraphMemoryMap<T, U>,
+        graph: GraphMemoryMap<EdgeType, Edge>,
         eps: f64,
         seed: usize,
         target_size: usize,
@@ -1724,7 +1621,7 @@ impl<
     }
 
     #[inline(always)]
-    fn random_neighbour(&self, deg_u: usize, u_n: NeighbourIter<T, U>) -> usize {
+    fn random_neighbour(&self, deg_u: usize, u_n: NeighbourIter<EdgeType, Edge>) -> usize {
         let inv_deg_u = 1. / deg_u as f64;
         let random: f64 = rand::rng().random();
         let mut idx_plus_one = 1f64;
@@ -1741,7 +1638,7 @@ impl<
         let mut curr_node = seed_node;
         for _ in 0..k {
             let (deg_u, u_n) = match self.graph.neighbours(curr_node) {
-                Ok(u_n) => (u_n.count, u_n),
+                Ok(u_n) => (u_n.remaining_neighbours(), u_n),
                 Err(e) => panic!(
                     "error approx-dirchlet-hk couldn't get neighbours for {}: {}",
                     curr_node, e
@@ -1835,25 +1732,24 @@ impl<
 }
 
 #[derive(Clone)]
-pub struct GraphMemoryMap<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> {
+pub struct GraphMemoryMap<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: Arc<Mmap>,
     index: Arc<Mmap>,
     kmers: Arc<Map<Mmap>>,
-    graph_cache: GraphCache<T>,
+    graph_cache: GraphCache<EdgeType, Edge>,
     edge_size: usize,
     thread_count: u8,
-    _marker: PhantomData<U>,
 }
 
-impl<T, U> GraphMemoryMap<T, U>
+impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
 where
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
 {
-    pub fn init(cache: GraphCache<T>, thread_count: u8) -> Result<GraphMemoryMap<T, U>, Error> {
+    pub fn init(
+        cache: GraphCache<EdgeType, Edge>,
+        thread_count: u8,
+    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Error> {
         if cache.readonly {
             let mmap = unsafe {
                 match MmapOptions::new().map(&File::open(&cache.kmer_filename)?) {
@@ -1870,9 +1766,8 @@ where
                     Err(e) => panic!("error couldn't map k-mer fst mmap: {}", e),
                 },
                 graph_cache: cache,
-                edge_size: std::mem::size_of::<T>(),
+                edge_size: std::mem::size_of::<Edge>(),
                 thread_count,
-                _marker: PhantomData,
             });
         }
 
@@ -1905,21 +1800,21 @@ where
         }
     }
 
-    pub fn neighbours(&self, node_id: usize) -> Result<NeighbourIter<T, U>, Error> {
+    pub fn neighbours(&self, node_id: usize) -> Result<NeighbourIter<EdgeType, Edge>, Error> {
         if node_id >= self.size() {
             panic!("error invalid range");
         }
 
-        Ok(NeighbourIter::<T, U>::new(
-            self.graph.as_ptr() as *const T,
+        Ok(NeighbourIter::<EdgeType, Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
             node_id,
         ))
     }
 
-    pub fn edges(&self) -> Result<EdgeIter<T, U>, Error> {
-        Ok(EdgeIter::<T, U>::new(
-            self.graph.as_ptr() as *const T,
+    pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Error> {
+        Ok(EdgeIter::<EdgeType, Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
             0,
             self.size(),
@@ -1930,7 +1825,7 @@ where
         &self,
         start_node: usize,
         end_node: usize,
-    ) -> Result<EdgeIter<T, U>, Error> {
+    ) -> Result<EdgeIter<EdgeType, Edge>, Error> {
         if start_node > end_node {
             panic!("error invalid range, beginning after end");
         }
@@ -1938,8 +1833,8 @@ where
             panic!("error invalid range");
         }
 
-        Ok(EdgeIter::<T, U>::new(
-            self.graph.as_ptr() as *const T,
+        Ok(EdgeIter::<EdgeType, Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
             start_node,
             end_node,
@@ -1966,14 +1861,15 @@ where
         for (idx, (u, _)) in diffusion.iter().enumerate() {
             let u_n = match self.neighbours(*u) {
                 Ok(u_n) => {
-                    vol_s = match vol_s.overflowing_add(u_n.count) {
+                    vol_s = match vol_s.overflowing_add(u_n.remaining_neighbours()) {
                         (r, false) => r,
                         (_, true) => panic!(
                             "error hk-relax overflow_add in vol_s sweep cut at node {}",
                             u
                         ),
                     };
-                    vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.count) {
+                    vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.remaining_neighbours())
+                    {
                         (r, false) => r,
                         (_, true) => panic!(
                             "error hk-relax overflow_add in vol_v_minus_s sweep cut at node {}",
@@ -2159,8 +2055,8 @@ where
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             edge_count,
         ));
 
@@ -2395,8 +2291,8 @@ where
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             edge_count,
         ));
 
@@ -2677,8 +2573,8 @@ where
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             edge_count,
         ));
 
@@ -2908,8 +2804,8 @@ where
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             edge_count,
         ));
 
@@ -3082,8 +2978,8 @@ where
             self.index.as_ptr() as *const usize,
             node_count + 1,
         ));
-        let graph_ptr = Arc::new(SharedSlice::<T>::new(
-            self.graph.as_ptr() as *const T,
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.as_ptr() as *const Edge,
             edge_count,
         ));
 
@@ -3436,45 +3332,30 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct GraphIterator<'a, T: Copy + Debug + Display + Pod + Zeroable + Send + Sync> {
-    inner: &'a [T],
-    pos: usize,
-}
-
 #[derive(Debug, Clone)]
-pub struct NeighbourIter<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> {
-    edge_ptr: *const T,
-    _orig_edge_ptr: *const T,
+pub struct NeighbourIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    edge_ptr: *const Edge,
+    _orig_edge_ptr: *const Edge,
     _orig_id_ptr: *const usize,
+    #[expect(dead_code)]
     id: usize,
-    pub count: usize,
+    count: usize,
     offset: usize,
-    _phantom: std::marker::PhantomData<U>,
+    _phantom: std::marker::PhantomData<EdgeType>,
 }
 
 #[derive(Debug)]
-pub struct EdgeIter<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> {
-    edge_ptr: *const T,
+pub struct EdgeIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    edge_ptr: *const Edge,
     id_ptr: *const usize,
     id: usize,
     end: usize,
     count: usize,
-    _phantom: std::marker::PhantomData<U>,
+    _phantom: std::marker::PhantomData<EdgeType>,
 }
 
-impl<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> NeighbourIter<T, U>
-{
-    fn new(edge_mmap: *const T, id_mmap: *const usize, node_id: usize) -> Self {
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> NeighbourIter<EdgeType, Edge> {
+    fn new(edge_mmap: *const Edge, id_mmap: *const usize, node_id: usize) -> Self {
         let _orig_edge_ptr = edge_mmap;
         let _orig_id_ptr = id_mmap;
         let id_ptr = unsafe { id_mmap.add(node_id) };
@@ -3487,7 +3368,7 @@ impl<
             id: node_id,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
             offset,
-            _phantom: std::marker::PhantomData::<U>,
+            _phantom: std::marker::PhantomData::<EdgeType>,
         }
     }
 
@@ -3498,29 +3379,30 @@ impl<
         })
     }
 
-    fn _next_back_with_offset(&mut self) -> Option<(usize, U)> {
+    fn _next_back_with_offset(&mut self) -> Option<(usize, Edge)> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
-        let next: (usize, U);
+        let next: (usize, Edge);
         unsafe {
-            next = (
-                self.offset + self.count,
-                U::new(self.id, self.edge_ptr.add(self.count).read_unaligned()),
-            );
+            next = (self.id, self.edge_ptr.add(self.count).read_unaligned());
         };
         Some(next)
     }
 
-    fn _next_with_offset(&mut self) -> Option<(usize, U)> {
+    fn remaining_neighbours(&self) -> usize {
+        self.count
+    }
+
+    fn _next_with_offset(&mut self) -> Option<(usize, Edge)> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
-        let next: (usize, U);
+        let next: (usize, Edge);
         self.edge_ptr = unsafe {
-            next = (self.offset, U::new(self.id, self.edge_ptr.read_unaligned()));
+            next = (self.offset, self.edge_ptr.read_unaligned());
             self.edge_ptr.add(1)
         };
         self.offset += 1;
@@ -3528,42 +3410,38 @@ impl<
     }
 }
 
-impl<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> DoubleEndedIterator for NeighbourIter<T, U>
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> DoubleEndedIterator
+    for NeighbourIter<EdgeType, Edge>
 {
     #[inline(always)]
-    fn next_back(&mut self) -> Option<U> {
+    fn next_back(&mut self) -> Option<Edge> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
-        let next: U;
+        let next: Edge;
         unsafe {
-            next = U::new(self.id, self.edge_ptr.add(self.count).read_unaligned());
+            next = self.edge_ptr.add(self.count).read_unaligned();
         };
         Some(next)
     }
 }
 
-impl<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> Iterator for NeighbourIter<T, U>
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator
+    for NeighbourIter<EdgeType, Edge>
 {
-    type Item = U;
+    type Item = Edge;
 
     #[inline(always)]
-    fn next(&mut self) -> Option<U> {
+    fn next(&mut self) -> Option<Edge> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
         self.offset += 1;
-        let next: U;
+        let next: Edge;
         self.edge_ptr = unsafe {
-            next = U::new(self.id, self.edge_ptr.read_unaligned());
+            next = self.edge_ptr.read_unaligned();
             self.edge_ptr.add(1)
         };
         Some(next)
@@ -3576,13 +3454,9 @@ impl<
     }
 }
 
-impl<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> EdgeIter<T, U>
-{
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> EdgeIter<EdgeType, Edge> {
     #[inline(always)]
-    fn new(edge_mmap: *const T, id_mmap: *const usize, start: usize, end: usize) -> Self {
+    fn new(edge_mmap: *const Edge, id_mmap: *const usize, start: usize, end: usize) -> Self {
         let id_ptr = unsafe { id_mmap.add(start) };
         let offset = unsafe { id_ptr.read_unaligned() };
         let edge_ptr = unsafe { edge_mmap.add(offset) };
@@ -3593,20 +3467,16 @@ impl<
             id: start,
             end,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            _phantom: std::marker::PhantomData::<U>,
+            _phantom: std::marker::PhantomData::<EdgeType>,
         }
     }
 }
 
-impl<
-    T: Copy + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Pod + Zeroable + GraphEdge + Send + Sync,
-> Iterator for EdgeIter<T, U>
-{
-    type Item = U;
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator for EdgeIter<EdgeType, Edge> {
+    type Item = Edge;
 
     #[inline(always)]
-    fn next(&mut self) -> Option<U> {
+    fn next(&mut self) -> Option<Edge> {
         if self.count == 0 {
             self.id += 1;
             if self.id > self.end {
@@ -3619,9 +3489,9 @@ impl<
             };
         }
         self.count -= 1;
-        let next: U;
+        let next: Edge;
         self.edge_ptr = unsafe {
-            next = U::new(self.id, self.edge_ptr.read_unaligned());
+            next = self.edge_ptr.read_unaligned();
             self.edge_ptr.add(1)
         };
         Some(next)
@@ -3633,80 +3503,56 @@ impl<
         (remaining, Some(remaining))
     }
 }
-
-impl<'a, T: Copy + Debug + Display + Pod + Zeroable + Send + Sync> Iterator
-    for GraphIterator<'a, T>
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::RangeFull>
+    for GraphMemoryMap<EdgeType, Edge>
 {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.inner.len() {
-            None
-        } else {
-            self.pos += 1;
-            Some(&self.inner[self.pos - 1])
-        }
-    }
-}
-
-impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> std::ops::Index<std::ops::RangeFull> for GraphMemoryMap<T, U>
-{
-    type Output = [T];
+    type Output = [Edge];
     #[inline]
-    fn index(&self, _index: std::ops::RangeFull) -> &[T] {
+    fn index(&self, _index: std::ops::RangeFull) -> &[Edge] {
         unsafe {
             slice::from_raw_parts(
-                self.graph.as_ptr() as *const T,
+                self.graph.as_ptr() as *const Edge,
                 self.size() * 8 / self.edge_size,
             )
         }
     }
 }
 
-impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> std::ops::Index<std::ops::Range<usize>> for GraphMemoryMap<T, U>
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::Range<usize>>
+    for GraphMemoryMap<EdgeType, Edge>
 {
-    type Output = [T];
+    type Output = [Edge];
     #[inline]
-    fn index(&self, index: std::ops::Range<usize>) -> &[T] {
+    fn index(&self, index: std::ops::Range<usize>) -> &[Edge] {
         unsafe {
             slice::from_raw_parts(
-                self.graph.as_ptr().add(index.start * self.edge_size) as *const T,
+                self.graph.as_ptr().add(index.start * self.edge_size) as *const Edge,
                 index.end - index.start,
             )
         }
     }
 }
 
-impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> std::ops::Index<std::ops::Range<u64>> for GraphMemoryMap<T, U>
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::Range<u64>>
+    for GraphMemoryMap<EdgeType, Edge>
 {
-    type Output = [T];
+    type Output = [Edge];
     #[inline]
-    fn index(&self, index: std::ops::Range<u64>) -> &[T] {
+    fn index(&self, index: std::ops::Range<u64>) -> &[Edge] {
         let start = index.start as usize;
         let end = index.end as usize;
 
         unsafe {
             slice::from_raw_parts(
-                self.graph.as_ptr().add(start * self.edge_size) as *const T,
+                self.graph.as_ptr().add(start * self.edge_size) as *const Edge,
                 end - start,
             )
         }
     }
 }
 
-impl<
-    T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync,
-    U: Copy + Debug + Display + Pod + Zeroable + GraphEdge + Send + Sync,
-> Debug for GraphMemoryMap<T, U>
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug
+    for GraphMemoryMap<EdgeType, Edge>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -3725,79 +3571,7 @@ impl<
     }
 }
 
-impl PartialEq for OutEdgeRecord {
-    fn eq(&self, other: &Self) -> bool {
-        self.dest_node() == other.dest_node() && self.edge_type() == other.edge_type()
-    }
-}
-
-impl Eq for OutEdgeRecord {}
-
-impl Hash for OutEdgeRecord {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.dest_node().hash(state);
-    }
-}
-
-impl Debug for OutEdgeRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Edge(type: {:?}, dest: {:?})",
-            self.edge_type(),
-            self.dest_node()
-        )
-    }
-}
-
-impl Display for OutEdgeRecord {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{{{}, {}}}", self.edge_type(), self.dest_node())
-    }
-}
-
-impl PartialEq for DirectedEdge {
-    fn eq(&self, other: &Self) -> bool {
-        self.origin() == other.origin()
-            && self.dest() == other.dest()
-            && self.edge_type() == other.edge_type()
-    }
-}
-
-impl Eq for DirectedEdge {}
-
-impl Hash for DirectedEdge {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.origin().hash(state);
-        self.dest().hash(state);
-    }
-}
-
-impl Debug for DirectedEdge {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Edge(type: {:?}, origin: {:?}, dest: {:?})",
-            self.edge_type(),
-            self.origin(),
-            self.dest()
-        )
-    }
-}
-
-impl Display for DirectedEdge {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{{{}, {}, {}}}",
-            self.edge_type(),
-            self.origin(),
-            self.dest()
-        )
-    }
-}
-
-impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> Debug for GraphCache<T> {
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug for GraphCache<EdgeType, Edge> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -3807,7 +3581,7 @@ impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> Debug
     }
 }
 
-impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> Clone for GraphCache<T> {
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCache<EdgeType, Edge> {
     fn clone(&self) -> Self {
         if !self.readonly {
             panic!(
@@ -3824,7 +3598,8 @@ impl<T: Copy + Debug + Display + Pod + Zeroable + EdgeOutOf + Send + Sync> Clone
             graph_bytes: self.graph_bytes,
             index_bytes: self.index_bytes,
             readonly: true,
-            _marker: self._marker,
+            _marker1: self._marker1,
+            _marker2: self._marker2,
         }
     }
 }

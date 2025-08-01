@@ -2,16 +2,12 @@
 mod abstract_graph;
 mod generic_edge;
 mod generic_memory_map;
-mod node;
 mod shared_slice;
 
 use clap::Parser;
 use core::panic;
-use generic_memory_map::{
-    ApproxDirHKPR, DirectedEdge, EdgeOutOf, EulerTrail, GraphCache, GraphMemoryMap, HKRelax,
-    OutEdgeRecord,
-};
-use node::EdgeType;
+use generic_edge::{GenericEdge, GenericEdgeType, StandardEdge, TinyEdgeType};
+use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
 use petgraph::graphmap::DiGraphMap;
 use rustworkx_core::petgraph::{self};
 use rustworkx_core::{self};
@@ -145,18 +141,19 @@ fn main() {
     };
 }
 
-fn petgraph_suite(_graph: DiGraphMap<u64, EdgeType>) {}
+fn petgraph_suite(_graph: DiGraphMap<u64, TinyEdgeType>) {}
 
-fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<OutEdgeRecord, DirectedEdge>) {}
+fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<TinyEdgeType, StandardEdge>) {}
 
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
 
 fn mmap_from_file(
     data_path: String,
     threads: u8,
-) -> Result<GraphMemoryMap<OutEdgeRecord, DirectedEdge>, ParsingError> {
-    let graph_cache: GraphCache<OutEdgeRecord> = GraphCache::<OutEdgeRecord>::open(data_path)?;
-    let graph_mmaped = GraphMemoryMap::<OutEdgeRecord, DirectedEdge>::init(graph_cache, threads)?;
+) -> Result<GraphMemoryMap<TinyEdgeType, StandardEdge>, ParsingError> {
+    let graph_cache: GraphCache<TinyEdgeType, StandardEdge> =
+        GraphCache::<TinyEdgeType, StandardEdge>::open(data_path)?;
+    let graph_mmaped = GraphMemoryMap::<TinyEdgeType, StandardEdge>::init(graph_cache, threads)?;
 
     /* ********************************************************************************* */
     // Lookup test
@@ -205,19 +202,19 @@ fn read_file<P: AsRef<Path>>(path: P, mode: InputType) -> io::Result<Vec<u8>> {
     Ok(contents)
 }
 
-fn parse_direction(orig: &str, dest: &str) -> Result<EdgeType, ParsingError> {
+fn parse_direction(orig: &str, dest: &str) -> Result<TinyEdgeType, ParsingError> {
     match (orig, dest) {
-        ("+", "+") => Ok(EdgeType::FF),
-        ("+", "-") => Ok(EdgeType::FR),
-        ("-", "+") => Ok(EdgeType::RF),
-        ("-", "-") => Ok(EdgeType::RR),
+        ("+", "+") => Ok(TinyEdgeType::FF),
+        ("+", "-") => Ok(TinyEdgeType::FR),
+        ("-", "+") => Ok(TinyEdgeType::RF),
+        ("-", "-") => Ok(TinyEdgeType::RR),
         _ => panic!("error invalid direction: \"{}:{}\"", orig, dest),
     }
 }
 
-fn parse_bytes_petgraph(input: &[u8]) -> Result<DiGraphMap<u64, EdgeType>, ParsingError> {
+fn parse_bytes_petgraph(input: &[u8]) -> Result<DiGraphMap<u64, TinyEdgeType>, ParsingError> {
     // let mut result: Vec<(u64, Node)> = vec![];
-    let mut graph = DiGraphMap::<u64, EdgeType>::new();
+    let mut graph = DiGraphMap::<u64, TinyEdgeType>::new();
     let mut lines = input.split(|&b| b == b'\n');
 
     while let Some(line) = lines.next() {
@@ -257,12 +254,12 @@ fn parse_bytes_mmaped(
     input: &[u8],
     threads: u8,
     id: Option<String>,
-) -> Result<GraphMemoryMap<OutEdgeRecord, DirectedEdge>, ParsingError> {
+) -> Result<GraphMemoryMap<TinyEdgeType, StandardEdge>, ParsingError> {
     // This assumes UTF-8 but avoids full conversion
     let mut lines = input.split(|&b| b == b'\n');
     let mut graph_cache = match id {
-        Some(id) => generic_memory_map::GraphCache::<OutEdgeRecord>::init_with_id(id)?,
-        None => generic_memory_map::GraphCache::<OutEdgeRecord>::init()?,
+        Some(id) => generic_memory_map::GraphCache::<TinyEdgeType, StandardEdge>::init_with_id(id)?,
+        None => generic_memory_map::GraphCache::<TinyEdgeType, StandardEdge>::init()?,
     };
 
     //debug
@@ -296,8 +293,8 @@ fn parse_bytes_mmaped(
 
         for link in node {
             let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
-            edges.push(OutEdgeRecord::new(
-                parse_direction(link_slice[0], link_slice[2])?,
+            edges.push(StandardEdge::new(
+                parse_direction(link_slice[0], link_slice[2])?.label() as u64,
                 link_slice[1].parse()?,
             ));
         }
@@ -312,8 +309,8 @@ fn parse_bytes_mmaped(
     //debug
     // println!("graph cache: {:?}", graph_cache);
 
-    let graph_mmaped: GraphMemoryMap<OutEdgeRecord, DirectedEdge> =
-        GraphMemoryMap::<OutEdgeRecord, DirectedEdge>::init(graph_cache, threads)?;
+    let graph_mmaped: GraphMemoryMap<TinyEdgeType, StandardEdge> =
+        GraphMemoryMap::<TinyEdgeType, StandardEdge>::init(graph_cache, threads)?;
 
     println!("graph {:?}", graph_mmaped.edges());
     println!("node 5: {:?}", graph_mmaped.neighbours(5)?);

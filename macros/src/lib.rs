@@ -200,6 +200,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
         unsafe impl bytemuck::Pod for #name {}
 
         impl GenericEdge<#quoted_edge_type> for #name {
+            #[inline] fn new(edge_type: u64, edge_dest: u64) -> Self { #name::new(edge_type, edge_dest) }
             #[inline] fn dest(&self) -> usize { #dest_access as usize }
             #[inline] fn e_type(&self) -> #quoted_edge_type { #quoted_edge_type::from(#edge_type_access) }
         }

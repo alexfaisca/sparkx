@@ -34,7 +34,7 @@ const _: () = {
 
 /// describes the behavior edge types must exhibit to be used by the tool
 pub trait GenericEdgeType:
-    Copy + Clone + Debug + Display + PartialEq + Eq + Zeroable + From<u64> + From<usize>
+    Copy + Clone + Debug + Display + PartialEq + Eq + Zeroable + From<u64> + From<usize> + Send + Sync
 {
     /// edge label
     fn label(&self) -> usize;
@@ -42,8 +42,10 @@ pub trait GenericEdgeType:
 
 /// describes the behavior edges must exhibit to be used by the tool
 pub trait GenericEdge<T: GenericEdgeType>:
-    Copy + Clone + Debug + Display + PartialEq + Eq + PartialOrd + Ord + Pod + Zeroable
+    Copy + Clone + Debug + Display + PartialEq + Eq + PartialOrd + Ord + Pod + Zeroable + Send + Sync
 {
+    /// destiny node id
+    fn new(edge_type: u64, edge_dest: u64) -> Self;
     /// destiny node id
     fn dest(&self) -> usize;
     /// edge type
