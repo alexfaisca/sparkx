@@ -1472,8 +1472,8 @@ where
         {
             Ok(c) => {
                 println!(
-                    "best community {:?} {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
-                    c.nodes, c.size, c.width, c.conductance
+                    "best community {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                    c.size, c.width, c.conductance
                 );
                 Ok(c)
             }
@@ -1678,6 +1678,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeT
             _ => panic!("error approx-dirchlet-hk unknown K {}", big_k),
         };
         let k = OrderedFloat(k);
+        println!(
+            "k (ceil on sample value) computed to be {}\nr (number of samples) computed to be {}",
+            k, r
+        );
 
         let num_samples: usize = match Self::f64_to_usize_safe(r) {
             Some(s) => s,
@@ -1721,8 +1725,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeT
         {
             Ok(c) => {
                 println!(
-                    "best community {:?} {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
-                    c.nodes, c.size, c.width, c.conductance
+                    "best community {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                    c.size, c.width, c.conductance
                 );
                 Ok(c)
             }

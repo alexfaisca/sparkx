@@ -6,7 +6,9 @@ mod shared_slice;
 
 use clap::Parser;
 use core::panic;
-use generic_edge::{GenericEdge, GenericEdgeType, StandardEdge, TinyEdgeType};
+use generic_edge::{
+    GenericEdge, GenericEdgeType, StandardEdge, SubStandardColoredEdgeType, Test, TinyEdgeType,
+};
 use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
 use petgraph::graphmap::DiGraphMap;
 use rustworkx_core::petgraph::{self};
@@ -81,53 +83,46 @@ fn main() {
     ) {
         // .txt input file
         (Some("txt"), _) => match args.mmap {
-            true => mmapped_suite(
-                match parse_bytes_mmaped(
-                    read_file(args.file.clone(), InputType::Txt)
-                        .expect("error couldn't read file")
-                        .as_ref(),
-                    args.threads,
-                    args.output_id,
-                ) {
-                    Ok(i) => i,
-                    Err(e) => panic!("error couldn't parse file, {:?}", e),
-                },
-            ),
-            false => petgraph_suite(
-                parse_bytes_petgraph(
-                    read_file(args.file, InputType::Txt)
-                        .expect("error couldn't read file")
-                        .as_ref(),
-                )
-                .expect("error couldn't parse file"),
-            ),
+            true => {}
+            false => {
+                petgraph_suite(
+                    parse_bytes_petgraph(
+                        read_file(args.file, InputType::Txt)
+                            .expect("error couldn't read file")
+                            .as_ref(),
+                    )
+                    .expect("error couldn't parse file"),
+                );
+            }
         },
         // .lz4 input file
         (Some("lz4"), _) => match args.mmap {
-            true => mmapped_suite(
-                parse_bytes_mmaped(
-                    read_file(args.file.clone(), InputType::Lz4)
-                        .expect("error couldn't read file")
-                        .as_ref(),
-                    args.threads,
-                    args.output_id,
-                )
-                .expect("error couldn't parse file"),
-            ),
-            false => petgraph_suite(
-                parse_bytes_petgraph(
-                    read_file(args.file, InputType::Lz4)
-                        .expect("error couldn't read file")
-                        .as_ref(),
-                )
-                .expect("error couldn't parse file"),
-            ),
+            true => {
+                mmapped_suite(
+                    parse_bytes_mmaped(
+                        read_file(args.file.clone(), InputType::Lz4)
+                            .expect("error couldn't read file")
+                            .as_ref(),
+                        args.threads,
+                        args.output_id,
+                    )
+                    .expect("error couldn't parse file"),
+                );
+            }
+            false => {
+                petgraph_suite(
+                    parse_bytes_petgraph(
+                        read_file(args.file, InputType::Lz4)
+                            .expect("error couldn't read file")
+                            .as_ref(),
+                    )
+                    .expect("error couldn't parse file"),
+                );
+            }
         },
         // .mmap input file
         (Some("mmap"), Ok(false)) => match args.mmap {
-            true => mmapped_suite(
-                mmap_from_file(args.file.clone(), args.threads).expect("error couldn't read file"),
-            ),
+            true => {}
             false => panic!("error input file of type .mmap requires setting the -m --mmap flag"),
         },
         (Some("mmap"), Ok(true)) => {
@@ -143,7 +138,7 @@ fn main() {
 
 fn petgraph_suite(_graph: DiGraphMap<u64, TinyEdgeType>) {}
 
-fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<TinyEdgeType, StandardEdge>) {}
+fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<SubStandardColoredEdgeType, Test>) {}
 
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
 
@@ -254,12 +249,14 @@ fn parse_bytes_mmaped(
     input: &[u8],
     threads: u8,
     id: Option<String>,
-) -> Result<GraphMemoryMap<TinyEdgeType, StandardEdge>, ParsingError> {
+) -> Result<GraphMemoryMap<SubStandardColoredEdgeType, Test>, ParsingError> {
     // This assumes UTF-8 but avoids full conversion
     let mut lines = input.split(|&b| b == b'\n');
     let mut graph_cache = match id {
-        Some(id) => generic_memory_map::GraphCache::<TinyEdgeType, StandardEdge>::init_with_id(id)?,
-        None => generic_memory_map::GraphCache::<TinyEdgeType, StandardEdge>::init()?,
+        Some(id) => {
+            generic_memory_map::GraphCache::<SubStandardColoredEdgeType, Test>::init_with_id(id)?
+        }
+        None => generic_memory_map::GraphCache::<SubStandardColoredEdgeType, Test>::init()?,
     };
 
     //debug
@@ -293,10 +290,12 @@ fn parse_bytes_mmaped(
 
         for link in node {
             let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
-            edges.push(StandardEdge::new(
-                parse_direction(link_slice[0], link_slice[2])?.label() as u64,
-                link_slice[1].parse()?,
-            ));
+            edges.push(Test {
+                edge_type: SubStandardColoredEdgeType::from(
+                    parse_direction(link_slice[0], link_slice[2])?.label() as usize,
+                ),
+                dest_node: link_slice[1].parse()?,
+            });
         }
 
         edges.sort_unstable_by_key(|e| e.dest());
@@ -309,8 +308,8 @@ fn parse_bytes_mmaped(
     //debug
     // println!("graph cache: {:?}", graph_cache);
 
-    let graph_mmaped: GraphMemoryMap<TinyEdgeType, StandardEdge> =
-        GraphMemoryMap::<TinyEdgeType, StandardEdge>::init(graph_cache, threads)?;
+    let graph_mmaped: GraphMemoryMap<SubStandardColoredEdgeType, Test> =
+        GraphMemoryMap::<SubStandardColoredEdgeType, Test>::init(graph_cache, threads)?;
 
     println!("graph {:?}", graph_mmaped.edges());
     println!("node 5: {:?}", graph_mmaped.neighbours(5)?);
@@ -352,7 +351,7 @@ fn parse_bytes_mmaped(
     let hk_relax = HKRelax::new(graph_mmaped.clone(), 40., 0.000001, vec![8])?;
     let _ = hk_relax.compute()?;
     let approx_dirichlet_hkpr =
-        ApproxDirHKPR::new(graph_mmaped.clone(), 0.001, 8, 10000, 40000, 0.09)?;
+        ApproxDirHKPR::new(graph_mmaped.clone(), 0.01, 8, 10000, 40000, 0.09)?;
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::None)?;
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Unlim)?;

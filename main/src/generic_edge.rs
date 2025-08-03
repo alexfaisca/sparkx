@@ -34,28 +34,80 @@ const _: () = {
 
 /// describes the behavior edge types must exhibit to be used by the tool
 pub trait GenericEdgeType:
-    Copy + Clone + Debug + Display + PartialEq + Eq + Zeroable + From<u64> + From<usize> + Send + Sync
+    Copy
+    + Clone
+    + Default
+    + Debug
+    + Display
+    + PartialEq
+    + Eq
+    + Zeroable
+    + From<u64>
+    + From<usize>
+    + Send
+    + Sync
 {
     /// edge label
     fn label(&self) -> usize;
 }
 
+#[expect(dead_code)]
 /// describes the behavior edges must exhibit to be used by the tool
 pub trait GenericEdge<T: GenericEdgeType>:
-    Copy + Clone + Debug + Display + PartialEq + Eq + PartialOrd + Ord + Pod + Zeroable + Send + Sync
+    Copy
+    + Clone
+    + Default
+    + Debug
+    + Display
+    + PartialEq
+    + Eq
+    + PartialOrd
+    + Ord
+    + Pod
+    + Zeroable
+    + Send
+    + Sync
 {
     /// destiny node id
     fn new(edge_type: u64, edge_dest: u64) -> Self;
+    fn set_edge_dest(&mut self, new_edge_dest: u64) -> &mut Self;
+    fn set_edge_type(&mut self, new_edge_type: u64) -> &mut Self;
     /// destiny node id
     fn dest(&self) -> usize;
     /// edge type
     fn e_type(&self) -> T;
 }
 
+#[repr(C)]
+#[derive(GenericEdge)]
+pub struct Test {
+    #[edge_dest(getter = "_get_d", t = "u32")]
+    pub dest_node: u32,
+    #[edge_type(getter = "_get_t", t = "SubStandardColoredEdgeType")]
+    pub edge_type: SubStandardColoredEdgeType,
+}
+
+impl Test {
+    fn _get_d(&self) -> u32 {
+        self.dest_node
+    }
+    fn _get_t(&self) -> SubStandardColoredEdgeType {
+        self.edge_type
+    }
+    fn _set_d(&mut self, d: u32) -> &mut Self {
+        self.dest_node = d;
+        self
+    }
+    fn _set_t(mut self, t: SubStandardColoredEdgeType) -> Self {
+        self.edge_type = t;
+        self
+    }
+}
+
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(getter = "edge_type", real_type = "TinyEdgeType")]
-#[edge_dest(getter = "dest_node", real_type = "u16")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "TinyEdgeType")]
+#[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
 #[repr(C)]
     pub struct TinyEdge(u16);
     impl BitAnd;
@@ -69,8 +121,8 @@ bitfield! {
 
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(getter = "edge_type", real_type = "TinyEdgeType")]
-#[edge_dest(getter = "dest_node", real_type = "u32")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "TinyEdgeType")]
+#[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
 #[repr(C)]
     pub struct SubStandardEdge(u32);
     impl BitAnd;
@@ -84,8 +136,8 @@ bitfield! {
 
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(getter = "edge_type", real_type = "TinyEdgeType")]
-#[edge_dest(getter = "dest_node", real_type = "u64")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "TinyEdgeType")]
+#[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
 #[repr(C)]
     pub struct StandardEdge(u64);
     impl BitAnd;
@@ -99,8 +151,8 @@ bitfield! {
 
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(getter = "edge_type", real_type = "SubStandardColoredEdgeType")]
-#[edge_dest(getter = "dest_node", real_type = "u32")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "SubStandardColoredEdgeType")]
+#[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u32")]
 #[repr(C)]
     pub struct ColoredSubStandardEdge(u64);
     impl BitAnd;
@@ -114,8 +166,8 @@ bitfield! {
 
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(getter = "edge_type", real_type = "ColoredEdgeType")]
-#[edge_dest(getter = "dest_node", real_type = "u64")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "ColoredEdgeType")]
+#[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
 #[repr(C)]
     pub struct ColouredStandardEdge(u128);
     impl BitAnd;
@@ -126,6 +178,7 @@ bitfield! {
     u64, edge_type, set_edge_type: 63, 0;
     u64, dest_node, set_dest_node: 127, 64;
 }
+
 #[derive(GenericEdgeType)]
 #[repr(C)]
 pub enum TinyEdgeType {
