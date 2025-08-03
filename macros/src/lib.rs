@@ -216,20 +216,32 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                                 impl_default_for_self = Some(
                                     quote! {#name {#d_r : #dest_ty::try_from(0u64).unwrap() , #e_r : #edge_ty::from(0u64) } },
                                 );
+                                impl_new_for_self = Some(
+                                    quote! {#name {#d_r : #dest_ty::try_from(edge_dest).unwrap() , #e_r : #edge_ty::from(edge_type) } },
+                                );
                             }
                             (None, Some(e_r), Some(d_f), _) => {
                                 impl_default_for_self = Some(
                                     quote! {#name {#d_f : #dest_ty::try_from(0u64).unwrap() , #e_r : #edge_ty::from(0u64) } },
+                                );
+                                impl_new_for_self = Some(
+                                    quote! {#name {#d_f : #dest_ty::try_from(edge_dest).unwrap() , #e_r : #edge_ty::from(edge_type) } },
                                 );
                             }
                             (Some(d_r), _, _, Some(e_f)) => {
                                 impl_default_for_self = Some(
                                     quote! {#name {#d_r : #dest_ty::try_from(0u64).unwrap() , #e_f : #edge_ty::from(0u64) } },
                                 );
+                                impl_new_for_self = Some(
+                                    quote! {#name {#d_r : #dest_ty::try_from(edge_dest).unwrap() , #e_f : #edge_ty::from(edge_type) } },
+                                );
                             }
                             (None, None, Some(d_f), Some(e_f)) => {
                                 impl_default_for_self = Some(
                                     quote! {#name {#d_f : #dest_ty::try_from(0u64).unwrap() , #e_f : #edge_ty::from(0u64) } },
+                                );
+                                impl_new_for_self = Some(
+                                    quote! {#name {#d_f : #dest_ty::try_from(edge_dest).unwrap() , #e_f : #edge_ty::from(edge_type) } },
                                 );
                             }
                             _ => {
@@ -241,9 +253,6 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                                     .into();
                             }
                         };
-                        // interpolation d_r
-                        impl_new_for_self =
-                            Some(quote! {{let mut aux = Self::default(); aux #d_s; aux #e_s; aux}});
                     }
                     (d_s, e_s, Some(d_r), Some(e_r), _, _) => {
                         if let Some(d_s) = d_s {
@@ -345,7 +354,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                         // println!("fallback type {:?}", _f);
                         return syn::Error::new_spanned(
                         name.clone(),
-                            "Named struct must specify #[edge_type(getter=..., setter=..., real_type=...)], but setter was missing and no fallback method to initialize was found"
+                            "Named struct must specify #[edge_type(getter=..., setter=..., real_type=...)], but setter was missing and no fallback initialization method was found"
                     )
                     .to_compile_error()
                     .into();
@@ -513,7 +522,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
         unsafe impl bytemuck::Pod for #name {}
 
         impl GenericEdge<#quoted_edge_type> for #name {
-            #[inline] fn new(edge_type: u64, edge_dest: u64) -> Self { #impl_new_for_self }
+            #[inline] fn new(edge_dest: u64, edge_type: u64) -> Self { #impl_new_for_self }
             #[inline] fn set_edge_dest(&mut self, new_edge_dest: u64) -> &mut Self { #quoted_mut_dest }
             #[inline] fn set_edge_type(&mut self, new_edge_type: u64) -> &mut Self { #quoted_mut_edge_type }
             #[inline] fn dest(&self) -> usize { #quoted_dest_access as usize }
@@ -689,13 +698,13 @@ pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::T
 
         impl std::fmt::Debug for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "EdgeType {{{:?}}}", self)
+                write!(f, "EdgeType {{ label: {:?}}}", self.label())
             }
         }
 
         impl std::fmt::Display for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "EdgeType {{{}}}", self)
+                write!(f, "EdgeType {{ label: {}}}", self.label())
             }
         }
 

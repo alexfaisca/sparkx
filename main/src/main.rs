@@ -7,7 +7,8 @@ mod shared_slice;
 use clap::Parser;
 use core::panic;
 use generic_edge::{
-    GenericEdge, GenericEdgeType, StandardEdge, SubStandardColoredEdgeType, Test, TinyEdgeType,
+    _test_proc_macro_capabilities, GenericEdge, GenericEdgeType, StandardEdge,
+    SubStandardColoredEdgeType, Test, TinyEdgeType,
 };
 use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
 use petgraph::graphmap::DiGraphMap;
@@ -64,6 +65,7 @@ struct ProgramArgs {
 }
 
 fn main() {
+    _test_proc_macro_capabilities();
     let args = ProgramArgs::parse();
     let _mmap: bool = args.mmap;
     let _verbose: bool = args.verbose;
@@ -291,10 +293,10 @@ fn parse_bytes_mmaped(
         for link in node {
             let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
             edges.push(Test {
+                dest_node: link_slice[1].parse()?,
                 edge_type: SubStandardColoredEdgeType::from(
                     parse_direction(link_slice[0], link_slice[2])?.label() as usize,
                 ),
-                dest_node: link_slice[1].parse()?,
             });
         }
 

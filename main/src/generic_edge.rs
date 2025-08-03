@@ -47,11 +47,10 @@ pub trait GenericEdgeType:
     + Send
     + Sync
 {
-    /// edge label
+    /// edge_label getter
     fn label(&self) -> usize;
 }
 
-#[expect(dead_code)]
 /// describes the behavior edges must exhibit to be used by the tool
 pub trait GenericEdge<T: GenericEdgeType>:
     Copy
@@ -68,14 +67,181 @@ pub trait GenericEdge<T: GenericEdgeType>:
     + Send
     + Sync
 {
-    /// destiny node id
-    fn new(edge_type: u64, edge_dest: u64) -> Self;
+    /// constructor from an <<edge_dest: u64>> and an <<edge_type: u64>>
+    fn new(edge_dest: u64, edge_type: u64) -> Self;
+    /// edge_dest setter from a <<new_edge_dest: u64>>
     fn set_edge_dest(&mut self, new_edge_dest: u64) -> &mut Self;
+    /// edge_type setter from a <<new_edge_type: u64>>
     fn set_edge_type(&mut self, new_edge_type: u64) -> &mut Self;
-    /// destiny node id
+    /// edge_dest getter
     fn dest(&self) -> usize;
-    /// edge type
+    /// edge_type getter
     fn e_type(&self) -> T;
+}
+
+pub fn _test_proc_macro_capabilities() {
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    struct NamedTest1 {
+        pub dest_node: i32,
+        pub edge_type: SubStandardColoredEdgeType,
+    }
+
+    let t1_test = NamedTest1::new(142351, 124141);
+    let t1_expect = NamedTest1 {
+        dest_node: 142351,
+        edge_type: SubStandardColoredEdgeType { color: 124141usize },
+    };
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing implicit fields"
+    );
+    let mut t1_test = NamedTest1::default();
+    assert!(
+        t1_test
+            == NamedTest1 {
+                dest_node: 0,
+                edge_type: SubStandardColoredEdgeType { color: 0 }
+            },
+        "named struct (NamedTest1) proc macro implicit fields default malfunction"
+    );
+    assert!(
+        t1_test.dest() == 0,
+        "named struct (NamedTest1) proc macro implicit fields dest() malfunction"
+    );
+    assert!(
+        t1_test.e_type() == SubStandardColoredEdgeType::from(0usize),
+        "named struct (NamedTest1) proc macro implicit fields e_type() malfunction"
+    );
+    t1_test.set_edge_dest(1);
+    assert!(
+        t1_test.dest() == 1,
+        "named struct (NamedTest1) proc macro implicit fields  set_edge_dest() malfunction"
+    );
+    t1_test.set_edge_type(2352);
+    assert!(
+        t1_test.e_type() == SubStandardColoredEdgeType::from(2352u64),
+        "named struct (NamedTest1) proc macro implicit fields set_edge_type() malfunction"
+    );
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    struct NamedTest2 {
+        #[edge_dest]
+        pub edge_type: i32,
+        #[edge_type]
+        pub node_dest: SubStandardColoredEdgeType,
+    }
+    let t1_test = NamedTest2::new(142351, 124141);
+    let t1_expect = NamedTest2 {
+        edge_type: 142351,
+        node_dest: SubStandardColoredEdgeType { color: 124141usize },
+    };
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing annotated fields"
+    );
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    struct NamedTest3 {
+        pub dest_node: i32,
+        #[edge_type]
+        pub color: SubStandardColoredEdgeType,
+    }
+    let t1_test = NamedTest3::new(142351, 124141);
+    let t1_expect = NamedTest3 {
+        dest_node: 142351,
+        color: SubStandardColoredEdgeType { color: 124141usize },
+    };
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing single implicit fields new"
+    );
+    let mut t1_test = NamedTest3::default();
+    let mut t1_expect = NamedTest3 {
+        dest_node: 0,
+        color: SubStandardColoredEdgeType { color: 0usize },
+    };
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing single implicit fields default"
+    );
+    t1_test.set_edge_type(956);
+    t1_expect.color.color = 956;
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing single implicit fields auto setter"
+    );
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    struct NamedTest4 {
+        #[edge_dest]
+        pub dest: i32,
+        #[edge_type(getter = "c", setter = "random_setter_name_12242")]
+        pub color: SubStandardColoredEdgeType,
+    }
+
+    impl NamedTest4 {
+        pub fn c(&self) -> SubStandardColoredEdgeType {
+            SubStandardColoredEdgeType { color: 3 }
+        }
+        pub fn random_setter_name_12242(&mut self, _blah: SubStandardColoredEdgeType) -> &mut Self {
+            self.color = SubStandardColoredEdgeType { color: 555555 };
+            self
+        }
+    }
+
+    let mut t1_test = NamedTest4::default();
+    let t1_expect = NamedTest4::new(0, 0);
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing annotated fields automatic & default constructors"
+    );
+    t1_test.set_edge_type(1);
+    assert!(
+        t1_test.e_type() == SubStandardColoredEdgeType { color: 3 }
+            && t1_test.color.color == 555555,
+        "named struct (NamedTest1) proc macro not recognizing annotated fields manual getters & setters"
+    );
+
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    struct NamedTest5 {
+        #[edge_dest(getter = "banana", setter = "savannah")]
+        pub pi: i32,
+        #[edge_type(setter = "random_setter_name_12242")]
+        pub euler: SubStandardColoredEdgeType,
+    }
+
+    impl NamedTest5 {
+        pub fn banana(&self) -> usize {
+            usize::try_from(self.pi).unwrap()
+        }
+        pub fn savannah(&mut self, baboon: i32) -> &mut Self {
+            self.pi = baboon;
+            self
+        }
+        pub fn random_setter_name_12242(&mut self, blah: SubStandardColoredEdgeType) -> &mut Self {
+            self.euler = blah;
+            self
+        }
+    }
+
+    let mut t1_test = NamedTest5::default();
+    let t1_expect = NamedTest5::new(0, 0);
+    assert!(
+        t1_test == t1_expect,
+        "named struct (NamedTest1) proc macro not recognizing annotated fields automatic & default constructors"
+    );
+    t1_test.set_edge_type(1);
+    assert!(
+        t1_test.e_type() == SubStandardColoredEdgeType { color: 1 } && t1_test.euler.color == 1,
+        "named struct (NamedTest1) proc macro not recognizing annotated fields manual getters & setters"
+    );
+    t1_test.set_edge_dest(1);
+    assert!(
+        t1_test.dest() == 1usize && t1_test.pi == 1i32,
+        "named struct (NamedTest1) proc macro not recognizing annotated fields manual getters & setters"
+    );
 }
 
 #[repr(C)]
