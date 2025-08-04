@@ -1,5 +1,6 @@
 #![feature(int_roundings)]
 mod abstract_graph;
+mod fst_merge_sort;
 mod generic_edge;
 mod generic_memory_map;
 mod shared_slice;

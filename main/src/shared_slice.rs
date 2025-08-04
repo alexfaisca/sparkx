@@ -1,4 +1,5 @@
 use memmap::{Mmap, MmapMut, MmapOptions};
+use rand::seq::IndexedRandom;
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},
@@ -38,6 +39,9 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     }
     pub fn _mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
         self.slice.mut_slice(start, end)
+    }
+    pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
+        self.slice.write_slice(idx, slice)
     }
     pub fn flush(&self) -> Result<(), Error> {
         if self.mmapped {
@@ -221,9 +225,15 @@ impl<T> SharedSliceMut<T> {
             ))
         }
     }
+    pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
+        assert!(idx + slice.len() < self.len);
+        unsafe {
+            std::ptr::copy_nonoverlapping(slice.as_ptr(), self.ptr.add(idx), slice.len());
+        };
+        Some(idx + slice.len())
+    }
     pub fn abst_mem_mut(
         mfn: String,
-        mut vec: Vec<T>,
         len: usize,
         mmapped: bool,
     ) -> Result<AbstractedProceduralMemoryMut<T>, Error> {
@@ -235,8 +245,9 @@ impl<T> SharedSliceMut<T> {
             .open(mfn)?;
         file.set_len((if mmapped { len } else { 1 } * std::mem::size_of::<T>()) as u64)?;
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        let mut vec: Vec<T> = Vec::new();
         if !mmapped {
-            vec.reserve_exact(len - vec.len());
+            vec.reserve_exact(len);
         }
         let slice: SharedSliceMut<T> = {
             if mmapped {

@@ -1,3 +1,5 @@
+#[expect(unused_imports)]
+use crate::fst_merge_sort;
 use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedQueueMut, SharedSlice,
@@ -5,13 +7,14 @@ use crate::shared_slice::{
 };
 use core::{f64, fmt, panic};
 use crossbeam::thread;
-use fst::{Map, MapBuilder};
+use fst::{Map, MapBuilder, Streamer};
 use glob::glob;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
 use rand::Rng;
 use rand_distr::{Distribution, Poisson};
 use regex::Regex;
+use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
 use std::{
     any::type_name,
@@ -34,6 +37,7 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 static CACHE_DIR: &str = "./cache/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
+// FIXME: Make this a member of struct graph_cache
 
 fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
@@ -60,6 +64,8 @@ enum FileType {
     KTruss,
     EdgeReciprocal,
     EdgeOver,
+    /// doesn't yield a filename --- yields id to be used in filename
+    ExportGraphMask,
 }
 
 fn cache_file_name(
@@ -117,6 +123,11 @@ fn cache_file_name(
         },
         FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
         FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
+        // this isn't a filename --- it's an id to be used in filenames
+        FileType::ExportGraphMask => match sequence_number {
+            Some(i) => format!("{}{}{}", "masked_export", i, id),
+            None => format!("{}{}", "masked_export", id),
+        },
     };
 
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
@@ -419,6 +430,17 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let fst_filename = cache_file_name(self.kmer_filename.clone(), FileType::Fst, None)?;
         let sorted_file =
             cache_file_name(self.kmer_filename.clone(), FileType::KmerSortedTmp, None)?;
+
+        //FIXME: Build fst in batches.
+        // let mmap = unsafe {
+        //     MmapOptions::new().map(
+        //         &OpenOptions::new()
+        //             .read(true)
+        //             .open(self.kmer_filename.clone())?,
+        //     )
+        // };
+        //
+        // let merge_sort = fst_merge_sort::Merger::new(mmap.iter(), Path::new(sorted_file.clone()));
 
         external_sort_by_content(self.kmer_filename.as_str(), sorted_file.as_str())?;
 
@@ -873,11 +895,8 @@ where
         let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
         let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
 
-        let e_vec: Vec<AtomicUsize> = vec![];
-        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, e_vec, node_count, mmap > 0)?;
-
-        let c_vec: Vec<AtomicU8> = vec![];
-        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, c_vec, node_count, mmap > 1)?;
+        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, node_count, mmap > 0)?;
+        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, node_count, mmap > 1)?;
 
         thread::scope(|scope| {
             let threads = self.graph.thread_count as usize;
@@ -1743,6 +1762,7 @@ pub struct GraphMemoryMap<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>
     graph_cache: GraphCache<EdgeType, Edge>,
     edge_size: usize,
     thread_count: u8,
+    exports: u8,
 }
 
 impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
@@ -1772,6 +1792,7 @@ where
                 graph_cache: cache,
                 edge_size: std::mem::size_of::<Edge>(),
                 thread_count,
+                exports: 0,
             });
         }
 
@@ -1797,7 +1818,7 @@ where
     }
 
     #[inline(always)]
-    pub fn _index_node(&self, node_id: usize) -> std::ops::Range<usize> {
+    pub fn index_node(&self, node_id: usize) -> std::ops::Range<usize> {
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             ptr.read_unaligned()..ptr.add(1).read_unaligned()
@@ -1937,7 +1958,8 @@ where
         })
     }
 
-    fn _is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
+    #[expect(dead_code)]
+    fn is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
         let mut index_a = None;
         let mut index_b = None;
         let switch = v < u;
@@ -2015,6 +2037,132 @@ where
         self.graph_cache.graph_bytes // num edges
     }
 
+    fn get_exports_add_one(&mut self) -> Result<u8, Error> {
+        self.exports = match self.exports.overflowing_add(1) {
+            (r, false) => r,
+            (_, true) => {
+                self.exports = u8::MAX;
+                panic!(
+                    "error overflowed export count var in graph struct, please provide an identifier for your export"
+                )
+            }
+        };
+        Ok(self.exports - 1)
+    }
+
+    pub fn apply_mask_to_nodes(
+        &self,
+        mask: fn(usize) -> bool,
+        identifier: Option<String>,
+    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Error> {
+        let node_count = self.size();
+        if node_count < 2 {
+            panic!("error can't mask empty graph");
+        }
+        let c_fn = CACHE_DIR.to_string() + "edge_count.tmp";
+        let i_fn = CACHE_DIR.to_string() + "node_index.tmp";
+        let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(c_fn, node_count, true)?;
+        let mut node_index = SharedSliceMut::<usize>::abst_mem_mut(i_fn, node_count - 1, true)?;
+
+        let mut curr_node_index: usize = 0;
+        let mut curr_edge_count: usize = 0;
+        *edge_count.get_mut(0) = curr_edge_count;
+        for u in 0..node_count {
+            if mask(u) {
+                *node_index.get_mut(u) = curr_node_index;
+                curr_node_index += 1;
+                let neighbours = self
+                    .neighbours(u)?
+                    .into_iter()
+                    .filter(|x| mask(x.dest()))
+                    .count();
+                curr_edge_count += neighbours;
+                *edge_count.get_mut(u + 1) = curr_edge_count;
+            } else {
+                *node_index.get_mut(u) = usize::MAX;
+                *edge_count.get_mut(u + 1) = curr_edge_count;
+            }
+        }
+
+        let mut kmer_stream = self.kmers.stream();
+        let graph_id = match identifier {
+            Some(id) => id,
+            None => cache_file_name(
+                self.graph_cache.graph_filename.clone(),
+                FileType::ExportGraphMask,
+                Some(self.clone().get_exports_add_one()? as usize),
+            )?,
+        };
+
+        let edges_fn = cache_file_name(graph_id.clone(), FileType::Edges, None)?;
+        let index_fn = cache_file_name(graph_id.clone(), FileType::Index, None)?;
+        let kmers_fn = cache_file_name(graph_id.clone(), FileType::Fst, None)?;
+        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edges_fn, curr_edge_count, true)?;
+        let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, curr_node_index + 1, true)?;
+        let kmer_file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(kmers_fn.clone())?;
+        let mut build = match MapBuilder::new(&kmer_file) {
+            Ok(i) => i,
+            Err(e) => panic!("error couldn't initialize builder: {}", e),
+        };
+
+        *index.get_mut(0) = 0;
+        while let Some((kmer, node_id)) = kmer_stream.next() {
+            let id = node_id as usize;
+            if mask(id) {
+                // write index file for next node (id + 1)
+                let new_id = *node_index.get(id);
+                *index.get_mut(new_id + 1) = *edge_count.get(id + 1);
+                // write edge file node
+                let edge_begin = *edge_count.get(id);
+                let node_edges: Vec<Edge> =
+                    self.neighbours(id)?.filter(|x| mask(x.dest())).collect();
+                edges
+                    .write_slice(edge_begin, node_edges.as_slice())
+                    .ok_or_else(|| {
+                        Error::new(
+                            std::io::ErrorKind::Other,
+                            "error writing edges for node {id}",
+                        )
+                    })?;
+                // write fst for node
+                match build.insert(kmer, new_id as u64) {
+                    Ok(i) => i,
+                    Err(e) => panic!("error couldn't insert kmer for node (id {new_id}): {e}"),
+                };
+            }
+        }
+        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(kmers_fn)?;
+        GraphMemoryMap::init(cache, self.thread_count)
+    }
+
+    #[expect(dead_code)]
+    pub fn export_petgraph(&self) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Error> {
+        let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
+        let node_count = self.size() - 1;
+
+        for (u, u_n) in (0..node_count).map(|u| (u, self.neighbours(u))) {
+            match u_n {
+                Ok(neighbours_of_u) => {
+                    neighbours_of_u.for_each(|v| {
+                        graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), v.e_type());
+                    });
+                }
+                Err(e) => panic!(
+                    "error exporting graph to petgraph `DiGraphMap`, couldn't get neighbours of node {}: {}",
+                    u, e
+                ),
+            }
+        }
+
+        println!("{:?}", graph);
+
+        Ok(graph)
+    }
+
     fn init_procedural_memory_bz(&self, mmap: u8) -> Result<ProceduralMemoryBZ, Error> {
         let node_count = self.size() - 1;
 
@@ -2024,17 +2172,10 @@ where
         let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
         let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
 
-        let d_v: Vec<u8> = Vec::<u8>::new();
-        let degree = SharedSliceMut::<u8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
-
-        let n_v: Vec<usize> = Vec::<usize>::new();
-        let node = SharedSliceMut::<usize>::abst_mem_mut(n_fn, n_v, node_count, mmap > 1)?;
-
-        let c_v: Vec<u8> = Vec::<u8>::new();
-        let core = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
-
-        let p_v: Vec<usize> = Vec::<usize>::new();
-        let pos = SharedSliceMut::<usize>::abst_mem_mut(p_fn, p_v, node_count, mmap > 3)?;
+        let degree = SharedSliceMut::<u8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
+        let node = SharedSliceMut::<usize>::abst_mem_mut(n_fn, node_count, mmap > 1)?;
+        let core = SharedSliceMut::<u8>::abst_mem_mut(c_fn, node_count, mmap > 2)?;
+        let pos = SharedSliceMut::<usize>::abst_mem_mut(p_fn, node_count, mmap > 3)?;
 
         Ok((degree, node, core, pos))
     }
@@ -2255,24 +2396,12 @@ where
         let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
         let fs_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(4))?;
 
-        let d_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
-        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, d_v, node_count, mmap > 0)?;
-
-        let ni_v: Vec<usize> = Vec::<usize>::new();
-        let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, ni_v, node_count, mmap > 3)?;
-
-        let a_v: Vec<AtomicBool> = Vec::<AtomicBool>::new();
-        let alive = SharedSliceMut::<AtomicBool>::abst_mem_mut(a_fn, a_v, node_count, mmap > 1)?;
-
-        let c_v: Vec<u8> = Vec::<u8>::new();
-        let coreness = SharedSliceMut::<u8>::abst_mem_mut(c_fn, c_v, node_count, mmap > 2)?;
-
-        let f_v: Vec<usize> = Vec::<usize>::new();
-        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, f_v, edge_count, mmap > 3)?;
-
-        let fs_v: Vec<usize> = Vec::<usize>::new();
-        let frontier_swap =
-            SharedSliceMut::<usize>::abst_mem_mut(fs_fn, fs_v, edge_count, mmap > 3)?;
+        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
+        let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, node_count, mmap > 3)?;
+        let alive = SharedSliceMut::<AtomicBool>::abst_mem_mut(a_fn, node_count, mmap > 1)?;
+        let coreness = SharedSliceMut::<u8>::abst_mem_mut(c_fn, node_count, mmap > 2)?;
+        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, edge_count, mmap > 3)?;
+        let frontier_swap = SharedSliceMut::<usize>::abst_mem_mut(fs_fn, edge_count, mmap > 3)?;
 
         Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
     }
@@ -2547,21 +2676,11 @@ where
         let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
         let e_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
 
-        let t_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
-        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, t_v, edge_count, mmap > 0)?;
-
-        let el_v: Vec<usize> = Vec::<usize>::new();
-        let edge_list = SharedSliceMut::<usize>::abst_mem_mut(el_fn, el_v, edge_count, mmap > 1)?;
-
-        let ei_v: Vec<usize> = Vec::<usize>::new();
-        let edge_index = SharedSliceMut::<usize>::abst_mem_mut(ei_fn, ei_v, edge_count, mmap > 1)?;
-
-        let s_v: Vec<(usize, usize)> = Vec::<(usize, usize)>::new();
-        let stack =
-            SharedSliceMut::<(usize, usize)>::abst_mem_mut(s_fn, s_v, edge_count * 4, mmap > 2)?;
-
-        let e_v: Vec<u8> = Vec::<u8>::new();
-        let edge_trussness = SharedSliceMut::<u8>::abst_mem_mut(e_fn, e_v, edge_count, true)?;
+        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, edge_count, mmap > 0)?;
+        let edge_list = SharedSliceMut::<usize>::abst_mem_mut(el_fn, edge_count, mmap > 1)?;
+        let edge_index = SharedSliceMut::<usize>::abst_mem_mut(ei_fn, edge_count, mmap > 1)?;
+        let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(s_fn, edge_count * 2, mmap > 2)?;
+        let edge_trussness = SharedSliceMut::<u8>::abst_mem_mut(e_fn, edge_count, true)?;
 
         Ok((tri_count, edge_list, edge_index, stack, edge_trussness))
     }
@@ -2780,11 +2899,8 @@ where
         let er_fn = cache_file_name(template_fn.clone(), FileType::EdgeReciprocal, None)?;
         let eo_fn = cache_file_name(template_fn.clone(), FileType::EdgeOver, None)?;
 
-        let er_v: Vec<usize> = Vec::<usize>::new();
-        let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(er_fn, er_v, edge_count, true)?;
-
-        let eo_v: Vec<usize> = Vec::<usize>::new();
-        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, eo_v, node_count, true)?;
+        let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(er_fn, edge_count, true)?;
+        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, node_count, true)?;
 
         Ok((edge_reciprocal, edge_out))
     }
@@ -2949,23 +3065,12 @@ where
         let in_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(5))?;
         let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
 
-        let c_v: Vec<usize> = Vec::<usize>::new();
-        let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, c_v, edge_count, mmap > 2)?;
-
-        let n_v: Vec<usize> = Vec::<usize>::new();
-        let next = SharedSliceMut::<usize>::abst_mem_mut(n_fn, n_v, edge_count, mmap > 2)?;
-
-        let p_v: Vec<bool> = Vec::<bool>::new();
-        let processed = SharedSliceMut::<bool>::abst_mem_mut(p_fn, p_v, edge_count, mmap > 3)?;
-
-        let ic_v: Vec<bool> = Vec::<bool>::new();
-        let in_curr = SharedSliceMut::<bool>::abst_mem_mut(ic_fn, ic_v, edge_count, mmap > 3)?;
-
-        let in_v: Vec<bool> = Vec::<bool>::new();
-        let in_next = SharedSliceMut::<bool>::abst_mem_mut(in_fn, in_v, edge_count, mmap > 3)?;
-
-        let s_v: Vec<AtomicU8> = Vec::<AtomicU8>::new();
-        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(s_fn, s_v, edge_count, true)?;
+        let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, edge_count, mmap > 2)?;
+        let next = SharedSliceMut::<usize>::abst_mem_mut(n_fn, edge_count, mmap > 2)?;
+        let processed = SharedSliceMut::<bool>::abst_mem_mut(p_fn, edge_count, mmap > 3)?;
+        let in_curr = SharedSliceMut::<bool>::abst_mem_mut(ic_fn, edge_count, mmap > 3)?;
+        let in_next = SharedSliceMut::<bool>::abst_mem_mut(in_fn, edge_count, mmap > 3)?;
+        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(s_fn, edge_count, true)?;
 
         Ok((curr, next, processed, in_curr, in_next, s))
     }
@@ -2997,10 +3102,8 @@ where
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
         for i in 0..threads {
             let x_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(8 + i))?;
-            let x_v: Vec<usize> = Vec::<usize>::new();
             x.push(SharedSliceMut::<usize>::abst_mem_mut(
                 x_fn,
-                x_v,
                 node_count,
                 mmap > 0,
             )?)
@@ -3622,6 +3725,7 @@ impl fmt::Display for FileType {
             FileType::KTruss => "KTruss",
             FileType::EdgeReciprocal => "EdgeReciprocal",
             FileType::EdgeOver => "EdgeOver",
+            FileType::ExportGraphMask => "GraphExport",
         };
         write!(f, "{}", s)
     }
