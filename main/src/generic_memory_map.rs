@@ -2144,19 +2144,21 @@ where
         let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
         let node_count = self.size() - 1;
 
-        for (u, u_n) in (0..node_count).map(|u| (u, self.neighbours(u))) {
-            match u_n {
-                Ok(neighbours_of_u) => {
-                    neighbours_of_u.for_each(|v| {
-                        graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), v.e_type());
-                    });
-                }
+        (0..node_count).for_each(|u| {
+            graph.add_node(NodeIndex::new(u));
+        });
+        (0..node_count)
+            .map(|u| match self.neighbours(u) {
+                Ok(neighbours_of_u) => (u, neighbours_of_u),
                 Err(e) => panic!(
-                    "error exporting graph to petgraph `DiGraphMap`, couldn't get neighbours of node {}: {}",
-                    u, e
+                    "while exporting petgraph `DiGraphMap`, error getting neighbours of {u}: {e}",
                 ),
-            }
-        }
+            })
+            .for_each(|(u, u_n)| {
+                u_n.for_each(|v| {
+                    graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), v.e_type());
+                });
+            });
 
         println!("{:?}", graph);
 
