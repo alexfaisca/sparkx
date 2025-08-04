@@ -2,6 +2,7 @@ pub use graph_derive::{GenericEdge, GenericEdgeType};
 
 use bitfield::bitfield;
 use bytemuck::{Pod, Zeroable};
+use rustworkx_core::petgraph::EdgeType;
 use std::{
     cmp::{Eq, Ord, PartialEq, PartialOrd},
     convert,
@@ -17,8 +18,8 @@ const _: () = {
             + Clone
             + PartialEq
             + Eq
-            + std::fmt::Debug
-            + std::fmt::Display
+            + Debug
+            + Display
             + PartialOrd
             + Ord
             + Pod
@@ -44,11 +45,14 @@ pub trait GenericEdgeType:
     + Zeroable
     + From<u64>
     + From<usize>
+    + EdgeType
     + Send
     + Sync
 {
     /// edge_label getter
     fn label(&self) -> usize;
+    /// edge_label setter
+    fn set_label(&mut self, label: u64);
 }
 
 /// describes the behavior edges must exhibit to be used by the tool
@@ -190,6 +194,7 @@ pub enum TinyEdgeType {
 }
 
 #[derive(GenericEdgeType)]
+#[generic_edge_type(is_directed = "true")]
 #[repr(C)]
 pub struct SubStandardColoredEdgeType {
     color: usize,
@@ -563,4 +568,164 @@ pub fn _test_proc_macro_capabilities() {
             },
         "named struct (NamedTest1) proc macro not recognizing annotated fields automatic & default constructors"
     );
+
+    bitfield! {
+    #[derive(GenericEdge)]
+    #[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "ColoredEdgeType")]
+    #[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
+    #[repr(C)]
+        pub struct UnnamedTest1(u128);
+        impl BitAnd;
+        impl BitOr;
+        impl BitXor;
+        impl new;
+        u128;
+        u64, edge_type, set_edge_type: 63, 0;
+        u64, dest_node, set_dest_node: 127, 64;
+    }
+
+    let t2_test = UnnamedTest1::default();
+    let t2_expect = UnnamedTest1::new(0, 0);
+    assert!(
+        t2_test == t2_expect,
+        "unnamed struct (UnnamedTest1) proc macro not recognizing annotated fields automatic & default constructors"
+    );
+    let t2_test = UnnamedTest1::new(12414, 141241);
+    assert!(
+        t2_test.dest() == 141241 && t2_test.e_type() == ColoredEdgeType { color: 12414 },
+        "unnnamed struct (UnnamedTest1) proc macro not recognizing annotated fields automatic constructor & getters"
+    );
+    let mut t2_test = <UnnamedTest1 as GenericEdge<ColoredEdgeType>>::new(12414, 141241);
+    assert!(
+        t2_test.dest() == 12414 && t2_test.e_type() == ColoredEdgeType { color: 141241 },
+        "unnnamed struct (UnnamedTest1) proc macro not recognizing annotated fields automatic constructor & getters"
+    );
+    t2_test.set_edge_type(333);
+    t2_test.set_edge_dest(123);
+    assert!(
+        t2_test.dest() == 123 && t2_test.e_type() == ColoredEdgeType { color: 333 },
+        "unnnamed struct (UnnamedTest1) proc macro not recognizing annotated fields automatic setters & getters"
+    );
+
+    bitfield! {
+    #[derive(GenericEdge)]
+    #[generic_edge(constructor = "new_test", from_void = "default")]
+    #[edge_type(setter = "savannah", getter = "edge_type", real_type = "ColoredEdgeType")]
+    #[edge_dest(setter = "random_setter_name_12242", getter = "banana", real_type = "u64")]
+    #[repr(C)]
+        pub struct UnnamedTest2(u128);
+        impl BitAnd;
+        impl BitOr;
+        impl BitXor;
+        impl new;
+        u128;
+        u64, edge_type, set_edge_type: 63, 0;
+        u64, dest_node, set_dest_node: 127, 64;
+    }
+
+    impl UnnamedTest2 {
+        pub fn new_test(_e: u64, _t: u64) -> Self {
+            UnnamedTest2::new(111, 111)
+        }
+        pub fn default() -> Self {
+            UnnamedTest2::new(112, 112)
+        }
+        pub fn banana(&self) -> usize {
+            123
+        }
+        pub fn savannah(&mut self, _baboon: u64) -> &mut Self {
+            self.set_dest_node(0);
+            self
+        }
+        pub fn random_setter_name_12242(&mut self, _blah: u64) -> &mut Self {
+            self.set_edge_type(123123);
+            self
+        }
+    }
+
+    let t2_test = UnnamedTest2::default();
+    // fully qualified syntax as struct constructor has same identifier as trait constructor
+    let mut t2_expect = <UnnamedTest2 as GenericEdge<ColoredEdgeType>>::new(0, 0);
+    assert!(
+        t2_expect.edge_type() == 111
+            && t2_expect.dest_node() == 111
+            && t2_expect.dest() == 123
+            && t2_expect.edge_type() == 111,
+        "unnamed struct (UnnamedTest2) proc macro not recognizing annotated fields default & getters"
+    );
+    assert!(
+        t2_test.edge_type() == 112
+            && t2_test.dest_node() == 112
+            && t2_test.dest() == 123
+            && t2_test.e_type() == ColoredEdgeType { color: 112 },
+        "unnamed struct (UnnamedTest2) proc macro not recognizing annotated fields default & constructor & getters"
+    );
+
+    // to avoid using fully qualified syntax define struct setter methods with different
+    // identifiers than `GenericEdge` trait methods
+    <UnnamedTest2 as GenericEdge<ColoredEdgeType>>::set_edge_type(&mut t2_expect, 43124);
+    <UnnamedTest2 as GenericEdge<ColoredEdgeType>>::set_edge_dest(&mut t2_expect, 124351);
+    assert!(
+        t2_expect.edge_type() == 123123 && t2_expect.dest_node() == 0,
+        "unnnamed struct (UnnamedTest2) proc macro not recognizing annotated fields' getters"
+    );
+
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    #[edge_type]
+    pub struct UnnamedTest3(u64, ColoredEdgeType);
+
+    let t2_test = UnnamedTest3::default();
+    let t2_expect = UnnamedTest3::new(0, 0);
+    assert!(
+        t2_test == t2_expect,
+        "unnamed struct (UnnamedTest3) proc macro not recognizing annotated fields automatic & default constructors"
+    );
+    let mut t2_test = UnnamedTest3::new(12414, 141241);
+    assert!(
+        t2_test.dest() == 12414 && t2_test.e_type() == ColoredEdgeType { color: 141241 },
+        "unnnamed struct (UnnamedTest3) proc macro not recognizing annotated fields automatic constructor & getters"
+    );
+    t2_test.set_edge_type(333);
+    t2_test.set_edge_dest(123);
+    assert!(
+        t2_test.dest() == 123 && t2_test.e_type() == ColoredEdgeType { color: 333 },
+        "unnnamed struct (UnnamedTest1) proc macro not recognizing annotated fields automatic setters & getters"
+    );
+
+    #[repr(C)]
+    #[derive(GenericEdge)]
+    #[generic_edge(constructor = "new_test", from_void = "default")]
+    #[edge_type(
+        setter = "savannah",
+        getter = "edge_type",
+        real_type = "ColoredEdgeType"
+    )]
+    #[edge_dest(
+        setter = "random_setter_name_12242",
+        getter = "banana",
+        real_type = "u64"
+    )]
+    pub struct UnnamedTest4(u64, ColoredEdgeType);
+
+    impl UnnamedTest4 {
+        pub fn new_test(_e: u64, _t: u64) -> Self {
+            UnnamedTest4::new(111, 111)
+        }
+        pub fn default() -> Self {
+            UnnamedTest4::new(112, 112)
+        }
+        // manual getters and setter for unnamed not implemented
+        // pub fn banana(&self) -> usize {
+        //     123
+        // }
+        // pub fn savannah(&mut self, _baboon: u64) -> &mut Self {
+        //     self.0 = 0;
+        //     self
+        // }
+        // pub fn random_setter_name_12242(&mut self, _blah: u64) -> &mut Self {
+        //     self.1 = ColoredEdgeType { color: 123123 };
+        //     self
+        // }
+    }
 }

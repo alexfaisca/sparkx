@@ -14,7 +14,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
         DEFUALT_FIELD_NAME_FOR_EDGE_TYPE
     );
 
-    let input = parse_macro_input!(input as DeriveInput);
+    let mut input = parse_macro_input!(input as DeriveInput);
     let name = input.ident.clone();
 
     // check if #[repr(C)] is present
@@ -410,27 +410,23 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
 
                     if let Some(d_s) = d_setter {
                         quoted_mut_dest = Some(quote! { self.#d_s( new_edge_dest ); self });
-                    } else {
-                        panic!(
-                            "Bitfield tuple struct must specify #[edge_dest(getter=..., setter=..., real_type=...)], setter was missing"
-                        );
                     }
                     if let Some(e_s) = e_setter {
                         quoted_mut_edge_type = Some(quote! { self.#e_s( new_edge_type ); self });
-                    } else {
-                        panic!(
-                            "Bitfield tuple struct must specify #[edge_type(getter=..., setter=..., real_type=...)], setter was missing"
-                        );
+                    }
+                    if let Some(type_of_dest) = dest_ty {
+                        quoted_dest_type = Some(quote! {#type_of_dest});
+                    }
+                    if let Some(type_of_edge_type) = edge_ty {
+                        quoted_edge_type = Some(quote! {#type_of_edge_type});
                     }
                     quoted_dest_access = dest_getter.map(|e| quote! { self.#e() });
                     quoted_edge_type_access = edge_getter.map(|e| quote! { self.#e() });
-                    quoted_dest_type = dest_ty.map(|ty| quote! {#ty});
-                    quoted_edge_type = edge_ty.map(|ty| quote! {#ty});
                     impl_default_for_self = Some(quote! { #name::new(0u64, 0u64)});
                     impl_new_for_self = Some(quote! { #name::new(edge_type, edge_dest)});
                 } else if fields.unnamed.len() == 2 {
                     quoted_dest_access = Some(quote! { self.0 });
-                    quoted_edge_type_access = Some(quote! { self.0 });
+                    quoted_edge_type_access = Some(quote! { self.1 });
                     let type_of_dest = fields.unnamed[0].ty.clone();
                     let type_of_edge_type = fields.unnamed[1].ty.clone();
                     quoted_dest_type = Some(type_of_dest.clone()).map(|ty| quote! {#ty});
@@ -442,10 +438,10 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                         Some(quote! { self.1 = #type_of_edge_type::from(new_edge_type); self });
                     // dest node is a primitive field edge type not (necessarily or not always?)
                     impl_default_for_self = Some(
-                        quote! { (#type_of_dest::try_from(0u64).unwrap(), #type_of_edge_type::from(0u64))},
+                        quote! { #name (#type_of_dest::try_from(0u64).unwrap(), #type_of_edge_type::from(0u64))},
                     );
                     impl_new_for_self = Some(
-                        quote! { (#type_of_dest::try_from(edge_dest).unwrap(), #type_of_edge_type::from(edge_type)) },
+                        quote! { #name (#type_of_dest::try_from(edge_dest).unwrap(), #type_of_edge_type::from(edge_type)) },
                     );
                 } else {
                     return syn::Error::new_spanned(
@@ -472,7 +468,25 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
     // parse struct attributes amd override new() and/or default() with user specified
     // methods if given
     // parse #[generic_edge(constructor = "new", deafult = "default")]
+    let mut already_derived = Vec::new();
     for attr in &input.attrs {
+        // collect already derived macros
+        if attr.path().is_ident("derive") {
+            if let Meta::List(meta) = &attr.meta {
+                let parsed: syn::punctuated::Punctuated<Meta, syn::Token![,]> =
+                    match meta.parse_args_with(syn::punctuated::Punctuated::parse_terminated) {
+                        Ok(i) => i,
+                        Err(e) => panic!("error parsinf token metadata: {}", e),
+                    };
+                for nested in parsed {
+                    if let Meta::Path(path) = nested {
+                        if let Some(ident) = path.get_ident() {
+                            already_derived.push(ident.to_string());
+                        }
+                    }
+                }
+            }
+        }
         if attr.path().is_ident("generic_edge") {
             if let Meta::List(meta_list) = &attr.meta {
                 let parsed: syn::punctuated::Punctuated<Meta, syn::Token![,]> = match meta_list
@@ -533,6 +547,25 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
         syn::Error::new_spanned(name.clone(), "Couldn't build default for type").to_compile_error()
     });
 
+    // ensure necessary macros are derived (we want PartialEq, Eq & Hash) so the user may use
+    // HashMaps and HashSets with any GenericEdge safely
+    // FIXME: How to make this work without defining the struct multiple times?
+    let required_traits = ["PartialEq", "Eq", "Hash"];
+    let mut missing_derives = Vec::new();
+
+    for required in &required_traits {
+        if !already_derived.iter().any(|d| d == required) {
+            missing_derives.push(syn::Ident::new(required, proc_macro2::Span::call_site()));
+        }
+    }
+    // if missing derives exist, add them
+    if !missing_derives.is_empty() {
+        let derive_attr: Attribute = syn::parse_quote! {
+            #[derive( #( #missing_derives ),* )]
+        };
+        input.attrs.push(derive_attr);
+    }
+
     let static_type_assertions = quote! {
         const _: () = {
             struct _AssertDestTraits<
@@ -544,10 +577,12 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                     std::default::Default +
                     std::cmp::PartialEq +
                     std::cmp::Eq +
+                    std::hash::Hash +
                     std::fmt::Debug +
                     std::fmt::Display +
                     std::cmp::PartialOrd +
                     std::cmp::Ord +
+                    std::hash::Hash +
                     bytemuck::Pod +
                     bytemuck::Zeroable
                 >(::core::marker::PhantomData<T>);
@@ -556,7 +591,6 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
             let _ = _AssertEdgeTraits::<#quoted_edge_type>(::core::marker::PhantomData);
         };
     };
-
     let expanded = quote! {
 
         #static_type_assertions
@@ -606,6 +640,14 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
         }
 
         impl std::cmp::Eq for #name {}
+
+        // use the SAME fields as in `PartialEq`
+        impl std::hash::Hash for #name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.dest().hash(state);
+                self.e_type().hash(state);
+            }
+        }
 
         impl std::fmt::Debug for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -672,7 +714,7 @@ fn parse_generic_edge_attr(
     (getter, setter, ty)
 }
 
-#[proc_macro_derive(GenericEdgeType)]
+#[proc_macro_derive(GenericEdgeType, attributes(generic_edge_type))]
 pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident.clone();
@@ -699,6 +741,40 @@ pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::T
         .into();
     }
 
+    // edges are directed by default
+    let mut is_directed = quote! { true };
+
+    // parse struct attributes amd override is_directed() with user specified value
+    // methods if given
+    // parse #[generic_edge_type(is_directed = "false")]
+    for attr in &input.attrs {
+        if attr.path().is_ident("generic_edge_type") {
+            if let Meta::List(meta_list) = &attr.meta {
+                let parsed: syn::punctuated::Punctuated<Meta, syn::Token![,]> = match meta_list
+                    .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
+                {
+                    Ok(i) => i,
+                    Err(e) => panic!("error parsinf token metadata: {}", e),
+                };
+
+                for meta in parsed {
+                    if let Meta::NameValue(nv) = meta {
+                        if nv.path.is_ident("is_directed") {
+                            if let syn::Expr::Lit(expr_lit) = nv.value {
+                                if let syn::Lit::Str(lit_str) = expr_lit.lit {
+                                    let user_input =
+                                        syn::Ident::new(&lit_str.value(), lit_str.span());
+                                    // override any previous implementation
+                                    is_directed = quote! { #user_input };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let static_type_assertions = quote! {
         const _: () = {
             struct _AssertEdgeTypeTraits<
@@ -710,6 +786,7 @@ pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::T
                     std::default::Default +
                     std::cmp::PartialEq +
                     std::cmp::Eq +
+                    std::hash::Hash +
                     std::fmt::Debug +
                     std::fmt::Display +
                     bytemuck::Pod +
@@ -736,8 +813,11 @@ pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::T
         unsafe impl bytemuck::Pod for #name {}
 
         impl GenericEdgeType for #name {
-            fn label(&self) -> usize {
+            #[inline(always)] fn label(&self) -> usize {
                 usize::from(*self)
+            }
+            #[inline(always)] fn set_label(&mut self, label: u64) {
+                *self = #name::from(label);
             }
         }
 
@@ -750,23 +830,38 @@ pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::T
 
         impl std::fmt::Debug for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "EdgeType {{ label: {:?}}}", self.label())
+                write!(f, "EdgeType {{ label: {:?} }}", self.label())
             }
         }
 
         impl std::fmt::Display for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "EdgeType {{ label: {}}}", self.label())
+                write!(f, "EdgeType {{ label: {} }}", self.label())
             }
         }
 
-        impl std::cmp::PartialEq for #name{
+        impl std::cmp::PartialEq for #name {
             fn eq(&self, other: &Self) -> bool {
                 self.label() == other.label()
             }
         }
 
-        impl std::cmp::Eq for #name{}
+        impl std::cmp::Eq for #name {}
+
+        // use the SAME fields as in `PartialEq`
+        impl std::hash::Hash for #name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.label().hash(state);
+            }
+        }
+
+        /// for pethraph / rustworkx_core compatibility
+        impl rustworkx_core::petgraph::EdgeType for #name {
+            fn is_directed() -> bool {
+                #is_directed
+            }
+        }
+
     };
 
     TokenStream::from(expanded)
