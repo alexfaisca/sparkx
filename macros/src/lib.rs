@@ -4,14 +4,18 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Attribute, Data, DeriveInput, Fields, Meta, MetaList, Type, parse_macro_input};
 
-#[proc_macro_derive(GenericEdge, attributes(edge_dest, edge_type))]
+static DEFAULT_FIELD_NAME_FOR_EDGE_DEST: &str = "dest_node";
+static DEFUALT_FIELD_NAME_FOR_EDGE_TYPE: &str = "edge_type";
+
+#[proc_macro_derive(GenericEdge, attributes(generic_edge, edge_dest, edge_type))]
 pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    assert_ne!(
+        DEFAULT_FIELD_NAME_FOR_EDGE_DEST,
+        DEFUALT_FIELD_NAME_FOR_EDGE_TYPE
+    );
+
     let input = parse_macro_input!(input as DeriveInput);
     let name = input.ident.clone();
-
-    let default_edge_dest_field_name = "dest_node";
-    let default_edge_type_field_name = "edge_type";
-    assert_ne!(default_edge_dest_field_name, default_edge_type_field_name);
 
     // check if #[repr(C)] is present
     let has_repr_c = input.attrs.iter().any(|attr: &Attribute| {
@@ -68,16 +72,17 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                 let mut dest_access_type_fallback = None;
                 let mut edge_type_access_type_fallback = None;
 
+                // search fields for attributes & fallbakcs
                 for field in &fields.named {
                     let ident = field.ident.as_ref();
                     let ty = field.ty.clone();
 
                     // setup fallback if field name matches
                     if let Some(field_name) = ident {
-                        if field_name == default_edge_dest_field_name {
+                        if field_name == DEFAULT_FIELD_NAME_FOR_EDGE_DEST {
                             dest_access_fallback = Some(field_name);
                             dest_access_type_fallback = Some(ty);
-                        } else if field_name == default_edge_type_field_name {
+                        } else if field_name == DEFUALT_FIELD_NAME_FOR_EDGE_TYPE {
                             edge_type_access_fallback = Some(field_name);
                             edge_type_access_type_fallback = Some(ty);
                         }
@@ -145,6 +150,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                     }
                 }
 
+                // setup getters
                 if dest_access.is_none() {
                     match (dest_access_fallback, dest_access_type_fallback) {
                         (Some(field), Some(field_ty)) => {
@@ -156,7 +162,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                                 name.clone(),
                                 format!(
                                     "Missing #[edge_dest] attribute or fallback field `{}`",
-                                    default_edge_dest_field_name
+                                    DEFAULT_FIELD_NAME_FOR_EDGE_DEST
                                 ),
                             )
                             .to_compile_error()
@@ -177,7 +183,7 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                                 name.clone(),
                                 format!(
                                     "Missing #[edge_type] attribute or fallback field `{}`",
-                                    default_edge_type_field_name
+                                    DEFUALT_FIELD_NAME_FOR_EDGE_TYPE
                                 ),
                             )
                             .to_compile_error()
@@ -187,6 +193,8 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                 } else {
                     quoted_edge_type_access = edge_type_access;
                 }
+
+                // setup setters, new() and default()
                 let dest_ty = if let Some(ty) = quoted_dest_type.clone() {
                     ty
                 } else {
@@ -461,6 +469,50 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
         }
     }
 
+    // parse struct attributes amd override new() and/or default() with user specified
+    // methods if given
+    // parse #[generic_edge(constructor = "new", deafult = "default")]
+    for attr in &input.attrs {
+        if attr.path().is_ident("generic_edge") {
+            if let Meta::List(meta_list) = &attr.meta {
+                let parsed: syn::punctuated::Punctuated<Meta, syn::Token![,]> = match meta_list
+                    .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
+                {
+                    Ok(i) => i,
+                    Err(e) => panic!("error parsinf token metadata: {}", e),
+                };
+
+                for meta in parsed {
+                    if let Meta::NameValue(nv) = meta {
+                        if nv.path.is_ident("build")
+                            || nv.path.is_ident("builder")
+                            || nv.path.is_ident("constructor")
+                            || nv.path.is_ident("new")
+                        {
+                            if let syn::Expr::Lit(expr_lit) = nv.value {
+                                if let syn::Lit::Str(lit_str) = expr_lit.lit {
+                                    let constructor =
+                                        syn::Ident::new(&lit_str.value(), lit_str.span());
+                                    // override any previous implementation
+                                    impl_new_for_self =
+                                        Some(quote! {#name::#constructor(edge_dest, edge_type) });
+                                }
+                            }
+                        } else if nv.path.is_ident("default") || nv.path.is_ident("from_void") {
+                            if let syn::Expr::Lit(expr_lit) = nv.value {
+                                if let syn::Lit::Str(lit_str) = expr_lit.lit {
+                                    let default = syn::Ident::new(&lit_str.value(), lit_str.span());
+                                    // override any previous implementation
+                                    impl_default_for_self = Some(quote! {#name::#default() });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ensure accesses were found if not search for fallbacks if not error out
     let quoted_dest_access = quoted_dest_access.unwrap_or_else(|| {
         syn::Error::new_spanned(name.clone(), "Missing #[edge_dest] attribute".to_string())
@@ -594,19 +646,19 @@ fn parse_generic_edge_attr(
 
         for meta in parsed {
             if let Meta::NameValue(nv) = meta {
-                if nv.path.is_ident("getter") {
+                if nv.path.is_ident("getter") || nv.path.is_ident("get") {
                     if let syn::Expr::Lit(expr_lit) = nv.value {
                         if let syn::Lit::Str(lit_str) = expr_lit.lit {
                             getter = Some(syn::Ident::new(&lit_str.value(), lit_str.span()));
                         }
                     }
-                } else if nv.path.is_ident("t") || nv.path.is_ident("real_type") {
+                } else if nv.path.is_ident("ty") || nv.path.is_ident("real_type") {
                     if let syn::Expr::Lit(expr_lit) = nv.value {
                         if let syn::Lit::Str(lit_str) = expr_lit.lit {
                             ty = syn::parse_str::<Type>(&lit_str.value()).ok();
                         }
                     }
-                } else if nv.path.is_ident("setter") {
+                } else if nv.path.is_ident("setter") || nv.path.is_ident("set") {
                     if let syn::Expr::Lit(expr_lit) = nv.value {
                         if let syn::Lit::Str(lit_str) = expr_lit.lit {
                             setter = Some(syn::Ident::new(&lit_str.value(), lit_str.span()));
