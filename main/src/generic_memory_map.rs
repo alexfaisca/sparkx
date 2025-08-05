@@ -7,7 +7,7 @@ use crate::shared_slice::{
 };
 use core::{f64, fmt, panic};
 use crossbeam::thread;
-use fst::{Map, MapBuilder, Streamer};
+use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use glob::glob;
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
@@ -16,6 +16,7 @@ use rand_distr::{Distribution, Poisson};
 use regex::Regex;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
+use std::path::PathBuf;
 use std::{
     any::type_name,
     collections::{HashMap, HashSet, VecDeque},
@@ -37,18 +38,9 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 static CACHE_DIR: &str = "./cache/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
-// FIXME: Make this a member of struct graph_cache
 
 fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
-}
-
-fn external_sort_by_content(temp: &str, sorted: &str) -> std::io::Result<()> {
-    // sort based on 2nd column (content), not line number
-    Command::new("sort")
-        .args(["-k2", temp, "-o", sorted])
-        .status()?;
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -136,8 +128,11 @@ fn cache_file_name(
             Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
             None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
         },
-        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
-        FileType::KmerSortedTmp => format!("{}_{}.{}", "kmersortedtmpfile", id, "tmp"),
+        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "emp"),
+        FileType::KmerSortedTmp => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
+            None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
+        },
         FileType::KCore => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kcore_tmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "kcores", id, "mmap"),
@@ -214,7 +209,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         ))
     }
 
-    pub fn init() -> Result<GraphCache<EdgeType, Edge>, Error> {
+    pub fn init() -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if !Path::new(CACHE_DIR).exists() {
             fs::create_dir_all(CACHE_DIR)?;
         }
@@ -273,15 +268,17 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
     }
 
-    pub fn init_with_id(id: String) -> Result<GraphCache<EdgeType, Edge>, Error> {
+    pub fn init_with_id(
+        id: String,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if !Path::new(CACHE_DIR).exists() {
             fs::create_dir_all(CACHE_DIR)?;
         }
         if id.is_empty() {
-            return Err(Error::new(
+            return Err(Box::new(Error::new(
                 std::io::ErrorKind::Other,
                 "error invalid cache id",
-            ));
+            )));
         }
 
         let (graph_filename, id) =
@@ -300,10 +297,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         {
             Ok(file) => file,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldnt open file {graph_filename}: {e}"),
-                ));
+                )));
             }
         };
 
@@ -316,10 +313,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         {
             Ok(file) => file,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldnt open file {index_filename}: {e}"),
-                ));
+                )));
             }
         };
 
@@ -332,10 +329,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         {
             Ok(file) => file,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldnt open file {kmer_filename}: {e}"),
-                ));
+                )));
             }
         };
 
@@ -354,7 +351,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
     }
 
-    pub fn open(filename: String) -> Result<GraphCache<EdgeType, Edge>, Error> {
+    pub fn open(
+        filename: String,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
         let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
         let kmer_filename = cache_file_name(filename.clone(), FileType::KmerTmp, None)?;
@@ -362,28 +361,28 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let graph_file: File = match OpenOptions::new().read(true).open(graph_filename.as_str()) {
             Ok(file) => file,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldnt open file {graph_filename}: {e}"),
-                ));
+                )));
             }
         };
         let index_file: File = match OpenOptions::new().read(true).open(index_filename.as_str()) {
             Ok(file) => file,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldnt open file {index_filename}: {e}"),
-                ));
+                )));
             }
         };
         let kmer_file: File = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
             Ok(file) => file,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldnt open file {kmer_filename}: {e}"),
-                ));
+                )));
             }
         };
 
@@ -405,7 +404,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
     }
 
-    pub fn write_node(&mut self, node_id: usize, data: &[Edge], label: &str) -> Result<(), Error> {
+    pub fn write_node(
+        &mut self,
+        node_id: usize,
+        data: &[Edge],
+        label: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let expected_id = self.index_bytes;
         match node_id == expected_id {
             true => {
@@ -414,10 +418,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 match self.index_file.write_all(self.graph_bytes.as_bytes()) {
                     Ok(_) => self.index_bytes += 1,
                     Err(e) => {
-                        return Err(Error::new(
+                        return Err(Box::new(Error::new(
                             std::io::ErrorKind::Other,
                             format!("error writing index for {node_id}: {e}"),
-                        ));
+                        )));
                     }
                 };
 
@@ -426,28 +430,36 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         self.graph_bytes += data.len();
                         Ok(())
                     }
-                    Err(e) => Err(Error::new(
+                    Err(e) => Err(Box::new(Error::new(
                         std::io::ErrorKind::Other,
                         format!("error writing edges for {node_id}: {e}"),
-                    )),
+                    ))),
                 }
             }
-            false => Err(Error::new(
+            false => Err(Box::new(Error::new(
                 std::io::ErrorKind::Other,
                 format!(
                     "error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
                 ),
-            )),
+            ))),
         }
     }
 
-    fn build_fst_from_sorted_file(&mut self) -> Result<(), Error> {
+    fn external_sort_by_content(temp: &str, sorted: &str) -> std::io::Result<()> {
+        // sort based on 2nd column (content), not line number
+        Command::new("sort")
+            .args(["-k2", temp, "-o", sorted])
+            .status()?;
+        Ok(())
+    }
+
+    fn build_fst_from_sorted_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Build finite state tranducer for k-mer to node id
         let fst_filename = cache_file_name(self.kmer_filename.clone(), FileType::Fst, None)?;
         let sorted_file =
             cache_file_name(self.kmer_filename.clone(), FileType::KmerSortedTmp, None)?;
 
-        external_sort_by_content(self.kmer_filename.as_str(), sorted_file.as_str())?;
+        Self::external_sort_by_content(self.kmer_filename.as_str(), sorted_file.as_str())?;
 
         self.kmer_file = match File::create(fst_filename.clone()) {
             Ok(i) => {
@@ -455,10 +467,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 Arc::new(i)
             }
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldn't create mer .fst file: {e}"),
-                ));
+                )));
             }
         };
 
@@ -470,10 +482,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let mut build = match MapBuilder::new(&*self.kmer_file) {
             Ok(i) => i,
             Err(e) => {
-                return Err(Error::new(
+                return Err(Box::new(Error::new(
                     std::io::ErrorKind::Other,
                     format!("error couldn't initialize builder: {e}"),
-                ));
+                )));
             }
         };
 
@@ -488,10 +500,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                     }
                 }
                 Err(e) => {
-                    return Err(Error::new(
+                    return Err(Box::new(Error::new(
                         std::io::ErrorKind::Other,
                         format!("error reading file: {e}"),
-                    ));
+                    )));
                 }
             };
             if let Ok(text) = std::str::from_utf8(&line) {
@@ -500,21 +512,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                     let id = match id_value.parse::<u64>() {
                         Ok(i) => i,
                         Err(e) => {
-                            return Err(Error::new(
+                            return Err(Box::new(Error::new(
                                 std::io::ErrorKind::Other,
                                 format!("error couldn't convert {id_value} to u64: {e}"),
-                            ));
+                            )));
                         }
                     };
                     match build.insert(kmer, id) {
                         Ok(i) => i,
                         Err(e) => {
-                            return Err(Error::new(
+                            return Err(Box::new(Error::new(
                                 std::io::ErrorKind::Other,
                                 format!(
                                     "error couldn't insert kmer for node (id: {id_value} label: {kmer}): {e}"
                                 ),
-                            ));
+                            )));
                         }
                     };
                 }
@@ -524,14 +536,172 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         match build.finish() {
             Ok(_) => Ok(()),
-            Err(e) => Err(Error::new(
+            Err(e) => Err(Box::new(Error::new(
                 std::io::ErrorKind::Other,
                 format!("error couldn't finish fst build: {e}"),
-            )),
+            ))),
         }
     }
 
-    pub fn make_readonly(&mut self) -> Result<(), Error> {
+    pub fn build_fst_from_unsorted_file(
+        &mut self,
+        batch_size: usize, // e.g. 10_000
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let input = OpenOptions::new()
+            .read(true)
+            .create(false)
+            .open(&self.kmer_filename)?;
+        let mut reader = BufReader::new(input);
+
+        let mut batch_num: usize = 0usize;
+        let mut batches = Vec::new();
+        let mut current_batch: Vec<(String, u64)> = Vec::with_capacity(batch_size);
+
+        let mut line = Vec::new();
+        loop {
+            let () = match reader.read_until(b'\n', &mut line) {
+                Ok(i) => {
+                    if i == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    return Err(Box::new(Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("error reading file: {e}"),
+                    )));
+                }
+            };
+            if let Ok(text) = std::str::from_utf8(&line) {
+                let mut parts = text.trim_end().split('\t');
+                if let (Some(node_id), Some(label)) = (parts.next(), parts.next()) {
+                    let id = match node_id.parse::<u64>() {
+                        Ok(i) => i,
+                        Err(e) => {
+                            return Err(Box::new(Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("error couldn't convert {node_id} to u64: {e}"),
+                            )));
+                        }
+                    };
+
+                    current_batch.push((label.to_string(), id));
+                    if current_batch.len() >= batch_size {
+                        let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num)?;
+                        batches.push(tmp_fst);
+                        current_batch.clear();
+                        batch_num += 1;
+                    }
+                }
+            }
+            line.clear();
+        }
+
+        // Process the last batch if not empty
+        if !current_batch.is_empty() {
+            let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num)?;
+            batches.push(tmp_fst);
+            batch_num += 1;
+        }
+
+        // Now merge all batch FSTs into one
+        if batch_num == 0 {
+            return Err(Box::new(Error::new(
+                std::io::ErrorKind::Other,
+                "error can't build empty fst",
+            )));
+        } else {
+            self.merge_fsts(&batches)?;
+        }
+
+        // Cleanup temp batch files
+        for batch_file in batches {
+            let _ = std::fs::remove_file(batch_file);
+        }
+
+        Ok(())
+    }
+
+    /// Builds an FST for a single sorted batch and writes it to a temp file.
+    fn build_batch_fst(
+        &self,
+        batch: &mut [(String, u64)],
+        batch_num: usize,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        // Sort lexicographically by key (label)
+        batch.sort_by(|a, b| a.0.cmp(&b.0));
+        let tempfst_fn = cache_file_name(
+            self.kmer_filename.clone(),
+            FileType::KmerSortedTmp,
+            Some(batch_num),
+        )?;
+
+        let mut wtr = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tempfst_fn)?;
+        let mut builder = MapBuilder::new(&mut wtr)?;
+
+        for (k, v) in batch.iter() {
+            builder.insert(k, *v)?;
+        }
+        builder.finish()?;
+        Ok(PathBuf::from(tempfst_fn))
+    }
+
+    /// Merge multiple FST batch files into a final FST.
+    fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
+        // Open all batch maps
+        let maps: Result<Vec<_>, _> = batch_paths
+            .iter()
+            .map(|p| {
+                let mmap = unsafe {
+                    MmapOptions::new().map(&OpenOptions::new().read(true).create(false).open(p)?)?
+                };
+                Map::new(mmap)
+            })
+            .collect();
+        let maps = maps?;
+
+        let mut op_builder = maps[0].op();
+        if maps.len() > 1 {
+            for map in &maps[1..] {
+                op_builder = op_builder.add(map.stream());
+            }
+        }
+
+        // Perform a union (merges sorted keys across all maps)
+        let union_stream = op_builder.union();
+
+        // Open output FST file for writing
+        let out_fn = cache_file_name(self.kmer_filename.clone(), FileType::Fst, None)?;
+        let out = Arc::new(
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&out_fn)?,
+        );
+        let mut builder = MapBuilder::new(out.clone())?;
+
+        // Iterate through merged keys and select values
+        let mut stream = union_stream.into_stream();
+        while let Some((key, vals)) = stream.next() {
+            // println!("vals len {} {:?} {:?}", vals.to_vec().len(), key, vals);
+            // Each `vals` is a Vec<IndexedValue>, one per input map
+            if let Some(val) = vals.to_vec().first() {
+                builder.insert(key, val.value)?;
+            }
+        }
+
+        builder.finish()?;
+        self.kmer_file = out;
+        self.kmer_filename = out_fn;
+        Ok(())
+    }
+
+    pub fn make_readonly(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.readonly {
             return Ok(());
         }
@@ -539,10 +709,26 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // Complete index file
         match self.index_file.write_all(self.graph_bytes.as_bytes()) {
             Ok(_) => self.index_bytes += 1,
-            Err(e) => panic!("error couldn't finish index: {}", e),
+            Err(e) => {
+                return Err(Box::new(Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("error couldn't finish index: {e}"),
+                )));
+            }
         };
 
-        self.build_fst_from_sorted_file()?;
+        // self.build_fst_from_sorted_file()?;
+        match self.build_fst_from_unsorted_file(10_000) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Box::new(Error::new(
+                    std::io::ErrorKind::Other,
+                    format!(
+                        "error couldn't build fst from unsorted file in bacthes of 10'000: {e}"
+                    ),
+                )));
+            }
+        };
         // Make all files read-only and cleanup
         for file in [&self.index_file, &self.graph_file, &self.kmer_file] {
             let mut permissions = file.metadata()?.permissions();
@@ -550,7 +736,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             file.set_permissions(permissions)?;
         }
         self.readonly = true;
-        cleanup_cache()
+        // cleanup_cache()
+        Ok(())
     }
 
     pub fn cleanup_cache(&self) -> Result<(), Error> {
@@ -577,12 +764,17 @@ where
     pub fn init(
         cache: GraphCache<EdgeType, Edge>,
         thread_count: u8,
-    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Error> {
+    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if cache.readonly {
             let mmap = unsafe {
                 match MmapOptions::new().map(&File::open(&cache.kmer_filename)?) {
                     Ok(i) => i,
-                    Err(e) => panic!("error couldn't mmap k-mer fst: {}", e),
+                    Err(e) => {
+                        return Err(Box::new(Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("error couldn't mmap k-mer fst: {e}"),
+                        )));
+                    }
                 }
             };
             let thread_count = if thread_count == 0 { 1 } else { thread_count };
@@ -591,7 +783,12 @@ where
                 index: unsafe { Arc::new(Mmap::map(&cache.index_file)?) },
                 kmers: match Map::new(mmap) {
                     Ok(i) => Arc::new(i),
-                    Err(e) => panic!("error couldn't map k-mer fst mmap: {}", e),
+                    Err(e) => {
+                        return Err(Box::new(Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("error map fst from k-mer mmap: {e}"),
+                        )));
+                    }
                 },
                 graph_cache: cache,
                 edge_size: std::mem::size_of::<Edge>(),
@@ -600,7 +797,10 @@ where
             });
         }
 
-        panic!("error graph cache must be readonly to be memmapped");
+        Err(Box::new(Error::new(
+            std::io::ErrorKind::InvalidData,
+            "error graph cache must be readonly to be memmapped",
+        )))
     }
 
     #[inline(always)]
@@ -861,7 +1061,7 @@ where
         &self,
         mask: fn(usize) -> bool,
         identifier: Option<String>,
-    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Error> {
+    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         let node_count = self.size();
         if node_count < 2 {
             panic!("error can't mask empty graph");

@@ -134,7 +134,7 @@ fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<SubStandardColoredEd
 fn mmap_from_file(
     data_path: String,
     threads: u8,
-) -> Result<GraphMemoryMap<TinyEdgeType, StandardEdge>, ParsingError> {
+) -> Result<GraphMemoryMap<TinyEdgeType, StandardEdge>, Box<dyn std::error::Error>> {
     let graph_cache: GraphCache<TinyEdgeType, StandardEdge> =
         GraphCache::<TinyEdgeType, StandardEdge>::open(data_path)?;
     let graph_mmaped = GraphMemoryMap::<TinyEdgeType, StandardEdge>::init(graph_cache, threads)?;
@@ -186,7 +186,7 @@ fn read_file<P: AsRef<Path>>(path: P, mode: InputType) -> io::Result<Vec<u8>> {
     Ok(contents)
 }
 
-fn parse_direction(orig: &str, dest: &str) -> Result<TinyEdgeType, ParsingError> {
+fn parse_direction(orig: &str, dest: &str) -> Result<TinyEdgeType, Box<dyn std::error::Error>> {
     match (orig, dest) {
         ("+", "+") => Ok(TinyEdgeType::FF),
         ("+", "-") => Ok(TinyEdgeType::FR),
@@ -200,7 +200,7 @@ fn parse_bytes_mmaped(
     input: &[u8],
     threads: u8,
     id: Option<String>,
-) -> Result<GraphMemoryMap<SubStandardColoredEdgeType, Test>, ParsingError> {
+) -> Result<GraphMemoryMap<SubStandardColoredEdgeType, Test>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
     let mut lines = input.split(|&b| b == b'\n');
     let mut graph_cache = match id {
@@ -316,44 +316,20 @@ fn parse_bytes_mmaped(
 }
 
 #[derive(Debug)]
-enum ParsingError {
-    Format(std::fmt::Error),
-    Io(std::io::Error),
-    Utf8(std::str::Utf8Error),
-    ParseInt(std::num::ParseIntError),
+enum ParsingError<T: std::error::Error> {
+    Some(T),
 }
 
-impl From<std::fmt::Error> for ParsingError {
-    fn from(e: std::fmt::Error) -> Self {
-        ParsingError::Format(e)
+impl<T: std::error::Error> From<T> for ParsingError<T> {
+    fn from(e: T) -> Self {
+        ParsingError::<T>::Some(e)
     }
 }
 
-impl From<std::io::Error> for ParsingError {
-    fn from(e: std::io::Error) -> Self {
-        ParsingError::Io(e)
-    }
-}
-
-impl From<std::str::Utf8Error> for ParsingError {
-    fn from(e: std::str::Utf8Error) -> Self {
-        ParsingError::Utf8(e)
-    }
-}
-
-impl From<std::num::ParseIntError> for ParsingError {
-    fn from(e: std::num::ParseIntError) -> Self {
-        ParsingError::ParseInt(e)
-    }
-}
-
-impl Display for ParsingError {
+impl<T: std::error::Error> Display for ParsingError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParsingError::Format(e) => write!(f, "FormatError {{{}}}", e),
-            ParsingError::Io(e) => write!(f, "IoError {{{}}}", e),
-            ParsingError::Utf8(e) => write!(f, "Utf8Error {{{}}}", e),
-            ParsingError::ParseInt(e) => write!(f, "ParseIntError {{{}}}", e),
+            ParsingError::Some(e) => write!(f, "Other {{{}}}", e),
         }
     }
 }
