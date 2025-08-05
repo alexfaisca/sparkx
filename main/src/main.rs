@@ -12,9 +12,6 @@ use generic_edge::{
     SubStandardColoredEdgeType, Test, TinyEdgeType,
 };
 use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
-use petgraph::graphmap::DiGraphMap;
-use rustworkx_core::petgraph::{self};
-use rustworkx_core::{self};
 use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
@@ -85,22 +82,23 @@ fn main() {
         Path::new(("./cache/index_".to_string() + args.file.as_str()).as_str()).try_exists(),
     ) {
         // .txt input file
-        (Some("txt"), _) => match args.mmap {
-            true => {}
-            false => {
-                petgraph_suite(
-                    parse_bytes_petgraph(
-                        read_file(args.file, InputType::Txt)
+        (Some("txt"), _) => {
+            if args.mmap {
+                mmapped_suite(
+                    parse_bytes_mmaped(
+                        read_file(args.file.clone(), InputType::Txt)
                             .expect("error couldn't read file")
                             .as_ref(),
+                        args.threads,
+                        args.output_id,
                     )
                     .expect("error couldn't parse file"),
                 );
             }
-        },
+        }
         // .lz4 input file
-        (Some("lz4"), _) => match args.mmap {
-            true => {
+        (Some("lz4"), _) => {
+            if args.mmap {
                 mmapped_suite(
                     parse_bytes_mmaped(
                         read_file(args.file.clone(), InputType::Lz4)
@@ -112,17 +110,7 @@ fn main() {
                     .expect("error couldn't parse file"),
                 );
             }
-            false => {
-                petgraph_suite(
-                    parse_bytes_petgraph(
-                        read_file(args.file, InputType::Lz4)
-                            .expect("error couldn't read file")
-                            .as_ref(),
-                    )
-                    .expect("error couldn't parse file"),
-                );
-            }
-        },
+        }
         // .mmap input file
         (Some("mmap"), Ok(false)) => match args.mmap {
             true => {}
@@ -139,12 +127,10 @@ fn main() {
     };
 }
 
-fn petgraph_suite(_graph: DiGraphMap<u64, TinyEdgeType>) {}
-
 fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<SubStandardColoredEdgeType, Test>) {}
 
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
-
+#[expect(dead_code)]
 fn mmap_from_file(
     data_path: String,
     threads: u8,
@@ -208,44 +194,6 @@ fn parse_direction(orig: &str, dest: &str) -> Result<TinyEdgeType, ParsingError>
         ("-", "-") => Ok(TinyEdgeType::RR),
         _ => panic!("error invalid direction: \"{}:{}\"", orig, dest),
     }
-}
-
-fn parse_bytes_petgraph(input: &[u8]) -> Result<DiGraphMap<u64, TinyEdgeType>, ParsingError> {
-    // let mut result: Vec<(u64, Node)> = vec![];
-    let mut graph = DiGraphMap::<u64, TinyEdgeType>::new();
-    let mut lines = input.split(|&b| b == b'\n');
-
-    while let Some(line) = lines.next() {
-        if line.is_empty() {
-            continue;
-        }
-
-        // Convert each line to str temporarily -> cut off ">" char
-        let line_str = std::str::from_utf8(&line[1..])?;
-
-        let sequence_line = match lines.next() {
-            None => panic!("error no k-mer sequence for node {}", line_str),
-            Some(i) => i,
-        };
-        let _k_mer = std::str::from_utf8(&sequence_line[0..])?;
-
-        let node = line_str.split_whitespace().collect::<Vec<&str>>();
-
-        let mut node = node.iter().peekable();
-        let id: u64 = node.next().unwrap().parse()?;
-
-        let _node_lengh = node.next(); // length
-        let _node_color = node.next(); // color value
-
-        for link in node {
-            let link = &link.split(':').collect::<Vec<&str>>()[1..];
-            graph.add_edge(id, link[1].parse()?, parse_direction(link[0], link[2])?);
-        }
-    }
-
-    println!("{:?}", graph);
-
-    Ok(graph)
 }
 
 fn parse_bytes_mmaped(
@@ -333,12 +281,10 @@ fn parse_bytes_mmaped(
         if input.is_empty() {
             break;
         }
-        if let Ok(val) = graph_mmaped.node_id_from_kmer(input) {
-            println!("Value for key {} is {}", input, val);
-        } else {
-            println!("Key {} not found", input);
+        match graph_mmaped.node_id_from_kmer(input) {
+            Ok(val) => println!("Value for key {} is {}", input, val),
+            Err(e) => println!("Key not found: {e}"),
         }
-        println!("You entered: {}", input);
     }
 
     /* ********************************************************************************* */
@@ -359,6 +305,13 @@ fn parse_bytes_mmaped(
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Unlim)?;
     let _ = graph_mmaped.cleanup_cache();
+    let a = graph_mmaped.export_petgraph()?;
+    println!("rustworkx_core export {:?}", a);
+    use rustworkx_core::centrality::betweenness_centrality;
+    println!(
+        "rustworkx_core export {:?}",
+        betweenness_centrality(&a, false, true, 50)
+    );
     Ok(graph_mmaped)
 }
 

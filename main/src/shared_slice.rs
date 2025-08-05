@@ -1,5 +1,4 @@
-use memmap::{Mmap, MmapMut, MmapOptions};
-use rand::seq::IndexedRandom;
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},

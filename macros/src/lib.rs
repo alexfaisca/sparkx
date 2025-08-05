@@ -354,12 +354,6 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                         );
                     }
                     (_a, _b, _c, _d, _e, _f) => {
-                        // println!("setter dest {:?}", _a);
-                        // println!("setter type {:?}", _b);
-                        // println!("real dest {:?}", _c);
-                        // println!("real type {:?}", _d);
-                        // println!("fallback dest {:?}", _e);
-                        // println!("fallback type {:?}", _f);
                         return syn::Error::new_spanned(
                         name.clone(),
                             "Named struct must specify #[edge_type(getter=..., setter=..., real_type=...)], but setter was missing and no fallback initialization method was found"
@@ -425,6 +419,14 @@ pub fn derive_generic_edge(input: proc_macro::TokenStream) -> proc_macro::TokenS
                     impl_default_for_self = Some(quote! { #name::new(0u64, 0u64)});
                     impl_new_for_self = Some(quote! { #name::new(edge_type, edge_dest)});
                 } else if fields.unnamed.len() == 2 {
+                    let dest_attr = input.attrs.iter().find(|a| a.path().is_ident("edge_dest"));
+                    let edge_attr = input.attrs.iter().find(|a| a.path().is_ident("edge_type"));
+                    if let Some(_attr) = dest_attr {
+                        // FIXME: search for getters and setters
+                    }
+                    if let Some(_attr) = edge_attr {
+                        // FIXME: search for getters and setters
+                    }
                     quoted_dest_access = Some(quote! { self.0 });
                     quoted_edge_type_access = Some(quote! { self.1 });
                     let type_of_dest = fields.unnamed[0].ty.clone();

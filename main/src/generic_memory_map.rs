@@ -9,7 +9,7 @@ use core::{f64, fmt, panic};
 use crossbeam::thread;
 use fst::{Map, MapBuilder, Streamer};
 use glob::glob;
-use memmap::{Mmap, MmapMut, MmapOptions};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
 use rand::Rng;
 use rand_distr::{Distribution, Poisson};
@@ -1813,7 +1813,10 @@ where
         if let Some(val) = self.kmers.get(kmer) {
             Ok(val)
         } else {
-            panic!("error k-mer {} not found", kmer);
+            Err(Error::new(
+                std::io::ErrorKind::Other,
+                format!("error k-mer {kmer} not found"),
+            ))
         }
     }
 
