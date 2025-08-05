@@ -225,7 +225,8 @@ impl<T> SharedSliceMut<T> {
         }
     }
     pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
-        assert!(idx + slice.len() < self.len);
+        // if idx == len but slice.len() == 0, the write should be valid
+        assert!(idx + slice.len() <= self.len);
         unsafe {
             std::ptr::copy_nonoverlapping(slice.as_ptr(), self.ptr.add(idx), slice.len());
         };

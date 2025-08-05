@@ -1,6 +1,5 @@
 #![feature(int_roundings)]
 mod abstract_graph;
-mod fst_merge_sort;
 mod generic_edge;
 mod generic_memory_map;
 mod shared_slice;
@@ -205,9 +204,14 @@ fn parse_bytes_mmaped(
     let mut lines = input.split(|&b| b == b'\n');
     let mut graph_cache = match id {
         Some(id) => {
-            generic_memory_map::GraphCache::<SubStandardColoredEdgeType, Test>::init_with_id(id)?
+            generic_memory_map::GraphCache::<SubStandardColoredEdgeType, Test>::init_with_id(
+                id,
+                Some(20_000),
+            )?
         }
-        None => generic_memory_map::GraphCache::<SubStandardColoredEdgeType, Test>::init()?,
+        None => {
+            generic_memory_map::GraphCache::<SubStandardColoredEdgeType, Test>::init(Some(20_000))?
+        }
     };
 
     //debug
@@ -305,13 +309,24 @@ fn parse_bytes_mmaped(
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
     let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Unlim)?;
     let _ = graph_mmaped.cleanup_cache();
-    let a = graph_mmaped.export_petgraph()?;
-    println!("rustworkx_core export {:?}", a);
-    use rustworkx_core::centrality::betweenness_centrality;
-    println!(
-        "rustworkx_core export {:?}",
-        betweenness_centrality(&a, false, true, 50)
-    );
+    let b = graph_mmaped
+        .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
+    println!("graph even nodes {:?}", b);
+
+    println!("graph {:?}", b.edges());
+    println!("node 0: {:?}", b.neighbours(0)?.collect::<Vec<Test>>());
+    println!("node 1: {:?}", b.neighbours(1)?.collect::<Vec<Test>>());
+    println!("node 2: {:?}", b.neighbours(2)?.collect::<Vec<Test>>());
+    println!("node 3: {:?}", b.neighbours(3)?.collect::<Vec<Test>>());
+    println!("node 4: {:?}", b.neighbours(4)?.collect::<Vec<Test>>());
+    println!("node 5: {:?}", b.neighbours(5)?.collect::<Vec<Test>>());
+    // let a = graph_mmaped.export_petgraph()?;
+    // println!("rustworkx_core export {:?}", a);
+    // use rustworkx_core::centrality::betweenness_centrality;
+    // println!(
+    //     "rustworkx_core export {:?}",
+    //     betweenness_centrality(&a, false, true, 50)
+    // );
     Ok(graph_mmaped)
 }
 

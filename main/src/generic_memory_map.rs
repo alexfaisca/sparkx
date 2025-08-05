@@ -1,5 +1,3 @@
-#[expect(unused_imports)]
-use crate::fst_merge_sort;
 use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedQueueMut, SharedSlice,
@@ -12,6 +10,7 @@ use glob::glob;
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
 use rand::Rng;
+use rand::seq::IndexedRandom;
 use rand_distr::{Distribution, Poisson};
 use regex::Regex;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
@@ -38,6 +37,7 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 static CACHE_DIR: &str = "./cache/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
+static DEFAULT_BATCH_SIZE: usize = 10_000usize;
 
 fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
@@ -128,7 +128,7 @@ fn cache_file_name(
             Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
             None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
         },
-        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "emp"),
+        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
         FileType::KmerSortedTmp => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
             None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
@@ -145,8 +145,12 @@ fn cache_file_name(
         FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
         // this isn't a filename --- it's an id to be used in filenames
         FileType::ExportGraphMask => match sequence_number {
-            Some(i) => format!("{}{}{}", "masked_export", i, id),
-            None => format!("{}{}", "masked_export", id),
+            Some(i) => {
+                return Ok(format!("{}_{}_{}", "masked_export", i, id));
+            }
+            None => {
+                return Ok(format!("{}_{}", "masked_export", id));
+            }
         },
     };
 
@@ -181,12 +185,13 @@ pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub graph_bytes: usize,
     pub index_bytes: usize,
     pub readonly: bool,
+    batch: Option<usize>,
     _marker1: PhantomData<Edge>,
     _marker2: PhantomData<EdgeType>,
 }
 
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
-    fn init_cache_file_from_id_or_random(
+    pub(self) fn init_cache_file_from_id_or_random(
         graph_id: Option<String>,
         target_type: FileType,
     ) -> Result<(String, String), Error> {
@@ -209,7 +214,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         ))
     }
 
-    pub fn init() -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    pub fn init(
+        batch: Option<usize>,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if !Path::new(CACHE_DIR).exists() {
             fs::create_dir_all(CACHE_DIR)?;
         }
@@ -263,6 +270,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             graph_bytes: 0,
             index_bytes: 0,
             readonly: false,
+            batch: if let Some(n) = batch {
+                Some(std::cmp::max(n, DEFAULT_BATCH_SIZE))
+            } else {
+                batch
+            },
             _marker1: PhantomData::<Edge>,
             _marker2: PhantomData::<EdgeType>,
         })
@@ -270,6 +282,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     pub fn init_with_id(
         id: String,
+        batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if !Path::new(CACHE_DIR).exists() {
             fs::create_dir_all(CACHE_DIR)?;
@@ -346,6 +359,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             graph_bytes: 0,
             index_bytes: 0,
             readonly: false,
+            batch: if let Some(n) = batch {
+                Some(std::cmp::max(n, DEFAULT_BATCH_SIZE))
+            } else {
+                batch
+            },
             _marker1: PhantomData::<Edge>,
             _marker2: PhantomData::<EdgeType>,
         })
@@ -399,6 +417,61 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             graph_bytes: graph_len,
             index_bytes: index_len,
             readonly: true,
+            batch: Some(DEFAULT_BATCH_SIZE),
+            _marker1: PhantomData::<Edge>,
+            _marker2: PhantomData::<EdgeType>,
+        })
+    }
+
+    pub(self) fn open_subpragh(
+        filename: String,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
+        let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
+        let kmer_filename = cache_file_name(filename.clone(), FileType::Fst, None)?;
+
+        let graph_file: File = match OpenOptions::new().read(true).open(graph_filename.as_str()) {
+            Ok(file) => file,
+            Err(e) => {
+                return Err(Box::new(Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("error couldnt open file {graph_filename}: {e}"),
+                )));
+            }
+        };
+        let index_file: File = match OpenOptions::new().read(true).open(index_filename.as_str()) {
+            Ok(file) => file,
+            Err(e) => {
+                return Err(Box::new(Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("error couldnt open file {index_filename}: {e}"),
+                )));
+            }
+        };
+        let kmer_file: File = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
+            Ok(file) => file,
+            Err(e) => {
+                return Err(Box::new(Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("error couldnt open file {kmer_filename}: {e}"),
+                )));
+            }
+        };
+
+        let graph_len = graph_file.metadata().unwrap().len() as usize;
+        let index_len = index_file.metadata().unwrap().len() as usize;
+
+        Ok(GraphCache::<EdgeType, Edge> {
+            graph_file: Arc::new(graph_file),
+            index_file: Arc::new(index_file),
+            kmer_file: Arc::new(kmer_file),
+            graph_filename,
+            index_filename,
+            kmer_filename,
+            graph_bytes: graph_len,
+            index_bytes: index_len,
+            readonly: true,
+            batch: Some(DEFAULT_BATCH_SIZE),
             _marker1: PhantomData::<Edge>,
             _marker2: PhantomData::<EdgeType>,
         })
@@ -717,18 +790,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
         };
 
-        // self.build_fst_from_sorted_file()?;
-        match self.build_fst_from_unsorted_file(10_000) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!(
-                        "error couldn't build fst from unsorted file in bacthes of 10'000: {e}"
-                    ),
-                )));
-            }
-        };
+        if let Some(batch_size) = self.batch {
+            match self.build_fst_from_unsorted_file(batch_size) {
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(Box::new(Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "error couldn't build fst from unsorted file in bacthes of 10'000: {e}"
+                        ),
+                    )));
+                }
+            };
+        } else {
+            self.build_fst_from_sorted_file()?;
+        }
         // Make all files read-only and cleanup
         for file in [&self.index_file, &self.graph_file, &self.kmer_file] {
             let mut permissions = file.metadata()?.permissions();
@@ -1057,6 +1133,11 @@ where
         Ok(self.exports - 1)
     }
 
+    /// applies the mask: fn(usize) -> bool function to each node id and returns a subgraph wherein
+    /// only the set of nodes, S ⊂ V, of the nods for whose the output of mask is true, as well as,
+    /// only the set of edges coming from and going to nodes in S
+    /// the node ids of th subgraph may not, and probably will not, correspond to the original node
+    /// identifiers
     pub fn apply_mask_to_nodes(
         &self,
         mask: fn(usize) -> bool,
@@ -1064,17 +1145,24 @@ where
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         let node_count = self.size();
         if node_count < 2 {
-            panic!("error can't mask empty graph");
+            return Err(Box::new(Error::new(
+                std::io::ErrorKind::InvalidData,
+                "error can't mask empty graph",
+            )));
         }
         let c_fn = CACHE_DIR.to_string() + "edge_count.tmp";
         let i_fn = CACHE_DIR.to_string() + "node_index.tmp";
+
+        // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
         let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(c_fn, node_count, true)?;
+        // allocate |V| usize's to store each node's new id if present in the subgraph
         let mut node_index = SharedSliceMut::<usize>::abst_mem_mut(i_fn, node_count - 1, true)?;
 
         let mut curr_node_index: usize = 0;
         let mut curr_edge_count: usize = 0;
         *edge_count.get_mut(0) = curr_edge_count;
-        for u in 0..node_count {
+        // iterate over |V|
+        for u in 0..node_count - 1 {
             if mask(u) {
                 *node_index.get_mut(u) = curr_node_index;
                 curr_node_index += 1;
@@ -1088,7 +1176,7 @@ where
         }
 
         let mut kmer_stream = self.kmers.stream();
-        let graph_id = match identifier {
+        let id = match identifier {
             Some(id) => id,
             None => cache_file_name(
                 self.graph_cache.graph_filename.clone(),
@@ -1097,9 +1185,19 @@ where
             )?,
         };
 
-        let edges_fn = cache_file_name(graph_id.clone(), FileType::Edges, None)?;
-        let index_fn = cache_file_name(graph_id.clone(), FileType::Index, None)?;
-        let kmers_fn = cache_file_name(graph_id.clone(), FileType::Fst, None)?;
+        // prepare files for subgraph
+        let (edges_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+            Some(id),
+            FileType::Edges,
+        )?;
+        let (index_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+            Some(id),
+            FileType::Index,
+        )?;
+        let (kmers_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+            Some(id),
+            FileType::Fst,
+        )?;
         let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edges_fn, curr_edge_count, true)?;
         let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, curr_node_index + 1, true)?;
         let kmer_file = OpenOptions::new()
@@ -1107,11 +1205,10 @@ where
             .truncate(true)
             .write(true)
             .open(kmers_fn.clone())?;
-        let mut build = match MapBuilder::new(&kmer_file) {
-            Ok(i) => i,
-            Err(e) => panic!("error couldn't initialize builder: {}", e),
-        };
+        let mut build = MapBuilder::new(&kmer_file)?;
 
+        // write nodes in order of lexicographically ordered kmers to avoid sorting kmers
+        // FIXME: what is more costly random page accesses or sorting build merging kmer fst?
         *index.get_mut(0) = 0;
         while let Some((kmer, node_id)) = kmer_stream.next() {
             let id = node_id as usize;
@@ -1120,11 +1217,14 @@ where
                 let new_id = *node_index.get(id);
                 *index.get_mut(new_id + 1) = *edge_count.get(id + 1);
                 // write edge file node
-                let edge_begin = *edge_count.get(id);
-                let node_edges: Vec<Edge> =
-                    self.neighbours(id)?.filter(|x| mask(x.dest())).collect();
                 edges
-                    .write_slice(edge_begin, node_edges.as_slice())
+                    .write_slice(
+                        *edge_count.get(id),
+                        self.neighbours(id)?
+                            .filter(|x| mask(x.dest()))
+                            .collect::<Vec<Edge>>()
+                            .as_slice(),
+                    )
                     .ok_or_else(|| {
                         Error::new(
                             std::io::ErrorKind::Other,
@@ -1132,13 +1232,10 @@ where
                         )
                     })?;
                 // write fst for node
-                match build.insert(kmer, new_id as u64) {
-                    Ok(i) => i,
-                    Err(e) => panic!("error couldn't insert kmer for node (id {new_id}): {e}"),
-                };
+                build.insert(kmer, new_id as u64)?;
             }
         }
-        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(kmers_fn)?;
+        let cache: GraphCache<EdgeType, Edge> = GraphCache::open_subpragh(kmers_fn)?;
         GraphMemoryMap::init(cache, self.thread_count)
     }
 
@@ -1162,8 +1259,6 @@ where
                     graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), v.e_type());
                 });
             });
-
-        println!("{:?}", graph);
 
         Ok(graph)
     }
@@ -2710,6 +2805,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
             graph_bytes: self.graph_bytes,
             index_bytes: self.index_bytes,
             readonly: true,
+            batch: self.batch.clone(),
             _marker1: self._marker1,
             _marker2: self._marker2,
         }
