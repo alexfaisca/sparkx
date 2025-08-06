@@ -7,10 +7,10 @@ use core::{f64, fmt, panic};
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use glob::glob;
+use hyperloglogplus::{HyperLogLog, HyperLogLogPlus};
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
 use rand::Rng;
-use rand::seq::IndexedRandom;
 use rand_distr::{Distribution, Poisson};
 use regex::Regex;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
@@ -18,7 +18,7 @@ use static_assertions::const_assert;
 use std::path::PathBuf;
 use std::{
     any::type_name,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque, hash_map::RandomState},
     fmt::Debug,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Error, Write},
@@ -58,6 +58,11 @@ enum FileType {
     EdgeOver,
     /// doesn't yield a filename --- yields id to be used in filename
     ExportGraphMask,
+    HyperBallDistances,
+    HyperBallInvDistances,
+    HyperBallClosenessCentrality,
+    HyperBallHarmonicCentrality,
+    HyperBallLinCentrality,
 }
 
 fn cache_file_name(
@@ -152,6 +157,19 @@ fn cache_file_name(
                 return Ok(format!("{}_{}", "masked_export", id));
             }
         },
+        FileType::HyperBallDistances => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
+        FileType::HyperBallInvDistances => {
+            format!("{}_{}.{}", "hyperball_inv_distances", id, "mmap")
+        }
+        FileType::HyperBallClosenessCentrality => {
+            format!("{}_{}.{}", "hyperball_closeness", id, "mmap")
+        }
+        FileType::HyperBallHarmonicCentrality => {
+            format!("{}_{}.{}", "hyperball_harmonic", id, "mmap")
+        }
+        FileType::HyperBallLinCentrality => {
+            format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
+        }
     };
 
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
@@ -832,6 +850,7 @@ pub struct GraphMemoryMap<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>
     exports: u8,
 }
 
+#[expect(dead_code)]
 impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
 where
     EdgeType: GenericEdgeType,
@@ -1235,6 +1254,7 @@ where
                 build.insert(kmer, new_id as u64)?;
             }
         }
+        self.cleanup_cache()?;
         let cache: GraphCache<EdgeType, Edge> = GraphCache::open_subpragh(kmers_fn)?;
         GraphMemoryMap::init(cache, self.thread_count)
     }
@@ -2539,12 +2559,280 @@ where
     }
 }
 
+/// De Bruijn graphs are simmetric graphs, so running the HyperBall algorithm on the graph is
+/// the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph
+/// to obtain the necessary components to determine the closeness, harmonic and Lin's centralities
+/// for every node of the graph.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    graph: GraphMemoryMap<EdgeType, Edge>,
+    /// vec with a hyperloglog++ counter for each node of the graph
+    counters: Vec<HyperLogLogPlus<usize, RandomState>>,
+    /// cached slice of the sum of the distances for each node of the graph
+    distances: AbstractedProceduralMemoryMut<f64>,
+    /// cached slice of the sum of the inverse of the distances for each node of the graph
+    inverse_distances: AbstractedProceduralMemoryMut<f64>,
+    /// precision of the hyperloglog++ counters used in the algorithm
+    precision: u8,
+    /// maximum number of iteration --- default is 128, max is 1024 (arbitrarily large values)
+    max_t: usize,
+}
+
+#[allow(dead_code)]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug)]
+enum Centrality {
+    HARMONIC,
+    CLOSENESS,
+    LIN,
+}
+
+#[allow(dead_code)]
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType, Edge> {
+    const DEAFULT_PRECISION: u8 = 8;
+    const MIN_PRECISION: u8 = 4;
+    const MAX_PRECISION: u8 = 18;
+    const DEAFULT_MAX_DEPTH: usize = 100;
+    const MAX_MAX_DEPTH: usize = 1024;
+
+    fn init_cache(
+        graph: &GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<f64>,
+            AbstractedProceduralMemoryMut<f64>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let d_fn = cache_file_name(
+            graph.graph_cache.graph_filename.clone(),
+            FileType::HyperBallDistances,
+            None,
+        )?;
+        let i_fn = cache_file_name(
+            graph.graph_cache.graph_filename.clone(),
+            FileType::HyperBallInvDistances,
+            None,
+        )?;
+        let distances = SharedSliceMut::<f64>::abst_mem_mut(d_fn, graph.size() - 1, true)?;
+        let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(i_fn, graph.size() - 1, true)?;
+
+        Ok((distances, inverse_distances))
+    }
+
+    fn centrality_cache_file_name(
+        template_fn: String,
+        centrality: Centrality,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        match centrality {
+            Centrality::CLOSENESS => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallClosenessCentrality,
+                None,
+            )?),
+            Centrality::HARMONIC => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallLinCentrality,
+                None,
+            )?),
+            Centrality::LIN => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallLinCentrality,
+                None,
+            )?),
+        }
+    }
+
+    pub fn new(
+        graph: GraphMemoryMap<EdgeType, Edge>,
+        precision: Option<u8>,
+        max_depth: Option<usize>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (node_count, overflow) = graph.size().overflowing_sub(1);
+        if overflow || node_count == 0 {
+            return Err(Box::new(Error::new(
+                std::io::ErrorKind::Other,
+                "error initiating hyperball graph is empty",
+            )));
+        }
+        // make sure presision is within bounds
+        let precision = precision.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
+            p.clamp(
+                HyperBall::<EdgeType, Edge>::MIN_PRECISION,
+                HyperBall::<EdgeType, Edge>::MAX_PRECISION,
+            )
+        });
+        // make sure depth is within bounds
+        let max_t = max_depth.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
+            std::cmp::max(HyperBall::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
+        });
+        // init cached vecs for distances and inverse distances accumulation
+        let (mut distances, mut inverse_distances) = Self::init_cache(&graph)?;
+        // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
+        let mut counters: Vec<HyperLogLogPlus<usize, RandomState>> =
+            Vec::with_capacity(graph.size() - 1);
+        (0..node_count).for_each(|u| {
+            counters.push(HyperLogLogPlus::new(precision, RandomState::new()).unwrap());
+            counters[u].insert(&u);
+            *distances.get_mut(u) = 0f64;
+            *inverse_distances.get_mut(u) = 0f64;
+        });
+
+        let mut hyper_ball = Self {
+            graph,
+            counters,
+            distances,
+            inverse_distances,
+            precision,
+            max_t,
+        };
+        hyper_ball.compute()?;
+
+        Ok(hyper_ball)
+    }
+
+    fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut t_f64: f64 = 1.; // first iteration is initialization
+        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
+        let mut changed = 0;
+        loop {
+            println!("HyperBall run {t_f64}");
+            for u in 0..self.graph.size() - 1 {
+                let mut a: HyperLogLogPlus<usize, RandomState> = self.counters[u].clone();
+                for v in self.graph.neighbours(u)? {
+                    a.merge(&self.counters[v.dest()])?;
+                }
+                let curr_count = a.count();
+                let prev_count = self.counters[u].count();
+                let count_diff = curr_count - prev_count;
+                *self.distances.get_mut(u) += t_f64 * count_diff;
+                // FIXME: check if this is correct
+                *self.inverse_distances.get_mut(u) += if count_diff > 0f64 {
+                    inv_t_f64 * 1. / count_diff
+                } else {
+                    0f64
+                };
+                if curr_count != prev_count {
+                    self.counters[u] = a;
+                    changed += 1;
+                }
+            }
+            println!("Changed {changed}");
+            if changed == 0 {
+                break;
+            }
+            changed = 0;
+            t_f64 += 1.;
+            inv_t_f64 = 1. / t_f64;
+        }
+        let counts = self
+            .counters
+            .clone()
+            .iter_mut()
+            .map(|c| c.count())
+            .collect::<Vec<f64>>();
+        println!("{:?}\nThese were counts", counts);
+        Ok(())
+    }
+
+    // FIXME: for all centralities: what happens when the distance is not  normal and: is zero, or
+    // is infinite
+    pub fn compute_closeness_centrality(
+        &mut self,
+    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1; // |V|
+        let c_fn = Self::centrality_cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            Centrality::CLOSENESS,
+        )?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+        for idx in 0..node_count {
+            if !self.distances.get(idx).is_normal() {
+                *mem.get_mut(idx) = 0.;
+            } else {
+                *mem.get_mut(idx) = 1. * *self.inverse_distances.get(idx);
+            }
+        }
+        if let Some(s) = mem.slice._slice(0, node_count) {
+            println!("{:?}\n centrality", s);
+        }
+        Ok(mem)
+    }
+
+    pub fn compute_normalized_closeness_centrality(
+        &mut self,
+    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1; // |V|
+        let c_fn = Self::centrality_cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            Centrality::CLOSENESS,
+        )?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+        for idx in 0..node_count {
+            if !self.distances.get(idx).is_normal() {
+                *mem.get_mut(idx) = 0.;
+            } else {
+                *mem.get_mut(idx) = self.counters[idx].count() * *self.inverse_distances.get(idx);
+            }
+        }
+        if let Some(s) = mem.slice._slice(0, node_count) {
+            println!("{:?}\n centrality", s);
+        }
+        Ok(mem)
+    }
+
+    pub fn compute_harmonic_centrality(
+        &self,
+    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1; // |V|
+        let c_fn = Self::centrality_cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            Centrality::HARMONIC,
+        )?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+        for idx in 0..node_count {
+            if !self.distances.get(idx).is_normal() {
+                *mem.get_mut(idx) = 0.;
+            } else {
+                *mem.get_mut(idx) = *self.inverse_distances.get(idx);
+            }
+        }
+        if let Some(s) = mem.slice._slice(0, node_count) {
+            println!("{:?}\n centrality", s);
+        }
+        Ok(mem)
+    }
+
+    pub fn compute_lins_centrality(
+        &mut self,
+    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1; // |V|
+        let c_fn = Self::centrality_cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            Centrality::LIN,
+        )?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+        for idx in 0..node_count {
+            if !self.distances.get(idx).is_normal() {
+                *mem.get_mut(idx) = 1.;
+            } else {
+                *mem.get_mut(idx) =
+                    self.counters[idx].count().powi(2) * *self.inverse_distances.get(idx);
+            }
+        }
+        if let Some(s) = mem.slice._slice(0, node_count) {
+            println!("{:?}\n centrality", s);
+        }
+        Ok(mem)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NeighbourIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     edge_ptr: *const Edge,
     _orig_edge_ptr: *const Edge,
     _orig_id_ptr: *const usize,
-    #[expect(dead_code)]
     id: usize,
     count: usize,
     offset: usize,
@@ -2805,7 +3093,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
             graph_bytes: self.graph_bytes,
             index_bytes: self.index_bytes,
             readonly: true,
-            batch: self.batch.clone(),
+            batch: self.batch,
             _marker1: self._marker1,
             _marker2: self._marker2,
         }
@@ -2827,6 +3115,11 @@ impl fmt::Display for FileType {
             FileType::EdgeReciprocal => "EdgeReciprocal",
             FileType::EdgeOver => "EdgeOver",
             FileType::ExportGraphMask => "GraphExport",
+            FileType::HyperBallDistances => "HyperBallDistances",
+            FileType::HyperBallInvDistances => "HyperBallInverseDistances",
+            FileType::HyperBallClosenessCentrality => "HyperBallClosenessCentrality",
+            FileType::HyperBallHarmonicCentrality => "HyperBallHarmonicCentrality",
+            FileType::HyperBallLinCentrality => "HyperBallLinCentrality",
         };
         write!(f, "{}", s)
     }
@@ -3464,6 +3757,7 @@ where
         // Euler trails are in the mem_mapped file
         self.merge_euler_trails(disjoint_cycles)
     }
+
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
@@ -3585,6 +3879,7 @@ where
     }
 }
 
+#[expect(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Community<NodeId: Copy + Debug> {
     /// (s, h(s)), ∀ s ϵ S, where h(s) is the heat kernel diffusion for a given node s
@@ -3687,9 +3982,8 @@ where
             psis[i] = Self::f64_is_nomal(
                 psis[i + 1] * t / (i as f64 + 1f64) + 1f64,
                 format!(
-                    "{{at round: {}}} (psis[{} + 1] * t / (i + 1) + 1)",
+                    "{{at round: {}}} (psis[{i} + 1] * t / (i + 1) + 1)",
                     n - i + 1,
-                    i
                 )
                 .as_str(),
             )?;
@@ -3703,15 +3997,19 @@ where
         let n_plus_two_i32 = match i32::try_from(t.floor() as i64) {
             Ok(n) => match n.overflowing_add(1) {
                 (r, false) => r,
-                (_, true) => panic!(
-                    "error computing n + 2 for hk-relax (n + 1 = {}) + 1 overflowed",
-                    n
-                ),
+                (_, true) => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error computing n + 2 for hk-relax {n} + 1 overflowed",),
+                    ));
+                }
             },
-            Err(e) => panic!(
-                "error computing n for hk-relax couldn't cast t: {} to i32: {}",
-                t, e
-            ),
+            Err(e) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error computing n for hk-relax couldn't cast t: {t} to i32: {e}",),
+                ));
+            }
         };
 
         let mut t_power_n_plus_one = Self::f64_is_nomal(t.powi(n_plus_two_i32 - 1), "t^(n + 1)")?;
@@ -3721,7 +4019,15 @@ where
             if res.is_finite() { Some(res) } else { None }
         }) {
             Some(fac) => Self::f64_is_nomal(fac, "(n + 1)!")?,
-            None => panic!("error computing n for hk-relax overflowed trying to compute (n + 1)!"),
+            None => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "error computing n for hk-relax overflowed trying to compute ({})!",
+                        n_plus_two_i32 - 1
+                    ),
+                ));
+            }
         };
 
         let mut n_plus_two = n_plus_two_i32 as f64;
@@ -3737,15 +4043,17 @@ where
         match Self::f64_to_usize_safe(n_plus_two) {
             Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
                 (n, false) => Ok(n),
-                (_, true) => panic!(
-                    "error computing n for hk-relax overflowed trying to compute {} - 2",
-                    n_plus_two_usize
-                ),
+                (_, true) => Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "error computing n for hk-relax overflowed trying to compute {n_plus_two_usize} - 2",
+                    ),
+                )),
             },
-            None => panic!(
-                "error computing n for hk-relax can't convert {} to usize",
-                n_plus_two
-            ),
+            None => Err(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("error computing n for hk-relax can't convert {n_plus_two} to usize",),
+            )),
         }
     }
 
@@ -3757,7 +4065,12 @@ where
     ) -> Result<Self, Error> {
         let () = match Self::evaluate_params(graph.clone(), t, eps, seed.clone()) {
             Ok(_) => {}
-            Err(e) => panic!("error creating HKRelax instance: {}", e),
+            Err(e) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error creating HKRelax instance: {e}"),
+                ));
+            }
         };
         let n = Self::compute_n(t, eps)?;
         println!("n computed to be {}", n);
@@ -3777,7 +4090,12 @@ where
     pub fn _adjust_parameters(&self, t: f64, eps: f64, seed: Vec<usize>) -> Result<Self, Error> {
         let () = match Self::evaluate_params(self.graph.clone(), t, eps, seed.clone()) {
             Ok(_) => {}
-            Err(e) => panic!("error creating HKRelax instance: {}", e),
+            Err(e) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error creating HKRelax instance: {e}"),
+                ));
+            }
         };
         let n = Self::compute_n(t, eps)?;
         Ok(HKRelax {
@@ -3800,11 +4118,14 @@ where
         let seed_len_f64 = self.seed.clone().len() as f64;
         for seed_node in self.seed.iter() {
             if r.contains_key(&(*seed_node, 0usize)) {
-                panic!(
-                    "error hk-relax {} seed node is present multiple times in seed array",
-                    seed_node
-                );
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "error hk-relax seed node {seed_node} is present multiple times in seed array"
+                    ),
+                ));
             }
+            // r[(s, 0)] = 1. / len(seed)
             r.insert((*seed_node, 0usize), 1f64 / seed_len_f64);
             queue.push_back((*seed_node, 0));
         }
@@ -3812,10 +4133,12 @@ where
         while let Some((v, j)) = queue.pop_front() {
             let rvj = match r.get(&(v, j)) {
                 Some(i) => *i,
-                None => panic!(
-                    "error hk-relax ({}, {}) present in queue but not in residual",
-                    v, j
-                ),
+                None => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error hk-relax ({v}, {j}) present in queue but not in residual",),
+                    ));
+                }
             };
 
             // x[v] += rvj && check if r[(v, j)] is normal
@@ -3831,22 +4154,31 @@ where
             // r[(v, j)] = 0
             match r.get_mut(&(v, j)) {
                 Some(rvj) => *rvj = 0f64,
-                None => panic!("error hk-relax r({}, {}) Some and None", v, j),
+                None => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error hk-relax r({v}, {j}) Some and None"),
+                    ));
+                }
             };
 
-            //  mass = (t*rvj/(float(j)+1.))/len(G[v])
+            //  mass = (t * rvj / (float(j) + 1.)) / len(G[v]) /* calculation validity checked when poppped from queue */
             let (deg_v, v_n) = match self.graph.neighbours(v) {
                 Ok(v_n) => (v_n.remaining_neighbours() as f64, v_n),
-                Err(e) => panic!("error hk-relax getting neighbours of {}: {}", v, e),
+                Err(e) => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error hk-relax getting neighbours of {v}: {e}"),
+                    ));
+                }
             };
-
-            // result checked when node is popped from queue
             let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
 
             for u in v_n {
                 let u = u.dest();
                 let next = (u, j + 1);
                 if j + 1 == self.n {
+                    // x[u] += rvj / len(G[v])
                     match x.get_mut(&u) {
                         Some(x_u) => {
                             *x_u = Self::f64_is_nomal(
@@ -3860,29 +4192,37 @@ where
                     };
                     continue;
                 }
+                // if next not in r: r[next] = 0.
                 let r_next = match r.get_mut(&next) {
                     Some(r_next) => r_next,
                     None => {
                         r.insert(next, 0f64);
                         match r.get_mut(&next) {
                             Some(r_next) => r_next,
-                            None => panic!(
-                                "error hk-relax just inserted ({}, {}) into residual and got None",
-                                u,
-                                j + 1
-                            ),
+                            None => {
+                                return Err(Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    format!(
+                                        "error hk-relax just inserted ({u}, {}) into residual and got None",
+                                        j + 1
+                                    ),
+                                ));
+                            }
                         }
                     }
                 };
+                // thresh = math.exp(t) * eps * len(G[u]) / (N * psis[j + 1])
                 let deg_u = self.graph.node_degree(u) as f64;
                 let threshold = Self::f64_is_nomal(
                     threshold_pre_u_pre_j * deg_u / self.psis[j + 1],
                     "e^t * ε * deg_u / (n * psis[j + 1])",
                 )?;
 
+                // if r[next] < thresh and r[next] + mass >= thresh:
                 if *r_next < threshold && *r_next + mass >= threshold {
                     queue.push_back(next);
                 }
+                // r[next] = r[next] + mass
                 *r_next += mass;
             }
         }
@@ -3903,7 +4243,10 @@ where
                 );
                 Ok(c)
             }
-            Err(e) => panic!("error: {}", e),
+            Err(e) => Err(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("error hk-relax: {e}"),
+            )),
         }
     }
 }

@@ -9,12 +9,13 @@ use std::{
     },
 };
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct SharedSlice<T> {
     ptr: *const T,
     len: usize,
 }
 
+#[derive(Debug)]
 pub struct AbstractedProceduralMemory<T> {
     pub slice: SharedSlice<T>,
     _mmap: Mmap,
@@ -22,6 +23,7 @@ pub struct AbstractedProceduralMemory<T> {
     _mmapped: bool,
 }
 
+#[derive(Debug)]
 pub struct AbstractedProceduralMemoryMut<T> {
     pub slice: SharedSliceMut<T>,
     mmap: MmapMut,
@@ -140,7 +142,7 @@ impl<T> SharedSlice<T> {
     }
 }
 
-#[derive(Copy)]
+#[derive(Copy, Debug)]
 pub struct SharedSliceMut<T> {
     pub ptr: *mut T,
     len: usize,

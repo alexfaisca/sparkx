@@ -7,10 +7,12 @@ mod shared_slice;
 use clap::Parser;
 use core::panic;
 use generic_edge::{
-    _test_proc_macro_capabilities, GenericEdge, GenericEdgeType, StandardEdge,
-    SubStandardColoredEdgeType, Test, TinyEdgeType,
+    GenericEdge, GenericEdgeType, SubStandardColoredEdgeType, Test, TinyEdgeType,
+    TinyLabelStandardEdge,
 };
-use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
+use generic_memory_map::{
+    ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax, HyperBall,
+};
 use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
@@ -62,7 +64,6 @@ struct ProgramArgs {
 }
 
 fn main() {
-    _test_proc_macro_capabilities();
     let args = ProgramArgs::parse();
     let _mmap: bool = args.mmap;
     let _verbose: bool = args.verbose;
@@ -133,10 +134,11 @@ fn mmapped_suite(_graph: generic_memory_map::GraphMemoryMap<SubStandardColoredEd
 fn mmap_from_file(
     data_path: String,
     threads: u8,
-) -> Result<GraphMemoryMap<TinyEdgeType, StandardEdge>, Box<dyn std::error::Error>> {
-    let graph_cache: GraphCache<TinyEdgeType, StandardEdge> =
-        GraphCache::<TinyEdgeType, StandardEdge>::open(data_path)?;
-    let graph_mmaped = GraphMemoryMap::<TinyEdgeType, StandardEdge>::init(graph_cache, threads)?;
+) -> Result<GraphMemoryMap<TinyEdgeType, TinyLabelStandardEdge>, Box<dyn std::error::Error>> {
+    let graph_cache: GraphCache<TinyEdgeType, TinyLabelStandardEdge> =
+        GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::open(data_path)?;
+    let graph_mmaped =
+        GraphMemoryMap::<TinyEdgeType, TinyLabelStandardEdge>::init(graph_cache, threads)?;
 
     /* ********************************************************************************* */
     // Lookup test
@@ -320,6 +322,8 @@ fn parse_bytes_mmaped(
     println!("node 3: {:?}", b.neighbours(3)?.collect::<Vec<Test>>());
     println!("node 4: {:?}", b.neighbours(4)?.collect::<Vec<Test>>());
     println!("node 5: {:?}", b.neighbours(5)?.collect::<Vec<Test>>());
+    let mut hyper = HyperBall::new(graph_mmaped.clone(), Some(6), Some(30))?;
+    hyper.compute_normalized_closeness_centrality()?;
     // let a = graph_mmaped.export_petgraph()?;
     // println!("rustworkx_core export {:?}", a);
     // use rustworkx_core::centrality::betweenness_centrality;
