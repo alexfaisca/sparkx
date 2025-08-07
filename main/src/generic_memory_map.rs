@@ -58,6 +58,7 @@ enum FileType {
     EdgeOver,
     /// doesn't yield a filename --- yields id to be used in filename
     ExportGraphMask,
+    HyperBall,
     HyperBallDistances,
     HyperBallInvDistances,
     HyperBallClosenessCentrality,
@@ -156,6 +157,10 @@ fn cache_file_name(
             None => {
                 return Ok(format!("{}_{}", "masked_export", id));
             }
+        },
+        FileType::HyperBall => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "hyperball", i, id, "tmp"),
+            None => format!("{}_{}.{}", "hyperball", id, "mmap"),
         },
         FileType::HyperBallDistances => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
         FileType::HyperBallInvDistances => {
@@ -1333,7 +1338,7 @@ where
             for tid in 0..threads {
                 let index_ptr = Arc::clone(&index_ptr);
 
-                let mut deg_arr = degree.slice;
+                let mut deg_arr = degree.shared_slice();
 
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
@@ -1408,7 +1413,7 @@ where
         bins[0] = 0;
 
         // peel vertices in order of increasing current degree
-        let mut degree = degree.slice;
+        let mut degree = degree.shared_slice();
         for i in 0..node_count {
             let v = *node.get(i);
             let deg_v = *degree.get(v);
@@ -1460,7 +1465,7 @@ where
                 let graph_ptr = Arc::clone(&graph_ptr);
 
                 let mut out_ptr = out_slice;
-                let core = &core.slice;
+                let core = core.shared_slice();
 
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
@@ -1558,8 +1563,8 @@ where
             for tid in 0..threads {
                 let index_ptr = &index_ptr;
 
-                let mut degree = degree.slice.clone();
-                let mut alive = alive.slice.clone();
+                let mut degree = degree.shared_slice();
+                let mut alive = alive.shared_slice();
 
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
@@ -1605,8 +1610,8 @@ where
         // for nodes with degree <= 16 no bucketing is used
         let mut k = 1u8;
         let mut remaining = node_count - total_dead_nodes; // number of vertices not yet peeled
-        let frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.slice);
-        let swap = SharedQueueMut::<usize>::from_shared_slice(swap.slice);
+        let frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.shared_slice());
+        let swap = SharedQueueMut::<usize>::from_shared_slice(swap.shared_slice());
         let synchronize = Arc::new(Barrier::new(threads));
 
         thread::scope(|s| {
@@ -1615,8 +1620,8 @@ where
                 let graph_ptr = &graph_ptr;
 
                 let degree = &degree;
-                let alive = &alive.slice;
-                let mut coreness = coreness.slice;
+                let alive = alive.shared_slice();
+                let mut coreness = coreness.shared_slice();
                 let mut frontier = frontier.clone();
                 let mut swap = swap.clone();
 
@@ -1741,7 +1746,7 @@ where
             for tid in 0..threads {
                 let index_ptr = &index_ptr;
                 let graph_ptr = &graph_ptr;
-                let coreness = &coreness.slice;
+                let coreness = coreness.shared_slice();
                 let start = thread_load * tid;
                 let end = std::cmp::min(start + thread_load, node_count);
                 let mut edge_coreness = out;
@@ -1805,7 +1810,7 @@ where
         Ok((tri_count, edge_list, edge_index, stack, edge_trussness))
     }
 
-    pub fn k_truss_decomposition(&self, mmap: u8) -> Result<String, Error> {
+    pub fn k_truss_decomposition(&self, mmap: u8) -> Result<String, Box<dyn std::error::Error>> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
 
@@ -1837,13 +1842,13 @@ where
                 let index_ptr = Arc::clone(&index_ptr);
                 let graph_ptr = Arc::clone(&graph_ptr);
 
-                let eo = edge_out.slice;
-                let er = edge_reciprocal.slice;
+                let eo = edge_out.shared_slice();
+                let er = edge_reciprocal.shared_slice();
 
-                let mut trussness = edge_trussness.slice;
-                let mut tris = triangle_count.slice.clone();
-                let mut edges = edges.slice;
-                let mut edge_index = edge_index.slice;
+                let mut trussness = edge_trussness.shared_slice();
+                let mut tris = triangle_count.shared_slice();
+                let mut edges = edges.shared_slice();
+                let mut edge_index = edge_index.shared_slice();
 
                 let synchronize = Arc::clone(&synchronize);
 
@@ -1902,16 +1907,16 @@ where
         })
         .unwrap();
 
-        let stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(edge_stack.slice);
+        let stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(edge_stack.shared_slice());
 
         // Algorithm 2 - sentinel value is 0
         // blank (u64, usize) value
-        let mut edges = edges.slice;
-        let mut edge_index = edge_index.slice;
+        let mut edges = edges.shared_slice();
+        let mut edge_index = edge_index.shared_slice();
         let mut edge_count = edge_count;
-        let er = edge_reciprocal.slice;
-        let mut trussness = edge_trussness.slice;
-        let tris = triangle_count.slice.clone();
+        let er = edge_reciprocal.shared_slice();
+        let mut trussness = edge_trussness.shared_slice();
+        let tris = triangle_count.shared_slice();
         let mut stack = stack.clone();
         let mut test = vec![0u64; 16];
 
@@ -1996,11 +2001,11 @@ where
         println!("k-trussness {:?}", test);
         edge_trussness.flush()?;
 
-        cache_file_name(
+        Ok(cache_file_name(
             self.graph_cache.graph_filename.clone(),
             FileType::KTruss,
             None,
-        )
+        )?)
     }
 
     fn init_procedural_memory_build_reciprocal(
@@ -2058,14 +2063,14 @@ where
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let index_ptr = Arc::clone(&index_ptr);
 
-                let mut er = er.slice;
-                let mut eo = eo.slice;
+                let mut er = er.shared_slice();
+                let mut eo = eo.shared_slice();
 
                 let synchronize = Arc::clone(&synchronize);
 
                 let begin = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(begin + thread_load, node_count);
-                scope.spawn(move |_| -> Result<(), Error> {
+                scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut edges_start = *index_ptr.get(begin);
                     for u in begin..end {
                         let mut eo_at_end = true;
@@ -2095,7 +2100,10 @@ where
                             // binary search on neighbours w, where w < v
                             let reciprocal = loop {
                                 if floor > ceil {
-                                    panic!("error couldn't find reciprocal for edge {}, u: ({}) -> v: ({})", edge_offset, u, v);
+                                    return Err(Box::new(Error::new(
+                                                std::io::ErrorKind::InvalidData, 
+                                                format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})")))
+                                        );
                                 }
                                 let m = floor + (ceil - floor).div_floor(2);
                                 let dest = graph_ptr.get(m).dest();
@@ -2120,7 +2128,7 @@ where
         Ok((er, eo))
     }
 
-    fn get_edge_reciprocal(&self) -> Result<AbstractedProceduralMemory<usize>, Error> {
+    fn get_edge_reciprocal(&self) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let fn_template = self.graph_cache.graph_filename.clone();
         let er_fn = cache_file_name(fn_template.clone(), FileType::EdgeReciprocal, None)?;
         let dud = Vec::new();
@@ -2140,11 +2148,16 @@ where
                         i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
                         true,
                     ),
-                    Err(e) => panic!("error creating abstractmemory for edge_reciprocal {}", e),
+                    Err(e) => {
+                        return Err(Box::new(Error::new(
+                                    std::io::ErrorKind::InvalidData, 
+                                    format!("error creating abstractmemory for edge_reciprocal {e}")))
+                            );
+                    }
                 }
             }
         };
-        er
+        Ok(er?)
     }
 
     fn get_edge_dest_id_over_source(&self) -> Result<AbstractedProceduralMemory<usize>, Error> {
@@ -2195,7 +2208,7 @@ where
         Ok((curr, next, processed, in_curr, in_next, s))
     }
 
-    pub fn pkt(&self, mmap: u8) -> Result<String, Error> {
+    pub fn pkt(&self, mmap: u8) -> Result<String, Box<dyn std::error::Error>> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
 
@@ -2239,15 +2252,15 @@ where
                 // eid is unnecessary as graph + index alwready do the job
                 let graph_ptr = Arc::clone(&graph_ptr);
                 let index_ptr = Arc::clone(&index_ptr);
-                let mut x = x[tid].slice;
-                let eo = edge_out.slice;
-                let mut s = s.slice.clone();
-                let er = edge_reciprocal.slice;
-                let mut curr = curr.slice;
-                let mut next = next.slice;
-                let mut in_curr = in_curr.slice;
-                let mut in_next = in_next.slice;
-                let mut processed = processed.slice;
+                let mut x = x[tid].shared_slice();
+                let eo = edge_out.shared_slice();
+                let mut s = s.shared_slice();
+                let er = edge_reciprocal.shared_slice();
+                let mut curr = curr.shared_slice();
+                let mut next = next.shared_slice();
+                let mut in_curr = in_curr.shared_slice();
+                let mut in_next = in_next.shared_slice();
+                let mut processed = processed.shared_slice();
                 let synchronize = Arc::clone(&synchronize);
 
                 let init_begin = std::cmp::min(tid * edge_load, edge_count);
@@ -2311,8 +2324,8 @@ where
         let mut l: u8 = 1;
         let buff_size = 4096;
         let total_duds = Arc::new(AtomicUsize::new(0));
-        let curr = SharedQueueMut::from_shared_slice(curr.slice);
-        let next = SharedQueueMut::from_shared_slice(next.slice);
+        let curr = SharedQueueMut::from_shared_slice(curr.shared_slice());
+        let next = SharedQueueMut::from_shared_slice(next.shared_slice());
 
         thread::scope(|scope| {
             let mut res = Vec::new();
@@ -2321,15 +2334,15 @@ where
                 let index_ptr = Arc::clone(&index_ptr);
 
                 let mut todo = edge_count;
-                let mut x = x[tid].slice;
+                let mut x = x[tid].shared_slice();
 
-                let s = s.slice.clone();
+                let s = s.shared_slice();
                 let mut curr = curr.clone();
                 let mut next = next.clone();
-                let er = edge_reciprocal.slice;
-                let mut in_curr = in_curr.slice;
-                let mut in_next = in_next.slice;
-                let mut processed = processed.slice;
+                let er = edge_reciprocal.shared_slice();
+                let mut in_curr = in_curr.shared_slice();
+                let mut in_next = in_next.shared_slice();
+                let mut processed = processed.shared_slice();
 
                 let total_duds = Arc::clone(&total_duds);
                 let synchronize = Arc::clone(&synchronize);
@@ -2337,7 +2350,7 @@ where
                 let begin = std::cmp::min(tid * edge_load, edge_count);
                 let end = std::cmp::min(begin + edge_load, edge_count);
 
-                res.push(scope.spawn(move |_| -> Result<Vec<u64>, Error> {
+                res.push(scope.spawn(move |_| -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
                     let mut res = vec![0_u64; 20];
                     let mut buff = vec![0; buff_size];
                     let mut i = 0;
@@ -2356,11 +2369,12 @@ where
 
                     todo = match todo.overflowing_sub(total_duds.load(Ordering::Relaxed)) {
                         (r, false) => r,
-                        _ => panic!(
-                            "error overflow when decrementing todo ({} - {})",
-                            todo,
-                            total_duds.load(Ordering::Relaxed)
-                        ),
+                        _ => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("error overflow when decrementing todo ({todo} - {})", total_duds.load(Ordering::Relaxed))))
+                                );
+                        }
                     };
 
                     // println!("triangles removed");
@@ -2384,17 +2398,23 @@ where
 
                         let mut to_process = match curr.slice(0, curr.len()) {
                             Some(i) => i,
-                            None => panic!("error reading curr in pkt"),
+                            None => {
+                                return Err(Box::new(Error::new(
+                                            std::io::ErrorKind::Other,
+                                            "error reading curr in pkt"
+                                            )));
+                            }
                         };
                         // println!("new cicle initialized {} {:?}", todo, curr.ptr);
                         while to_process.len() != 0 {
                             todo = match todo.overflowing_sub(to_process.len()) {
                                 (r, false) => r,
-                                _ => panic!(
-                                    "error overflow when decrementing todo ({} - {})",
-                                    todo,
-                                    to_process.len()
-                                ),
+                                _ => {
+                                    return Err(Box::new(Error::new(
+                                                std::io::ErrorKind::Other,
+                                                format!("error overflow when decrementing todo ({todo} - {})", to_process.len())))
+                                        );
+                                }
                             };
                             synchronize.wait();
 
@@ -2520,13 +2540,23 @@ where
                             synchronize.wait();
                             to_process = match curr.slice(0, curr.len()) {
                                 Some(i) => i,
-                                None => panic!("error couldn't get new to_process vec"),
+                                None => {
+                                    return Err(Box::new(Error::new(
+                                                std::io::ErrorKind::Other,
+                                                "error couldn't get new to_process vec"))
+                                        );
+                                }
                             };
                             synchronize.wait();
                         }
                         l = match l.overflowing_add(1) {
                             (r, false) => r,
-                            _ => panic!("error overflow when adding to l ({} - {})", l, 1),
+                            _ => {
+                                return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("error overflow when adding to l ({l} - 1)")))
+                                    );
+                            }
                         };
                         synchronize.wait();
                     }
@@ -2547,11 +2577,11 @@ where
         })
         .unwrap();
 
-        cache_file_name(
+        Ok(cache_file_name(
             self.graph_cache.graph_filename.clone(),
             FileType::KTruss,
             None,
-        )
+        )?)
     }
 
     pub fn cleanup_cache(&self) -> Result<(), Error> {
@@ -2583,6 +2613,7 @@ pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
 enum Centrality {
+    HYPERBALL,
     HARMONIC,
     NHARMONIC,
     NCHARMONIC,
@@ -2630,6 +2661,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
         centrality: Centrality,
     ) -> Result<String, Box<dyn std::error::Error>> {
         match centrality {
+            Centrality::HYPERBALL => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallHarmonicCentrality,
+                Some(0),
+            )?),
             Centrality::CLOSENESS => Ok(cache_file_name(
                 template_fn,
                 FileType::HyperBallClosenessCentrality,
@@ -2722,7 +2758,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
         let mut changed = 0;
         let s_fn = Self::centrality_cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
-            Centrality::LIN,
+            Centrality::HYPERBALL,
         )?;
         let mut swap = SharedSliceMut::<HyperLogLogPlus<usize, RandomState>>::abst_mem_mut(
             s_fn,
@@ -2770,7 +2806,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
         println!("{:?}\nThese were counts", counts);
         println!(
             "{:?}\nThese were distances",
-            self.distances.slice.slice(0, self.graph.size() - 1)
+            self.distances
+                .shared_slice()
+                .slice(0, self.graph.size() - 1)
         );
         Ok(())
     }
@@ -3186,6 +3224,7 @@ impl fmt::Display for FileType {
             FileType::EdgeReciprocal => "EdgeReciprocal",
             FileType::EdgeOver => "EdgeOver",
             FileType::ExportGraphMask => "GraphExport",
+            FileType::HyperBall => "HyperBall",
             FileType::HyperBallDistances => "HyperBallDistances",
             FileType::HyperBallInvDistances => "HyperBallInverseDistances",
             FileType::HyperBallClosenessCentrality => "HyperBallClosenessCentrality",

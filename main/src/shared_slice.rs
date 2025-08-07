@@ -9,10 +9,37 @@ use std::{
     },
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Debug)]
 pub struct SharedSlice<T> {
     ptr: *const T,
     len: usize,
+}
+
+#[derive(Copy, Debug)]
+pub struct SharedSliceMut<T> {
+    pub ptr: *mut T,
+    len: usize,
+}
+
+unsafe impl<T> Send for SharedSliceMut<T> {}
+unsafe impl<T> Sync for SharedSliceMut<T> {}
+
+impl<T> Clone for SharedSlice<T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+        }
+    }
+}
+
+impl<T> Clone for SharedSliceMut<T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -32,7 +59,17 @@ pub struct AbstractedProceduralMemoryMut<T> {
 }
 
 #[allow(dead_code)]
+impl<T> AbstractedProceduralMemory<T> {
+    pub fn shared_slice(&self) -> SharedSlice<T> {
+        self.slice.clone()
+    }
+}
+
+#[allow(dead_code)]
 impl<T> AbstractedProceduralMemoryMut<T> {
+    pub fn shared_slice(&self) -> SharedSliceMut<T> {
+        self.slice.clone()
+    }
     pub fn get(&self, idx: usize) -> &T {
         self.slice.get(idx)
     }
@@ -144,24 +181,6 @@ impl<T> SharedSlice<T> {
             _mmap: mmap,
             _mmapped: mmapped,
         })
-    }
-}
-
-#[derive(Copy, Debug)]
-pub struct SharedSliceMut<T> {
-    pub ptr: *mut T,
-    len: usize,
-}
-
-unsafe impl<T> Send for SharedSliceMut<T> {}
-unsafe impl<T> Sync for SharedSliceMut<T> {}
-
-impl<T> Clone for SharedSliceMut<T> {
-    fn clone(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            len: self.len,
-        }
     }
 }
 
