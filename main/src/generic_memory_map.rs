@@ -1584,8 +1584,8 @@ where
                 .into_iter()
                 .map(|e| e.join().expect("error"))
                 .for_each(|e| total_dead_nodes += e);
-            let _ = degree._flush_async();
-            let _ = alive._flush_async();
+            let _ = degree.flush_async();
+            let _ = alive.flush_async();
             total_dead_nodes
         })
         .unwrap();
@@ -2584,7 +2584,11 @@ pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 #[derive(Debug)]
 enum Centrality {
     HARMONIC,
+    NHARMONIC,
+    NCHARMONIC,
     CLOSENESS,
+    NCLOSENESS,
+    NCCLOSENESS,
     LIN,
 }
 
@@ -2629,12 +2633,32 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             Centrality::CLOSENESS => Ok(cache_file_name(
                 template_fn,
                 FileType::HyperBallClosenessCentrality,
-                None,
+                Some(0),
+            )?),
+            Centrality::NCLOSENESS => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallClosenessCentrality,
+                Some(1),
+            )?),
+            Centrality::NCCLOSENESS => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallClosenessCentrality,
+                Some(2),
             )?),
             Centrality::HARMONIC => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallLinCentrality,
-                None,
+                FileType::HyperBallHarmonicCentrality,
+                Some(0),
+            )?),
+            Centrality::NHARMONIC => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallHarmonicCentrality,
+                Some(1),
+            )?),
+            Centrality::NCHARMONIC => Ok(cache_file_name(
+                template_fn,
+                FileType::HyperBallHarmonicCentrality,
+                Some(1),
             )?),
             Centrality::LIN => Ok(cache_file_name(
                 template_fn,
@@ -2696,25 +2720,34 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
         let mut t_f64: f64 = 1.; // first iteration is initialization
         let mut inv_t_f64: f64 = 1.; // first iteration is initialization
         let mut changed = 0;
+        let s_fn = Self::centrality_cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            Centrality::LIN,
+        )?;
+        let mut swap = SharedSliceMut::<HyperLogLogPlus<usize, RandomState>>::abst_mem_mut(
+            s_fn,
+            self.graph.size() - 1,
+            true,
+        )?;
+        let mut counters = self.counters.as_mut_slice();
+        let mut swap = swap.mut_slice(0, self.graph.size() - 1).unwrap();
         loop {
             println!("HyperBall run {t_f64}");
             for u in 0..self.graph.size() - 1 {
-                let mut a: HyperLogLogPlus<usize, RandomState> = self.counters[u].clone();
+                let mut a: HyperLogLogPlus<usize, RandomState> = counters[u].clone();
+                let prev_count = a.count();
                 for v in self.graph.neighbours(u)? {
-                    a.merge(&self.counters[v.dest()])?;
+                    a.merge(&counters[v.dest()].clone())?;
                 }
                 let curr_count = a.count();
-                let prev_count = self.counters[u].count();
                 let count_diff = curr_count - prev_count;
                 *self.distances.get_mut(u) += t_f64 * count_diff;
                 // FIXME: check if this is correct
-                *self.inverse_distances.get_mut(u) += if count_diff > 0f64 {
-                    inv_t_f64 * 1. / count_diff
-                } else {
-                    0f64
-                };
+                if count_diff > 0f64 {
+                    *self.inverse_distances.get_mut(u) += inv_t_f64 * count_diff;
+                }
+                swap[u] = a;
                 if curr_count != prev_count {
-                    self.counters[u] = a;
                     changed += 1;
                 }
             }
@@ -2722,10 +2755,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             if changed == 0 {
                 break;
             }
+            swap = std::mem::replace(&mut counters, swap);
             changed = 0;
             t_f64 += 1.;
             inv_t_f64 = 1. / t_f64;
         }
+
         let counts = self
             .counters
             .clone()
@@ -2733,6 +2768,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             .map(|c| c.count())
             .collect::<Vec<f64>>();
         println!("{:?}\nThese were counts", counts);
+        println!(
+            "{:?}\nThese were distances",
+            self.distances.slice.slice(0, self.graph.size() - 1)
+        );
         Ok(())
     }
 
@@ -2740,65 +2779,97 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
     // is infinite
     pub fn compute_closeness_centrality(
         &mut self,
+        normalize: Option<bool>,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1; // |V|
+        let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
         let c_fn = Self::centrality_cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
-            Centrality::CLOSENESS,
+            normalize.map_or(Centrality::CLOSENESS, |local| {
+                if local {
+                    Centrality::NCCLOSENESS
+                } else {
+                    Centrality::NCLOSENESS
+                }
+            }),
         )?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
-        for idx in 0..node_count {
-            if !self.distances.get(idx).is_normal() {
-                *mem.get_mut(idx) = 0.;
-            } else {
-                *mem.get_mut(idx) = 1. * *self.inverse_distances.get(idx);
+        if normalize.is_none() {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = 1. / *self.distances.get(idx);
+                }
+            }
+        } else if normalize.unwrap() {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) =
+                        (self.counters[idx].count() - 1.) / *self.distances.get(idx);
+                }
+            }
+        } else {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = node_count_f64 / *self.distances.get(idx);
+                }
             }
         }
-        if let Some(s) = mem.slice._slice(0, node_count) {
-            println!("{:?}\n centrality", s);
-        }
-        Ok(mem)
-    }
-
-    pub fn compute_normalized_closeness_centrality(
-        &mut self,
-    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1; // |V|
-        let c_fn = Self::centrality_cache_file_name(
-            self.graph.graph_cache.graph_filename.clone(),
-            Centrality::CLOSENESS,
-        )?;
-        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
-        for idx in 0..node_count {
-            if !self.distances.get(idx).is_normal() {
-                *mem.get_mut(idx) = 0.;
-            } else {
-                *mem.get_mut(idx) = self.counters[idx].count() * *self.inverse_distances.get(idx);
-            }
-        }
-        if let Some(s) = mem.slice._slice(0, node_count) {
+        if let Some(s) = mem.slice(0, node_count) {
             println!("{:?}\n centrality", s);
         }
         Ok(mem)
     }
 
     pub fn compute_harmonic_centrality(
-        &self,
+        &mut self,
+        normalize: Option<bool>,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1; // |V|
+        let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
         let c_fn = Self::centrality_cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
-            Centrality::HARMONIC,
+            normalize.map_or(Centrality::HARMONIC, |local| {
+                if local {
+                    Centrality::NCHARMONIC
+                } else {
+                    Centrality::NHARMONIC
+                }
+            }),
         )?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
-        for idx in 0..node_count {
-            if !self.distances.get(idx).is_normal() {
-                *mem.get_mut(idx) = 0.;
-            } else {
-                *mem.get_mut(idx) = *self.inverse_distances.get(idx);
+        if normalize.is_none() {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = *self.inverse_distances.get(idx);
+                }
+            }
+        } else if normalize.unwrap() {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) =
+                        *self.inverse_distances.get(idx) / (self.counters[idx].count() - 1.);
+                }
+            }
+        } else {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = *self.inverse_distances.get(idx) / node_count_f64;
+                }
             }
         }
-        if let Some(s) = mem.slice._slice(0, node_count) {
+        if let Some(s) = mem.slice(0, node_count) {
             println!("{:?}\n centrality", s);
         }
         Ok(mem)
@@ -2818,10 +2889,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
                 *mem.get_mut(idx) = 1.;
             } else {
                 *mem.get_mut(idx) =
-                    self.counters[idx].count().powi(2) * *self.inverse_distances.get(idx);
+                    (self.counters[idx].count() - 1.).powi(2) / *self.distances.get(idx);
             }
         }
-        if let Some(s) = mem.slice._slice(0, node_count) {
+        if let Some(s) = mem.slice(0, node_count) {
             println!("{:?}\n centrality", s);
         }
         Ok(mem)
@@ -4251,7 +4322,7 @@ where
     }
 }
 
-#[expect(dead_code)]
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct ApproxDirHKPR<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: GraphMemoryMap<EdgeType, Edge>,
@@ -4263,14 +4334,20 @@ pub struct ApproxDirHKPR<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     pub target_conductance: f64,
 }
 
-// #[expect(dead_code)]
+/// describes the type of limiter to be used for the number of steps to take for each
+/// random walk
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum ApproxDirichletHeatKernelK {
+    /// too stringent of a limitation -- results will be no good
     None,
+    /// optimization described in SolverApproxDirHKPR's algorithm
     Mean,
+    /// no limit --- probably won't run for eps < 0.005
     Unlim,
 }
 
+#[allow(dead_code)]
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeType, Edge> {
     #[inline(always)]
     fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
@@ -4441,6 +4518,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeT
                 2. * f64::ln(1. / self.eps) / (f64::ln(f64::ln(1. / self.eps))),
                 "2. * ln(1. / ε) / ln(ln(1. / ε))",
             )?,
+            // optimization of SolverApproxDirHKPR
             ApproxDirichletHeatKernelK::Mean => Self::f64_is_nomal(2. * self.t, "2. * t")?,
             ApproxDirichletHeatKernelK::Unlim => f64::infinity(),
             #[expect(unreachable_patterns)]

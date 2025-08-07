@@ -305,25 +305,24 @@ fn parse_bytes_mmaped(
     graph_mmaped.k_truss_decomposition(7)?;
     let hk_relax = HKRelax::new(graph_mmaped.clone(), 40., 0.000001, vec![8])?;
     let _ = hk_relax.compute()?;
-    let approx_dirichlet_hkpr =
-        ApproxDirHKPR::new(graph_mmaped.clone(), 0.01, 8, 10000, 40000, 0.09)?;
-    let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::None)?;
-    let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
-    let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Unlim)?;
-    let _ = graph_mmaped.cleanup_cache();
-    let b = graph_mmaped
-        .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
-    println!("graph even nodes {:?}", b);
-
-    println!("graph {:?}", b.edges());
-    println!("node 0: {:?}", b.neighbours(0)?.collect::<Vec<Test>>());
-    println!("node 1: {:?}", b.neighbours(1)?.collect::<Vec<Test>>());
-    println!("node 2: {:?}", b.neighbours(2)?.collect::<Vec<Test>>());
-    println!("node 3: {:?}", b.neighbours(3)?.collect::<Vec<Test>>());
-    println!("node 4: {:?}", b.neighbours(4)?.collect::<Vec<Test>>());
-    println!("node 5: {:?}", b.neighbours(5)?.collect::<Vec<Test>>());
-    let mut hyper = HyperBall::new(graph_mmaped.clone(), Some(6), Some(30))?;
-    hyper.compute_normalized_closeness_centrality()?;
+    let _approx_dirichlet_hkpr =
+        ApproxDirHKPR::new(graph_mmaped.clone(), 0.008, 8, 100000, 4000000, 0.05)?;
+    // let _ = approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
+    // let _ = graph_mmaped.cleanup_cache();
+    // let b = graph_mmaped
+    //     .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
+    // println!("graph even nodes {:?}", b);
+    //
+    // println!("graph {:?}", b.edges());
+    // println!("node 0: {:?}", b.neighbours(0)?.collect::<Vec<Test>>());
+    // println!("node 1: {:?}", b.neighbours(1)?.collect::<Vec<Test>>());
+    // println!("node 2: {:?}", b.neighbours(2)?.collect::<Vec<Test>>());
+    // println!("node 3: {:?}", b.neighbours(3)?.collect::<Vec<Test>>());
+    // println!("node 4: {:?}", b.neighbours(4)?.collect::<Vec<Test>>());
+    // println!("node 5: {:?}", b.neighbours(5)?.collect::<Vec<Test>>());
+    let mut hyper = HyperBall::new(graph_mmaped.clone(), Some(14), Some(70))?;
+    hyper.compute_harmonic_centrality(Some(true))?;
+    // hyper.compute_harmonic_centrality(Some(true))?;
     // let a = graph_mmaped.export_petgraph()?;
     // println!("rustworkx_core export {:?}", a);
     // use rustworkx_core::centrality::betweenness_centrality;

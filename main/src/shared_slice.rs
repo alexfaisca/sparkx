@@ -31,6 +31,7 @@ pub struct AbstractedProceduralMemoryMut<T> {
     mmapped: bool,
 }
 
+#[allow(dead_code)]
 impl<T> AbstractedProceduralMemoryMut<T> {
     pub fn get(&self, idx: usize) -> &T {
         self.slice.get(idx)
@@ -38,7 +39,10 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     pub fn get_mut(&mut self, idx: usize) -> &mut T {
         self.slice.get_mut(idx)
     }
-    pub fn _mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
+    pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
+        self.slice.slice(start, end)
+    }
+    pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
         self.slice.mut_slice(start, end)
     }
     pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
@@ -51,7 +55,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
             Ok(())
         }
     }
-    pub fn _flush_async(&self) -> Result<(), Error> {
+    pub fn flush_async(&self) -> Result<(), Error> {
         if self.mmapped {
             self.mmap.flush_async()
         } else {
@@ -63,6 +67,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
 unsafe impl<T> Send for SharedSlice<T> {}
 unsafe impl<T> Sync for SharedSlice<T> {}
 
+#[allow(dead_code)]
 impl<T> SharedSlice<T> {
     pub fn new(ptr: *const T, len: usize) -> Self {
         SharedSlice::<T> { ptr, len }
@@ -160,9 +165,16 @@ impl<T> Clone for SharedSliceMut<T> {
     }
 }
 
+#[allow(dead_code)]
 impl<T> SharedSliceMut<T> {
     pub fn new(ptr: *mut T, len: usize) -> Self {
         SharedSliceMut::<T> { ptr, len }
+    }
+    pub fn from_slice(slice: &mut [T]) -> Self {
+        SharedSliceMut::<T> {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+        }
     }
     pub fn _from_shared_slice(slice: SharedSliceMut<T>) -> Self {
         SharedSliceMut::<T> {
@@ -207,18 +219,12 @@ impl<T> SharedSliceMut<T> {
     pub fn len(&self) -> usize {
         self.len
     }
-    pub fn _slice(&self, start: usize, end: usize) -> Option<&[T]> {
-        if start >= self.len {
-            return None;
-        }
-        let end = if end > self.len { self.len } else { end };
+    pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
+        assert!(start <= end && end <= self.len);
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
     pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
-        if start >= self.len {
-            return None;
-        }
-        let end = if end > self.len { self.len } else { end };
+        assert!(start <= end && end <= self.len);
         unsafe {
             Some(std::slice::from_raw_parts_mut(
                 self.ptr.add(start),
