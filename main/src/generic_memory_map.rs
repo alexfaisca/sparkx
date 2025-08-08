@@ -4,6 +4,7 @@ use crate::shared_slice::{
     SharedSliceMut,
 };
 use core::{f64, fmt, panic};
+use std::io::Read;
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use glob::glob;
@@ -15,7 +16,6 @@ use rand_distr::{Distribution, Poisson};
 use regex::Regex;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
-use std::path::PathBuf;
 use std::{
     any::type_name,
     collections::{HashMap, HashSet, VecDeque, hash_map::RandomState},
@@ -23,7 +23,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Error, Write},
     marker::PhantomData,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     slice,
     sync::{
@@ -36,6 +36,7 @@ use zerocopy::*; // Using crossbeam for scoped threads
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 static CACHE_DIR: &str = "./cache/";
+static TEMP_CACHE_DIR: &str = "./cache/tmp/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
 static DEFAULT_BATCH_SIZE: usize = 10_000usize;
 
@@ -44,6 +45,7 @@ fn _type_of<T>(_: T) -> &'static str {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum FileType {
     Edges,
     Index,
@@ -213,7 +215,15 @@ pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     _marker2: PhantomData<EdgeType>,
 }
 
+#[allow(dead_code)]
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
+    const EXT_COMPRESSED_LZ4: &str = "lz4";
+    const EXT_PLAINTEXT: &str = "txt";
+    const DEFAULT_BATCHING_SIZE: usize = 10_000usize;
+    /// in genetic graphs annotated with ff, fr, rf and rr directions maximum number of edges is 16
+    /// |alphabet = 4| * |annotation set = 4| = 4 * 4 = 16
+    const DEFAULT_MAX_EDGES: u16 = 16;
+
     pub(self) fn init_cache_file_from_id_or_random(
         graph_id: Option<String>,
         target_type: FileType,
@@ -235,6 +245,187 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             },
             id,
         ))
+    }
+
+    fn read_input_file<P: AsRef<Path> + Clone>(path: P) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut reader = BufReader::new(File::open(path.clone())?);
+        let ext = path.as_ref().extension();
+        let mut contents = Vec::new();
+
+        // parse extension to decide on decoding
+        if let Some(ext) = ext {
+            match ext.to_str() {
+                Some(Self::EXT_COMPRESSED_LZ4) => {
+                    // Decompress .lz4 using lz4 extern crate 
+                    let mut decoder = lz4::Decoder::new(reader)?;
+                    decoder.read_to_end(&mut contents)?;
+                }
+                Some(Self::EXT_PLAINTEXT) => {
+                    reader.read_to_end(&mut contents)?;
+                }
+                _ => {
+                    return Err(Box::new(Error::new(
+                                std::io::ErrorKind::Unsupported,
+                                format!(
+                                    "error ubknown extension {:?}: must be of type .{} or .{}", ext, Self::EXT_PLAINTEXT, Self::EXT_COMPRESSED_LZ4
+                                    ),))
+                        );
+                }
+            };
+            Ok(contents)
+        } else {
+            Err(Box::new(Error::new(
+                std::io::ErrorKind::Unsupported,
+                "error input files must have an extension"
+            )))
+        }
+    }
+
+
+    /// Parses a ggcat output edge direction
+    ///
+    /// # Arguments
+    ///
+    /// * `orig` - The edge's origin endpoint annotation. Must be either '+' or '-'.
+    /// * `destiny` - The edge's destiny endpoint annotation. Must be either '+' or '-'.
+    ///
+    /// # Returns
+    ///
+    /// A `usize` that encodes the edge direction:
+    /// * `0` --- for a forward-forward edge.
+    /// * `1` --- for a forward-reverse edge.
+    /// * `2` --- for a reverse-forward edge.
+    /// * `3` --- for a reverse-reverse edge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * An unknown annotation is given as input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // encoding for forward-forward edge
+    /// let ff_edge = Self::parse_ggcat_direction("+", "+");
+    /// ```
+    /// ```
+    /// // encoding for forward-reverse edge
+    /// let fr_edge = Self::parse_ggcat_direction("+", "-");
+    /// ```
+    /// ```
+    /// // encoding for reverse-forward edge
+    /// let rf_edge = Self::parse_ggcat_direction("-", "+");
+    /// ```
+    /// ```
+    /// // encoding for reverse-reverse edge
+    /// let rr_edge = Self::parse_ggcat_direction(".", "-");
+    /// ```
+    ///
+    fn parse_ggcat_direction(orig: &str, dest: &str) -> Result<u64, Box<dyn std::error::Error>> {
+        match (orig, dest) {
+            ("+", "+") => Ok(0u64),
+            ("+", "-") => Ok(1u64),
+            ("-", "+") => Ok(2u64),
+            ("-", "-") => Ok(3u64),
+            _ => Err(Box::new(Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!(
+                            "error ubknown edge direction annotations (supported are '+' && '-'): (orig: {orig}, dest: {dest})"
+                            ),))
+                ),
+        }
+    }
+
+    /// Parses a ggcat output file input
+    ///
+    /// Input is assumed to be of type UTF-8 and to follow the format of GGCAT's output.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - Input bytes.
+    /// * `max_edges` - Ascribes a maximum number of edges for a node. If None is provided, defaults to 16.
+    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
+    ///
+    /// # Returns
+    ///
+    /// Empty Ok().
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * In the input slice no k-mer / label sequence is found for some node.
+    /// * An error occurs parsing a line of the input from UTF-8.
+    /// * An error occurs parsing a node's identifier.
+    /// * An error occurs parsing an edge's destiny node identifier or direction annototation.
+    /// * An error occurs writing the node into the memmapped cache files.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // for every node record at most 16 (default maximum value) edges and always add its label
+    /// // to the grapph's finite state transducer
+    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(input_bytes, None, |_id: usize| {true})?;
+    /// ```
+    /// ```
+    /// // for every node record at most 8 edges and add its label to the grapph's finite state
+    /// // transducer if the node id is 123432 or 912383 or it its id is divisible by 7
+    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(
+    ///     input_bytes, 
+    ///     Some(8),
+    ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
+    /// )?;
+    /// ```
+    ///
+    fn parse_ggcat_bytes_mmap(
+        &mut self,
+        input: &[u8],
+        max_edges: Option<u16>,
+        in_fst: fn(usize) -> bool
+        ) -> Result<(), Box<dyn std::error::Error>> {
+        // this assumes UTF-8 but avoids full conversion
+        let mut lines = input.split(|&b| b == b'\n');
+        let mut edges = vec![Edge::default(); max_edges.map_or(16usize, |max| max as usize)];
+        while let Some(line) = lines.next() {
+            if line.is_empty() {
+                continue;
+            }
+            // convert each line to str temporarily && cut off ">" char
+            let line_str = std::str::from_utf8(&line[1..])?;
+            
+            let sequence_line = match lines.next() {
+                None => { 
+                    return Err(Box::new(Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!("error no k-mer sequence for node {line_str}"),
+                                ))
+                        );
+                },
+                Some(i) => i,
+            };
+            let k_mer = std::str::from_utf8(&sequence_line[0..])?;
+            // convert each line to str temporarily -> cut off ">" char 
+            let line_str = std::str::from_utf8(&line[1..line.len()])?;
+            let node = line_str.split_whitespace().collect::<Vec<&str>>();
+            let mut node = node.iter().peekable();
+
+            let id: usize = node.next().unwrap().parse()?;
+            let _node_lengh = node.next(); // length 
+            let _node_color = node.next(); // color value
+            for link in node {
+                let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
+                edges.push(Edge::new(link_slice[1].parse()?, Self::parse_ggcat_direction(link_slice[0], link_slice[2])?));
+            }
+            edges.sort_unstable_by_key(|e| e.dest());
+
+            if in_fst(id) {
+                self.write_node(id, edges.as_slice(), k_mer)?;
+            } else {
+                self.write_unlabeled_node(id, edges.as_slice())?;
+            }
+            edges.clear();
+        }
+
+        Ok(())
     }
 
     pub fn init(
@@ -392,109 +583,208 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
     }
 
-    pub fn open(
-        filename: String,
+    /// Here by default no node's label is stored
+    pub fn from_ggcat_file<P: AsRef<Path> + Clone>(
+        path: P,
+        id: Option<String>,
+        batch: Option<usize>,
+        max_edges: Option<u16>,
+        in_fst: Option<fn(usize) -> bool>
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
-        let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
-        let kmer_filename = cache_file_name(filename.clone(), FileType::KmerTmp, None)?;
-
-        let graph_file: File = match OpenOptions::new().read(true).open(graph_filename.as_str()) {
-            Ok(file) => file,
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldnt open file {graph_filename}: {e}"),
-                )));
-            }
+        // make sure cache directory exists, if not attempt to create it
+        if !Path::new(CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+        // make sure tmp directory exists, if not attempt to create it
+        if !Path::new(TEMP_CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+        // parse optional inputs && fallback to defaults for the Nones found
+        let id = id.map_or(rand::random::<u64>().to_string(), |id| {id});
+        let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| {b}));
+        let in_fst = match in_fst {
+            Some(f) => f,
+            None => {|_id: usize| -> bool { false }}
         };
-        let index_file: File = match OpenOptions::new().read(true).open(index_filename.as_str()) {
-            Ok(file) => file,
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldnt open file {index_filename}: {e}"),
-                )));
-            }
-        };
-        let kmer_file: File = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
-            Ok(file) => file,
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldnt open file {kmer_filename}: {e}"),
-                )));
-            }
-        };
+        let input = Self::read_input_file(path)?;
+        let max_edges = Some(max_edges.map_or(Self::DEFAULT_MAX_EDGES, |max| max));
 
-        let graph_len = graph_file.metadata().unwrap().len() as usize;
-        let index_len = index_file.metadata().unwrap().len() as usize;
-
-        Ok(GraphCache::<EdgeType, Edge> {
-            graph_file: Arc::new(graph_file),
-            index_file: Arc::new(index_file),
-            kmer_file: Arc::new(kmer_file),
-            graph_filename,
-            index_filename,
-            kmer_filename,
-            graph_bytes: graph_len,
-            index_bytes: index_len,
-            readonly: true,
-            batch: Some(DEFAULT_BATCH_SIZE),
-            _marker1: PhantomData::<Edge>,
-            _marker2: PhantomData::<EdgeType>,
-        })
+        // init cache
+        let mut cache = Self::init_with_id(id, batching)?;
+        // parse and cache input
+        cache.parse_ggcat_bytes_mmap(input.as_slice(), max_edges, in_fst)?;
+        Ok(cache)
     }
 
-    pub(self) fn open_subpragh(
+    /// Parses a ggcat output file input and builds an fst for the graph according to the input
+    /// parameters.
+    ///
+    /// Input is assumed to be of type UTF-8 and to follow the format of GGCAT's output.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - Input bytes.
+    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
+    ///
+    /// # Returns
+    ///
+    /// Empty Ok().
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * In the input slice no k-mer / label sequence is found for some node.
+    /// * An error occurs parsing a line of the input from UTF-8.
+    /// * An error occurs parsing a node's identifier.
+    /// * An error occurs parsing an edge's destiny node identifier or direction annototation.
+    /// * An error occurs writing the node into the memmapped cache files.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // for every node record at most 16 (default maximum value) edges and always add its label
+    /// // to the grapph's finite state transducer
+    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(input_bytes, None, |_id: usize| {true})?;
+    /// ```
+    /// ```
+    /// // for every node record at most 8 edges and add its label to the grapph's finite state
+    /// // transducer if the node id is 123432 or 912383 or it its id is divisible by 7
+    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(
+    ///     input_bytes, 
+    ///     Some(8),
+    ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
+    /// )?;
+    /// ```
+    ///
+    fn fst_from_ggcat_bytes(
+        &mut self,
+        input: &[u8],
+        batch_size: usize,
+        in_fst: fn(usize) -> bool
+        ) -> Result<(), Box<dyn std::error::Error>> {
+        // this assumes UTF-8 but avoids full conversion
+
+        let mut batch_num: usize = 0usize;
+        let mut batches = Vec::new();
+        let mut current_batch: Vec<(String, u64)> = Vec::with_capacity(batch_size);
+
+        let mut lines = input.split(|&b| b == b'\n');
+        while let Some(line) = lines.next() {
+            if line.is_empty() {
+                continue;
+            }
+            // convert each line to str temporarily && cut off ">" char
+            let line_str = std::str::from_utf8(&line[1..])?;
+            
+            let sequence_line = match lines.next() {
+                None => { 
+                    return Err(Box::new(Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!("error no k-mer sequence for node {line_str}"),
+                                ))
+                        );
+                },
+                Some(i) => i,
+            };
+            // FIXME: is converting label to String really necessary?
+            // convert each line to str temporarily -> cut off ">" char 
+            let line_str = std::str::from_utf8(&line[1..line.len()])?;
+            let label = std::str::from_utf8(&sequence_line[0..])?;
+            let node = line_str.split_whitespace().collect::<Vec<&str>>();
+            let id: usize = node.first().unwrap().parse()?;
+
+            if in_fst(id) {
+                current_batch.push((label.to_string(), id as u64));
+                if current_batch.len() >= batch_size {
+                    let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num)?;
+                    batches.push(tmp_fst);
+                    current_batch.clear();
+                    batch_num += 1;
+                }
+            }
+        }
+
+        // Process the last batch if not empty
+        if !current_batch.is_empty() {
+            let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num)?;
+            batches.push(tmp_fst);
+        }
+
+
+        // if graph cache was used to build a graph then the graph's fst
+        // holds kmer_filename open, hence, it must be removed so that the new fst may 
+        // be built
+        std::fs::remove_file(self.kmer_filename.clone())?;
+        // Now merge all batch FSTs into one
+        self.merge_fsts(&batches)?;
+
+        // Cleanup temp batch files
+        for batch_file in batches {
+            let _ = std::fs::remove_file(batch_file);
+        }
+
+        Ok(())
+    }
+
+    /// Here by default every node's label is stored
+    pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path> + Clone>(
+        &mut self,
+        path: P,
+        batch: Option<usize>,
+        in_fst: Option<fn(usize) -> bool>
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let batching = batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| {b});
+        let in_fst = match in_fst {
+            Some(f) => f,
+            None => {|_id: usize| -> bool { true }}
+        };
+
+        let input = Self::read_input_file(path)?;
+
+        self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
+        Ok(())
+    }
+
+    pub fn open(
         filename: String,
+        batch: Option<usize>
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| {b}));
         let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
         let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
         let kmer_filename = cache_file_name(filename.clone(), FileType::Fst, None)?;
 
-        let graph_file: File = match OpenOptions::new().read(true).open(graph_filename.as_str()) {
-            Ok(file) => file,
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldnt open file {graph_filename}: {e}"),
-                )));
-            }
-        };
-        let index_file: File = match OpenOptions::new().read(true).open(index_filename.as_str()) {
-            Ok(file) => file,
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldnt open file {index_filename}: {e}"),
-                )));
-            }
-        };
-        let kmer_file: File = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
-            Ok(file) => file,
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldnt open file {kmer_filename}: {e}"),
-                )));
+        let graph_file = Arc::new(OpenOptions::new().read(true).open(graph_filename.as_str())?);
+        let index_file = Arc::new(OpenOptions::new().read(true).open(index_filename.as_str())?);
+        let kmer_file = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
+            Ok(file) => Arc::new(file),
+            Err(_) => {
+                // if graph has no fst in cache no problem, build empty one and proceed
+                let empty_fst = Arc::new(OpenOptions::new().create(true).truncate(true).write(true).open(&kmer_filename)?);
+                let builder = MapBuilder::new(empty_fst.clone())?;
+                builder.finish()?;
+                // make it readonly :)
+                let mut permissions = empty_fst.metadata()?.permissions();
+                permissions.set_readonly(true);
+                empty_fst.set_permissions(permissions)?;
+                empty_fst
             }
         };
 
-        let graph_len = graph_file.metadata().unwrap().len() as usize;
-        let index_len = index_file.metadata().unwrap().len() as usize;
+        let graph_bytes = graph_file.metadata().unwrap().len() as usize;
+        let index_bytes = index_file.metadata().unwrap().len() as usize;
 
         Ok(GraphCache::<EdgeType, Edge> {
-            graph_file: Arc::new(graph_file),
-            index_file: Arc::new(index_file),
-            kmer_file: Arc::new(kmer_file),
+            graph_file,
+            index_file,
+            kmer_file,
             graph_filename,
             index_filename,
             kmer_filename,
-            graph_bytes: graph_len,
-            index_bytes: index_len,
+            graph_bytes,
+            index_bytes,
             readonly: true,
-            batch: Some(DEFAULT_BATCH_SIZE),
+            batch,
             _marker1: PhantomData::<Edge>,
             _marker2: PhantomData::<EdgeType>,
         })
@@ -509,8 +799,47 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let expected_id = self.index_bytes;
         match node_id == expected_id {
             true => {
+                // write label
                 writeln!(self.kmer_file, "{}\t{}", node_id, label)?;
 
+                match self.index_file.write_all(self.graph_bytes.as_bytes()) {
+                    Ok(_) => self.index_bytes += 1,
+                    Err(e) => {
+                        return Err(Box::new(Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("error writing index for {node_id}: {e}"),
+                        )));
+                    }
+                };
+
+                match self.graph_file.write_all(bytemuck::cast_slice(data)) {
+                    Ok(_) => {
+                        self.graph_bytes += data.len();
+                        Ok(())
+                    }
+                    Err(e) => Err(Box::new(Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("error writing edges for {node_id}: {e}"),
+                    ))),
+                }
+            }
+            false => Err(Box::new(Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
+                ),
+            ))),
+        }
+    }
+
+    pub fn write_unlabeled_node(
+        &mut self,
+        node_id: usize,
+        data: &[Edge],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let expected_id = self.index_bytes;
+        match node_id == expected_id {
+            true => {
                 match self.index_file.write_all(self.graph_bytes.as_bytes()) {
                     Ok(_) => self.index_bytes += 1,
                     Err(e) => {
@@ -697,18 +1026,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         if !current_batch.is_empty() {
             let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num)?;
             batches.push(tmp_fst);
-            batch_num += 1;
         }
 
         // Now merge all batch FSTs into one
-        if batch_num == 0 {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error can't build empty fst",
-            )));
-        } else {
-            self.merge_fsts(&batches)?;
-        }
+        self.merge_fsts(&batches)?;
 
         // Cleanup temp batch files
         for batch_file in batches {
@@ -748,28 +1069,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     /// Merge multiple FST batch files into a final FST.
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
-        // Open all batch maps
-        let maps: Result<Vec<_>, _> = batch_paths
-            .iter()
-            .map(|p| {
-                let mmap = unsafe {
-                    MmapOptions::new().map(&OpenOptions::new().read(true).create(false).open(p)?)?
-                };
-                Map::new(mmap)
-            })
-            .collect();
-        let maps = maps?;
-
-        let mut op_builder = maps[0].op();
-        if maps.len() > 1 {
-            for map in &maps[1..] {
-                op_builder = op_builder.add(map.stream());
-            }
-        }
-
-        // Perform a union (merges sorted keys across all maps)
-        let union_stream = op_builder.union();
-
         // Open output FST file for writing
         let out_fn = cache_file_name(self.kmer_filename.clone(), FileType::Fst, None)?;
         let out = Arc::new(
@@ -781,13 +1080,38 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         );
         let mut builder = MapBuilder::new(out.clone())?;
 
-        // Iterate through merged keys and select values
-        let mut stream = union_stream.into_stream();
-        while let Some((key, vals)) = stream.next() {
-            // println!("vals len {} {:?} {:?}", vals.to_vec().len(), key, vals);
-            // Each `vals` is a Vec<IndexedValue>, one per input map
-            if let Some(val) = vals.to_vec().first() {
-                builder.insert(key, val.value)?;
+        // if empty an empty fst is built and stored
+        if !batch_paths.is_empty() {
+            // Open all batch maps
+            let maps: Result<Vec<_>, _> = batch_paths
+                .iter()
+                .map(|p| {
+                    let mmap = unsafe {
+                        MmapOptions::new().map(&OpenOptions::new().read(true).create(false).open(p)?)?
+                    };
+                    Map::new(mmap)
+                })
+                .collect();
+            let maps = maps?;
+
+            let mut op_builder = maps[0].op();
+            if maps.len() > 1 {
+                for map in &maps[1..] {
+                    op_builder = op_builder.add(map.stream());
+                }
+            }
+
+            // Perform a union (merges sorted keys across all maps)
+            let union_stream = op_builder.union();
+
+            // Iterate through merged keys and select values
+            let mut stream = union_stream.into_stream();
+            while let Some((key, vals)) = stream.next() {
+                // println!("vals len {} {:?} {:?}", vals.to_vec().len(), key, vals);
+                // Each `vals` is a Vec<IndexedValue>, one per input map
+                if let Some(val) = vals.to_vec().first() {
+                    builder.insert(key, val.value)?;
+                }
             }
         }
 
@@ -1260,7 +1584,7 @@ where
             }
         }
         self.cleanup_cache()?;
-        let cache: GraphCache<EdgeType, Edge> = GraphCache::open_subpragh(kmers_fn)?;
+        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(kmers_fn, None)?;
         GraphMemoryMap::init(cache, self.thread_count)
     }
 
@@ -4348,7 +4672,7 @@ where
         {
             Ok(c) => {
                 println!(
-                    "best community {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                    "best community hkrelax {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
                     c.size, c.width, c.conductance
                 );
                 Ok(c)
@@ -4611,7 +4935,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeT
         {
             Ok(c) => {
                 println!(
-                    "best community {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                    "best community approxdirichlethkpr {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
                     c.size, c.width, c.conductance
                 );
                 Ok(c)
