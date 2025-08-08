@@ -4,12 +4,14 @@ mod generic_edge;
 mod generic_memory_map;
 mod shared_slice;
 
-use clap::Parser;
-use core::panic;
+#[allow(unused_imports)]
 use generic_edge::{
     GenericEdge, GenericEdgeType, SubStandardColoredEdgeType, Test, TinyEdgeType,
     TinyLabelStandardEdge,
 };
+
+use clap::Parser;
+use core::panic;
 use generic_memory_map::{
     ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax, HyperBall,
 };
@@ -17,11 +19,7 @@ use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
 use std::time::Instant;
-use std::{
-    fs::File,
-    io::{self, BufReader, Read},
-    path::Path,
-};
+use std::{io, path::Path};
 
 // Checout matchtigs
 // https://github.com/algbio/matchtigs
@@ -31,13 +29,13 @@ static BITS_U64: usize = std::mem::size_of::<u64>();
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
-enum InputType {
-    Txt,
-    Lz4,
-}
-
 #[derive(Parser)]
-#[command(name = "'The Tool'", version = "0.1", about = "Named 'The Tool'", long_about = None)]
+#[command(
+    name = "'The Tool'",
+    version = "0.1",
+    about = "Named 'The Tool'",
+    long_about = "Very pretentious name. I know... ('~') but a man has to make an impact for his dissertation. (T.T)\n The contents of this crate should be a good start though. :)"
+)]
 struct ProgramArgs {
     /// enable debugging mode
     #[arg(short, long)]
@@ -86,10 +84,8 @@ fn main() {
         (Some("txt"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<SubStandardColoredEdgeType, Test>(
-                        read_file(args.file.clone(), InputType::Txt)
-                            .expect("error couldn't read file")
-                            .as_ref(),
+                    parse_bytes_mmaped::<SubStandardColoredEdgeType, Test, String>(
+                        args.file.clone(),
                         args.threads,
                         args.output_id,
                     )
@@ -101,10 +97,8 @@ fn main() {
         (Some("lz4"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped(
-                        read_file(args.file.clone(), InputType::Lz4)
-                            .expect("error couldn't read file")
-                            .as_ref(),
+                    parse_bytes_mmaped::<SubStandardColoredEdgeType, Test, String>(
+                        args.file.clone(),
                         args.threads,
                         args.output_id,
                     )
@@ -148,42 +142,15 @@ fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     /* ********************************************************************************* */
     // End of lookup test
     /* ********************************************************************************* */
+
     Ok(graph_mmaped)
-}
-
-fn read_file<P: AsRef<Path>>(path: P, mode: InputType) -> io::Result<Vec<u8>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let mut contents = Vec::new();
-
-    match mode {
-        InputType::Lz4 => {
-            // Decompress .lz4 using lz4 crate
-            let mut decoder = lz4::Decoder::new(reader)?;
-            decoder.read_to_end(&mut contents)?;
-        }
-        InputType::Txt => {
-            reader.read_to_end(&mut contents)?;
-        }
-    };
-
-    Ok(contents)
-}
-
-fn parse_direction(orig: &str, dest: &str) -> Result<TinyEdgeType, Box<dyn std::error::Error>> {
-    match (orig, dest) {
-        ("+", "+") => Ok(TinyEdgeType::FF),
-        ("+", "-") => Ok(TinyEdgeType::FR),
-        ("-", "+") => Ok(TinyEdgeType::RF),
-        ("-", "-") => Ok(TinyEdgeType::RR),
-        _ => panic!("error invalid direction: \"{}:{}\"", orig, dest),
-    }
 }
 
 fn label_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     graph: &GraphMemoryMap<EdgeType, Edge>,
 ) {
     loop {
-        print!("Enter something (empty to quit): ");
+        print!("Enter something (press <ENTER> to quit): ");
         io::stdout().flush().unwrap(); // Ensure prompt is shown
 
         let mut input = String::new();
@@ -201,103 +168,42 @@ fn label_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     }
 }
 
-fn parse_bytes_mmaped<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
-    input: &[u8],
+fn parse_bytes_mmaped<
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
+    P: AsRef<Path> + Clone,
+>(
+    path: P,
     threads: u8,
     id: Option<String>,
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
-    let mut lines = input.split(|&b| b == b'\n');
-    let mut graph_cache = match id {
-        Some(id) => {
-            generic_memory_map::GraphCache::<EdgeType, Edge>::init_with_id(id, Some(20_000))?
-        }
-        None => generic_memory_map::GraphCache::<EdgeType, Edge>::init(Some(20_000))?,
-    };
-
-    //debug
-    // println!("graph cache: {:?}", graph_cache);
-
     let time = Instant::now();
-    while let Some(line) = lines.next() {
-        if line.is_empty() {
-            continue;
-        }
-
-        // Convert each line to str temporarily -> cut off ">" char
-        let line_str = std::str::from_utf8(&line[1..])?;
-
-        let sequence_line = match lines.next() {
-            None => panic!("error no k-mer sequence for node {}", line_str),
-            Some(i) => i,
-        };
-        let k_mer = std::str::from_utf8(&sequence_line[0..])?;
-
-        // Convert each line to str temporarily -> cut off ">" char
-        let line_str = std::str::from_utf8(&line[1..line.len()])?;
-        let node = line_str.split_whitespace().collect::<Vec<&str>>();
-
-        let mut node = node.iter().peekable();
-        let id: usize = node.next().unwrap().parse()?;
-
-        let _node_lengh = node.next(); // length
-        let _node_color = node.next(); // color value
-
-        let mut edges = vec![];
-
-        for link in node {
-            let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
-            edges.push(Edge::new(
-                link_slice[1].parse()?,
-                parse_direction(link_slice[0], link_slice[2])?.label() as u64,
-            ));
-        }
-
-        edges.sort_unstable_by_key(|e| e.dest());
-
-        if id == 0 {
-            graph_cache.write_node(id, edges.as_slice(), k_mer)?;
-        } else {
-            graph_cache.write_unlabeled_node(id, edges.as_slice())?;
-        }
-    }
-
-    println!("Graph built {:?}", time.elapsed());
+    let mut graph_cache = generic_memory_map::GraphCache::<EdgeType, Edge>::from_ggcat_file(
+        path.clone(),
+        id,
+        None,
+        None,
+    )?;
+    println!("cache no fst built {:?}", time.elapsed());
     let time = Instant::now();
-    graph_cache.make_readonly()?;
-    println!("Fst built {:?}", time.elapsed());
-
-    //debug
-    // println!("graph cache: {:?}", graph_cache);
-
     let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
-        GraphMemoryMap::<EdgeType, Edge>::init(graph_cache, threads)?;
-
-    println!("graph {:?}", graph_mmaped.edges());
-    println!("node 5: {:?}", graph_mmaped.neighbours(5)?);
+        GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
+    println!("graph initialized {:?}", time.elapsed());
+    label_search(&graph_mmaped);
+    let time = Instant::now();
+    graph_cache.rebuild_fst_from_ggcat_file(path, None, None)?;
+    println!("cache fst built {:?}", time.elapsed());
+    let time = Instant::now();
+    let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
+        GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
+    println!("graph initialized {:?}", time.elapsed());
 
     /* ********************************************************************************* */
     // Lookup test
     /* ********************************************************************************* */
 
     label_search(&graph_mmaped);
-    loop {
-        print!("Enter something (empty to quit): ");
-        io::stdout().flush().unwrap(); // Ensure prompt is shown
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-
-        let input = input.trim_end(); // remove newline characters
-
-        if input.is_empty() {
-            break;
-        }
-        match graph_mmaped.node_id_from_kmer(input) {
-            Ok(val) => println!("Value for key {} is {}", input, val),
-            Err(e) => println!("Key not found: {e}"),
-        }
-    }
 
     /* ********************************************************************************* */
     // End of lookup test

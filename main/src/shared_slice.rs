@@ -109,6 +109,12 @@ impl<T> SharedSlice<T> {
     pub fn new(ptr: *const T, len: usize) -> Self {
         SharedSlice::<T> { ptr, len }
     }
+    pub fn from_slice(slice: &[T]) -> Self {
+        SharedSlice::<T> {
+            ptr: slice.as_ptr(),
+            len: slice.len(),
+        }
+    }
     pub fn from_file(file: &File) -> Result<(Self, Mmap), Error> {
         let mmap = unsafe { MmapOptions::new().map(file)? };
         let mmap_len = mmap.len();
@@ -133,7 +139,6 @@ impl<T> SharedSlice<T> {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
-    #[expect(dead_code)]
     pub fn len(&self) -> usize {
         self.len
     }
