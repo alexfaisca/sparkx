@@ -12,9 +12,9 @@ use generic_edge::{
 
 use clap::Parser;
 use core::panic;
-use generic_memory_map::{
-    ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax, HyperBall,
-};
+use generic_memory_map::HyperBallN;
+#[allow(unused_imports)]
+use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
 use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
@@ -179,7 +179,7 @@ fn parse_bytes_mmaped<
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
-    let mut graph_cache = generic_memory_map::GraphCache::<EdgeType, Edge>::from_ggcat_file(
+    let graph_cache = generic_memory_map::GraphCache::<EdgeType, Edge>::from_ggcat_file(
         path.clone(),
         id,
         None,
@@ -189,21 +189,50 @@ fn parse_bytes_mmaped<
     let time = Instant::now();
     let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
         GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
-    println!("graph initialized {:?}", time.elapsed());
-    label_search(&graph_mmaped);
-    let time = Instant::now();
-    graph_cache.rebuild_fst_from_ggcat_file(path, None, None)?;
-    println!("cache fst built {:?}", time.elapsed());
-    let time = Instant::now();
-    let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
-        GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
-    println!("graph initialized {:?}", time.elapsed());
+    println!(
+        "graph initialized (|V| = {}, |E| = {}) {:?}",
+        graph_mmaped.size() - 1,
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    // label_search(&graph_mmaped);
+    // let time = Instant::now();
+    // graph_cache.rebuild_fst_from_ggcat_file(path, None, None)?;
+    // println!("cache fst built {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
+    //     GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
+    // println!("graph initialized {:?}", time.elapsed());
 
     /* ********************************************************************************* */
     // Lookup test
     /* ********************************************************************************* */
+    let time = Instant::now();
+    let mut hyper = HyperBallN::new(graph_mmaped.clone(), Some(6), Some(70))?;
+    println!("hyperball {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_harmonic_centrality(None)?;
+    println!("centrality harmonic None {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_harmonic_centrality(Some(false))?;
+    println!("centrality harmonic false {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_harmonic_centrality(Some(true))?;
+    println!("centrality harmonic true {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_closeness_centrality(None)?;
+    println!("centrality closeness None {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_closeness_centrality(Some(false))?;
+    println!("centrality closeness false {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_closeness_centrality(Some(true))?;
+    println!("centrality closeness true {:?}", time.elapsed());
+    let time = Instant::now();
+    hyper.compute_lins_centrality()?;
+    println!("centrality lin {:?}", time.elapsed());
 
-    label_search(&graph_mmaped);
+    // label_search(&graph_mmaped);
 
     /* ********************************************************************************* */
     // End of lookup test
@@ -226,7 +255,14 @@ fn parse_bytes_mmaped<
     graph_mmaped.k_truss_decomposition(7)?;
     println!("k-truss decomposition {:?}", time.elapsed());
     let time = Instant::now();
-    let hk_relax = HKRelax::new(graph_mmaped.clone(), 20., 0.0001, vec![64256])?;
+    let hk_relax = HKRelax::new(
+        graph_mmaped.clone(),
+        20.,
+        0.0001,
+        vec![64256],
+        Some(10_000),
+        Some(50_000),
+    )?;
     let _ = hk_relax.compute()?;
     println!("HKRelax {:?}", time.elapsed());
     let time = Instant::now();
@@ -234,7 +270,7 @@ fn parse_bytes_mmaped<
         ApproxDirHKPR::new(graph_mmaped.clone(), 0.008, 8, 100000, 4000000, 0.05)?;
     let _ = _approx_dirichlet_hkpr.compute(generic_memory_map::ApproxDirichletHeatKernelK::Mean)?;
     println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
-    let time = Instant::now();
+    // let time = Instant::now();
     // let _ = graph_mmaped.cleanup_cache();
     // let b = graph_mmaped
     //     .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
@@ -247,18 +283,7 @@ fn parse_bytes_mmaped<
     // println!("node 3: {:?}", b.neighbours(3)?.collect::<Vec<Test>>());
     // println!("node 4: {:?}", b.neighbours(4)?.collect::<Vec<Test>>());
     // println!("node 5: {:?}", b.neighbours(5)?.collect::<Vec<Test>>());
-    let mut hyper = HyperBall::new(graph_mmaped.clone(), Some(6), Some(70))?;
-    println!("hyperball {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_harmonic_centrality(Some(true))?;
-    println!("centrality harmonic {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_closeness_centrality(Some(true))?;
-    println!("centrality closeness {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_lins_centrality()?;
-    println!("centrality lin {:?}", time.elapsed());
-    // hyper.compute_harmonic_centrality(Some(true))?;
+
     // let a = graph_mmaped.export_petgraph()?;
     // println!("rustworkx_core export {:?}", a);
     // use rustworkx_core::centrality::betweenness_centrality;

@@ -4,15 +4,13 @@ use crate::shared_slice::{
     SharedSliceMut,
 };
 use core::{f64, fmt, panic};
-use std::io::{Read, Seek, SeekFrom};
-use bstr::ByteSlice;
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use glob::glob;
-use hyperloglogplus::{HyperLogLog, HyperLogLogPlus};
+use hyperloglogplus::HyperLogLogPlus;
+use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
-use rand::seq::IndexedRandom;
 use rand::Rng;
 use rand_distr::{Distribution, Poisson};
 use regex::Regex;
@@ -23,7 +21,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque, hash_map::RandomState},
     fmt::Debug,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Error, Write},
+    io::{BufRead, BufReader, Error, Read, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
     process::Command,
@@ -636,9 +634,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 });
     
                 let mem_info = sys_info::mem_info()?;
-                println!("Total memory {i}: {} MB", mem_info.total);
-                println!("Free memory {i}: {} MB", mem_info.free);
-                println!("Used memory {i}: {} MB", mem_info.total - mem_info.free);
+                println!("Available memory {i}: {} MB", mem_info.avail);
+                println!("Total memory     {i}: {} MB", mem_info.free);
+                println!("Free memory      {i}: {} MB", mem_info.free);
+                println!("Used memory      {i}: {} MB", mem_info.total - mem_info.free);
 
                 batches.push(thread_handle);
             }
@@ -741,17 +740,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let mut current_batch: Vec<(&[u8], u64)> = Vec::with_capacity(batch_size);
 
         let mut lines = input.split(|&b| b == b'\n');
-    let mem_info = sys_info::mem_info()?;
-    println!("Total memory: {} MB", mem_info.total);
-    println!("Free memory: {} MB", mem_info.free);
-    println!("Used memory: {} MB", mem_info.total - mem_info.free);
+        let mem_info = sys_info::mem_info()?;
+
+        println!("Available memory: {} MB", mem_info.avail);
+        println!("Total memory    : {} MB", mem_info.free);
+        println!("Free memory     : {} MB", mem_info.free);
+        println!("Used memory     : {} MB", mem_info.total - mem_info.free);
+
         while let Some(line) = lines.next() {
             if line.is_empty() {
                 continue;
             }
             // convert each line to str temporarily && cut off ">" char
             let line_str = std::str::from_utf8(&line[1..])?;
-            
+
             let sequence_line = match lines.next() {
                 None => { 
                     return Err(Box::new(Error::new(
@@ -779,10 +781,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 }
             }
         }
-    let mem_info = sys_info::mem_info()?;
-    println!("Total memory: {} MB", mem_info.total);
-    println!("Free memory: {} MB", mem_info.free);
-    println!("Used memory: {} MB", mem_info.total - mem_info.free);
+    
+        let mem_info = sys_info::mem_info()?;
+        println!("Available memory: {} MB", mem_info.avail);
+        println!("Total memory    : {} MB", mem_info.free);
+        println!("Free memory     : {} MB", mem_info.free);
+        println!("Used memory     : {} MB", mem_info.total - mem_info.free);
 
         // Process the last batch if not empty
         if !current_batch.is_empty() {
@@ -821,12 +825,13 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
  
         let input = Self::read_input_file(path)?;
-        self.parallel_fst_from_ggcat_bytes(input.as_slice(), batching, in_fst, num_cpus::get_physical())?;
-        // self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
+        // self.parallel_fst_from_ggcat_bytes(input.as_slice(), batching, in_fst, num_cpus::get_physical())?;
+        self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
     let mem_info = sys_info::mem_info()?;
-    println!("Total memory: {} MB", mem_info.total);
-    println!("Free memory: {} MB", mem_info.free);
-    println!("Used memory: {} MB", mem_info.total - mem_info.free);
+    println!("Available memory: {} MB", mem_info.avail);
+    println!("Total memory    : {} MB", mem_info.free);
+    println!("Free memory     : {} MB", mem_info.free);
+    println!("Used memory     : {} MB", mem_info.total - mem_info.free);
         Ok(())
     }
 
@@ -1019,15 +1024,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             if let Ok(text) = std::str::from_utf8(&line) {
                 let mut parts = text.trim_end().split('\t');
                 if let (Some(id_value), Some(kmer)) = (parts.next(), parts.next()) {
-                    let id = match id_value.parse::<u64>() {
-                        Ok(i) => i,
-                        Err(e) => {
-                            return Err(Box::new(Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("error couldn't convert {id_value} to u64: {e}"),
-                            )));
-                        }
-                    };
+                    let id = id_value.parse::<u64>()?;
                     match build.insert(kmer, id) {
                         Ok(i) => i,
                         Err(e) => {
@@ -1072,15 +1069,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         for line in contents.split(|b| *b == b'\n') {
             let mut parts = line.split(|c| *c == b'\t');
             if let (Some(node_id), Some(label)) = (parts.next(), parts.next()) {
-                let id = match std::str::from_utf8(node_id)?.parse::<u64>() {
-                    Ok(i) => i,
-                    Err(e) => {
-                        return Err(Box::new(Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("error couldn't convert node id to u64: {e}")
-                        )));
-                    }
-                };
+                let id = std::str::from_utf8(node_id)?.parse::<u64>()?;
 
                 current_batch.push((label, id));
                 if current_batch.len() >= batch_size {
@@ -1259,30 +1248,12 @@ where
         thread_count: u8,
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if cache.readonly {
-            let mmap = unsafe {
-                match MmapOptions::new().map(&File::open(&cache.kmer_filename)?) {
-                    Ok(i) => i,
-                    Err(e) => {
-                        return Err(Box::new(Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("error couldn't mmap k-mer fst: {e}"),
-                        )));
-                    }
-                }
-            };
+            let mmap = unsafe { MmapOptions::new().map(&File::open(&cache.kmer_filename)?)? };
             let thread_count = if thread_count == 0 { 1 } else { thread_count };
             return Ok(GraphMemoryMap {
                 graph: unsafe { Arc::new(Mmap::map(&cache.graph_file)?) },
                 index: unsafe { Arc::new(Mmap::map(&cache.index_file)?) },
-                kmers: match Map::new(mmap) {
-                    Ok(i) => Arc::new(i),
-                    Err(e) => {
-                        return Err(Box::new(Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("error map fst from k-mer mmap: {e}"),
-                        )));
-                    }
-                },
+                kmers: Arc::new(Map::new(mmap)?),
                 graph_cache: cache,
                 edge_size: std::mem::size_of::<Edge>(),
                 thread_count,
@@ -1306,14 +1277,14 @@ where
     }
 
     #[inline(always)]
-    pub fn node_id_from_kmer(&self, kmer: &str) -> Result<u64, Error> {
+    pub fn node_id_from_kmer(&self, kmer: &str) -> Result<u64, Box<dyn std::error::Error>> {
         if let Some(val) = self.kmers.get(kmer) {
             Ok(val)
         } else {
-            Err(Error::new(
-                std::io::ErrorKind::Other,
+            Err(Box::new(Error::new(
+                std::io::ErrorKind::InvalidInput,
                 format!("error k-mer {kmer} not found"),
-            ))
+            )))
         }
     }
 
@@ -1325,9 +1296,12 @@ where
         }
     }
 
-    pub fn neighbours(&self, node_id: usize) -> Result<NeighbourIter<EdgeType, Edge>, Error> {
+    pub fn neighbours(&self, node_id: usize) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if node_id >= self.size() {
-            panic!("error invalid range");
+            return Err(Box::new(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("error {node_id} must be smaller than |V| = {}", self.size() - 1),
+            )));
         }
 
         Ok(NeighbourIter::<EdgeType, Edge>::new(
@@ -1337,7 +1311,7 @@ where
         ))
     }
 
-    pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Error> {
+    pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         Ok(EdgeIter::<EdgeType, Edge>::new(
             self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
@@ -1350,7 +1324,7 @@ where
         &self,
         start_node: usize,
         end_node: usize,
-    ) -> Result<EdgeIter<EdgeType, Edge>, Error> {
+    ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if start_node > end_node {
             panic!("error invalid range, beginning after end");
         }
@@ -1369,10 +1343,14 @@ where
     fn sweep_cut_over_diffusion_vector_by_conductance(
         &self,
         diffusion: &mut [(usize, f64)],
-    ) -> Result<Community<usize>, Error> {
+        target_size: Option<usize>,
+        target_volume: Option<usize>
+    ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
         // debug
         // println!("descending-ordered mass vector {:?}", s);
+        let target_size = target_size.map_or(self.size() - 1, |s| s);
+        let target_volume = target_volume.map_or(self.width(), |s| s);
 
         let mut vol_s = 0usize;
         let mut vol_v_minus_s = self.width();
@@ -1388,31 +1366,40 @@ where
                 Ok(u_n) => {
                     vol_s = match vol_s.overflowing_add(u_n.remaining_neighbours()) {
                         (r, false) => r,
-                        (_, true) => panic!(
-                            "error hk-relax overflow_add in vol_s sweep cut at node {}",
-                            u
-                        ),
+                        (_, true) => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        format!("error sweep cut overflow_add in vol_s at node {u}"),
+                                        ))
+                                );
+                        }
                     };
                     vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.remaining_neighbours())
                     {
                         (r, false) => r,
-                        (_, true) => panic!(
-                            "error hk-relax overflow_add in vol_v_minus_s sweep cut at node {}",
-                            u
-                        ),
+                        (_, true) => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        format!("error sweep cut overflow_add in vol_v_minus_s at node {u}"),
+                                        ))
+                                );
+                        }
                     };
                     u_n
                 }
-                Err(e) => panic!(
-                    "error hk-relax sweep cut couldn't get {} neighbours: {}",
-                    u, e
-                ),
+                Err(e) => {
+                    return Err(Box::new(Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!("error sweep cut couldn't get {u} neighbours: {e}"),
+                                ))
+                        );
+                }
             };
             match community.get(u) {
-                Some(_) => panic!(
-                    "error building best community from diffusion vector: {} is present multiple times",
-                    u
-                ),
+                Some(_) => { return Err(Box::new(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("error sweepcut diffusion vector: {u} is present multiple times"),
+            )));}
                 None => community.insert(*u),
             };
             for v in u_n {
@@ -1423,20 +1410,24 @@ where
                 if community.contains(&v.dest()) {
                     cut_s = match cut_s.overflowing_sub(1) {
                         (r, false) => r,
-                        (_, true) => panic!(
-                            "error hk-relax overflow_sub in cut_s sweep cut at node {} in neighbour {}",
-                            u,
-                            v.dest()
-                        ),
+                        (_, true) => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        format!("error sweepcut overflow_sub at node {u} in neighbour {}", v.dest()),
+                                        ))
+                                );
+                        }
                     };
                 } else {
                     cut_s = match cut_s.overflowing_add(1) {
                         (r, false) => r,
-                        (_, true) => panic!(
-                            "error hk-relax overflow_add in sweep cut at node {} in neighbour {}",
-                            u,
-                            v.dest()
-                        ),
+                        (_, true) => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        format!("error sweepcut overflow_add at node {u} in neighbour {}", v.dest()),
+                                        ))
+                                );
+                        }
                     };
                 }
             }
@@ -1447,6 +1438,12 @@ where
                 best_community = diffusion[0..=idx].to_vec();
                 best_width = vol_s;
                 best_size = community.len();
+            }
+
+            // truncate sweep if vol or size go over double the target value
+            if community.len() > target_size * 2 || vol_s > target_volume * 2 {
+                println!("Sweep cut truncated with size: {} and volume {}\n\tTarget size: {target_size}\n\tTarget volume: {target_volume}", community.len(), vol_s);
+                break;
             }
         }
 
@@ -1537,7 +1534,7 @@ where
         self.graph_cache.graph_bytes // num edges
     }
 
-    fn get_exports_add_one(&mut self) -> Result<u8, Error> {
+    fn get_exports_add_one(&mut self) -> Result<u8, Box<dyn std::error::Error>> {
         self.exports = match self.exports.overflowing_add(1) {
             (r, false) => r,
             (_, true) => {
@@ -1658,7 +1655,7 @@ where
     }
 
     #[expect(dead_code)]
-    pub fn export_petgraph(&self) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Error> {
+    pub fn export_petgraph(&self) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
         let node_count = self.size() - 1;
 
@@ -1698,15 +1695,15 @@ where
         Ok((degree, node, core, pos))
     }
 
-    pub fn compute_k_core_bz(&self, mmap: u8) -> Result<String, Error> {
+    pub fn compute_k_core_bz(&self, mmap: u8) -> Result<String, Box<dyn std::error::Error>> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
 
         if node_count == 0 {
-            return Err(Error::new(
+            return Err(Box::new(Error::new(
                 std::io::ErrorKind::Other,
                 "Graph has no vertices",
-            ));
+            )));
         }
 
         let threads = self.thread_count.max(1) as usize;
@@ -1724,7 +1721,7 @@ where
         ));
 
         // initialize degree and bins count vecs
-        let mut bins: Vec<usize> = match thread::scope(|scope| {
+        let mut bins: Vec<usize> = match thread::scope(|scope|-> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
             let mut bins = vec![0usize; 20];
             let mut max_vecs = vec![];
 
@@ -1736,34 +1733,53 @@ where
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
 
-                max_vecs.push(scope.spawn(move |_| {
+                max_vecs.push(scope.spawn(move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
                     let mut bins: Vec<usize> = vec![0; 20];
                     for v in start..end {
                         let deg = index_ptr.get(v + 1) - index_ptr.get(v);
-                        if deg > 16 as usize {
-                            panic!("error degree({}) == {} but theoretical max is 16 => {} {} {}", v, deg, index_ptr.get(v + 1), index_ptr.get(v + 1), index_ptr.get(v));
+                        if deg > u8::MAX as usize {
+                            return Err(Box::new(Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "error degree({v}) == {deg} but theoretical max is 16"
+                                    )));
                         }
                         bins[deg] += 1;
                         *deg_arr.get_mut(v) = deg as u8;
                     }
-                    bins
+                    Ok(bins)
                 }));
             }
             // join results
-            max_vecs.into_iter().for_each(|v| {
-                let bin = match v.join() {
-                    Ok(i) => i,
-                    Err(e) => panic!("error getting thread bin count {:?}", e),
+            for b in max_vecs {
+                let joined_bins = match b.join() {
+                    Ok(b) => b,
+                    Err(_) => {
+                            return Err(Box::new(Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "error joining degree bins"
+                                    )));
+                    }
+
                 };
-                for (degree, count) in bin.iter().enumerate() {
-                    bins[degree] += *count;
+                for bin in joined_bins.into_iter() {
+                    for (degree, count) in bin.iter().enumerate() {
+                        bins[degree] += *count;
+                    }
                 }
-            });
-            bins
+            }
+            Ok(bins)
         }) {
             Ok(i) => {
                 degree.flush()?;
-                i
+                match i {
+                    Ok(i) => i,
+                    Err(_e) => {
+                        return Err(Box::new(Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    stringify!(_e)
+                                    )));
+                    }
+                }
             }
             _ => panic!("error calculating max degree"),
         };
@@ -1777,7 +1793,13 @@ where
                 bins.resize(deg + 1, 0);
                 deg
             }
-            None => panic!("error couldn't get max degree"),
+            None => {
+                return Err(Box::new(Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "error couldn't get max degree"
+                            ))
+                    );
+            }
         };
 
         // prefix sum to get starting indices for each degree
@@ -2988,10 +3010,11 @@ where
 /// for every node of the graph.
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct HyperBallN<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: GraphMemoryMap<EdgeType, Edge>,
     /// vec with a hyperloglog++ counter for each node of the graph
-    counters: Vec<HyperLogLogPlus<usize, RandomState>>,
+    counters: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>,
+    // counters: AbstractedProceduralMemoryMut<HyperLogLogPlus<usize, RandomState>>,
     /// cached slice of the sum of the distances for each node of the graph
     distances: AbstractedProceduralMemoryMut<f64>,
     /// cached slice of the sum of the inverse of the distances for each node of the graph
@@ -3003,21 +3026,7 @@ pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 }
 
 #[allow(dead_code)]
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug)]
-enum Centrality {
-    HYPERBALL,
-    HARMONIC,
-    NHARMONIC,
-    NCHARMONIC,
-    CLOSENESS,
-    NCLOSENESS,
-    NCCLOSENESS,
-    LIN,
-}
-
-#[allow(dead_code)]
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType, Edge> {
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType, Edge> {
     const DEAFULT_PRECISION: u8 = 8;
     const MIN_PRECISION: u8 = 4;
     const MAX_PRECISION: u8 = 18;
@@ -3028,11 +3037,17 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
         graph: &GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<
         (
+            AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>,
             AbstractedProceduralMemoryMut<f64>,
             AbstractedProceduralMemoryMut<f64>,
         ),
         Box<dyn std::error::Error>,
     > {
+        let c_fn = cache_file_name(
+            graph.graph_cache.graph_filename.clone(),
+            FileType::HyperBall,
+            None,
+        )?;
         let d_fn = cache_file_name(
             graph.graph_cache.graph_filename.clone(),
             FileType::HyperBallDistances,
@@ -3043,10 +3058,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             FileType::HyperBallInvDistances,
             None,
         )?;
+        let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>::abst_mem_mut(c_fn, graph.size() - 1, true)?;
         let distances = SharedSliceMut::<f64>::abst_mem_mut(d_fn, graph.size() - 1, true)?;
         let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(i_fn, graph.size() - 1, true)?;
 
-        Ok((distances, inverse_distances))
+        Ok((counters, distances, inverse_distances))
     }
 
     fn centrality_cache_file_name(
@@ -3110,24 +3126,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             )));
         }
         // make sure presision is within bounds
-        let precision = precision.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
+        let precision = precision.map_or(HyperBallN::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
             p.clamp(
-                HyperBall::<EdgeType, Edge>::MIN_PRECISION,
-                HyperBall::<EdgeType, Edge>::MAX_PRECISION,
+                HyperBallN::<EdgeType, Edge>::MIN_PRECISION,
+                HyperBallN::<EdgeType, Edge>::MAX_PRECISION,
             )
         });
         // make sure depth is within bounds
-        let max_t = max_depth.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
-            std::cmp::max(HyperBall::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
+        let max_t = max_depth.map_or(HyperBallN::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
+            std::cmp::max(HyperBallN::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
         });
         // init cached vecs for distances and inverse distances accumulation
-        let (mut distances, mut inverse_distances) = Self::init_cache(&graph)?;
+        let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(&graph)?;
         // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
-        let mut counters: Vec<HyperLogLogPlus<usize, RandomState>> =
-            Vec::with_capacity(graph.size() - 1);
         (0..node_count).for_each(|u| {
-            counters.push(HyperLogLogPlus::new(precision, RandomState::new()).unwrap());
-            counters[u].insert(&u);
+            *counters.get_mut(u) = hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8>::default();
+            counters.get_mut(u).insert(u);
             *distances.get_mut(u) = 0f64;
             *inverse_distances.get_mut(u) = 0f64;
         });
@@ -3153,23 +3167,31 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             self.graph.graph_cache.graph_filename.clone(),
             Centrality::HYPERBALL,
         )?;
-        let mut swap = SharedSliceMut::<HyperLogLogPlus<usize, RandomState>>::abst_mem_mut(
+        let mut swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8>>::abst_mem_mut(
             s_fn,
             self.graph.size() - 1,
             true,
         )?;
-        let mut counters = self.counters.as_mut_slice();
+        let mut counters = self.counters.shared_slice();
+        let mut counters = counters.mut_slice(0, self.graph.size() - 1).unwrap();
         let mut swap = swap.mut_slice(0, self.graph.size() - 1).unwrap();
         loop {
             println!("HyperBall run {t_f64}");
+
+            let mem_info = sys_info::mem_info()?;
+            println!("Available memory {t_f64}: {} MB", mem_info.avail);
+            println!("Total memory     {t_f64}: {} MB", mem_info.free);
+            println!("Free memory      {t_f64}: {} MB", mem_info.free);
+            println!("Used memory      {t_f64}: {} MB", mem_info.total - mem_info.free);
+
             for u in 0..self.graph.size() - 1 {
-                let mut a: HyperLogLogPlus<usize, RandomState> = counters[u].clone();
-                let prev_count = a.count();
+                let mut a: hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = counters[u];
+                let prev_count = a.estimate_cardinality();
                 for v in self.graph.neighbours(u)? {
-                    a.merge(&counters[v.dest()].clone())?;
+                    a |= counters[v.dest()];
                 }
-                let curr_count = a.count();
-                let count_diff = curr_count - prev_count;
+                let curr_count = a.estimate_cardinality();
+                let count_diff = (curr_count - prev_count) as f64;
                 *self.distances.get_mut(u) += t_f64 * count_diff;
                 // FIXME: check if this is correct
                 if count_diff > 0f64 {
@@ -3190,19 +3212,18 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
             inv_t_f64 = 1. / t_f64;
         }
 
-        let counts = self
-            .counters
-            .clone()
-            .iter_mut()
-            .map(|c| c.count())
-            .collect::<Vec<f64>>();
-        println!("{:?}\nThese were counts", counts);
-        println!(
-            "{:?}\nThese were distances",
-            self.distances
-                .shared_slice()
-                .slice(0, self.graph.size() - 1)
-        );
+        // let counts = self
+        //     .counters.shared_slice()
+        //     .slice(0, self.graph.size() - 1).to_owned().into_iter()
+        //     .map(|c| c.estimate_cardinality())
+        //     .collect::<Vec<f64>>();
+        // println!("{:?}\nThese were counts", counts);
+        // println!(
+        //     "{:?}\nThese were distances",
+        //     self.distances
+        //         .shared_slice()
+        //         .slice(0, self.graph.size() - 1)
+        // );
         Ok(())
     }
 
@@ -3239,7 +3260,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
                     *mem.get_mut(idx) = 0.;
                 } else {
                     *mem.get_mut(idx) =
-                        (self.counters[idx].count() - 1.) / *self.distances.get(idx);
+                        (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.) / *self.distances.get(idx);
                 }
             }
         } else {
@@ -3251,9 +3272,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
                 }
             }
         }
-        if let Some(s) = mem.slice(0, node_count) {
-            println!("{:?}\n centrality", s);
-        }
+        // if let Some(s) = mem.slice(0, node_count) {
+        //     println!("{:?}\n centrality", s);
+        // }
         Ok(mem)
     }
 
@@ -3288,7 +3309,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
                     *mem.get_mut(idx) = 0.;
                 } else {
                     *mem.get_mut(idx) =
-                        *self.inverse_distances.get(idx) / (self.counters[idx].count() - 1.);
+                        *self.inverse_distances.get(idx) / (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.);
                 }
             }
         } else {
@@ -3300,9 +3321,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
                 }
             }
         }
-        if let Some(s) = mem.slice(0, node_count) {
-            println!("{:?}\n centrality", s);
-        }
+        // if let Some(s) = mem.slice(0, node_count) {
+        //     println!("{:?}\n centrality", s);
+        // }
         Ok(mem)
     }
 
@@ -3320,15 +3341,373 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType,
                 *mem.get_mut(idx) = 1.;
             } else {
                 *mem.get_mut(idx) =
-                    (self.counters[idx].count() - 1.).powi(2) / *self.distances.get(idx);
+                    (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.).powi(2) / *self.distances.get(idx);
             }
         }
-        if let Some(s) = mem.slice(0, node_count) {
-            println!("{:?}\n centrality", s);
-        }
+        // if let Some(s) = mem.slice(0, node_count) {
+        //     println!("{:?}\n centrality", s);
+        // }
         Ok(mem)
     }
 }
+
+#[allow(dead_code)]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug)]
+enum Centrality {
+    HYPERBALL,
+    HARMONIC,
+    NHARMONIC,
+    NCHARMONIC,
+    CLOSENESS,
+    NCLOSENESS,
+    NCCLOSENESS,
+    LIN,
+}
+
+
+
+
+/// De Bruijn graphs are simmetric graphs, so running the HyperBall algorithm on the graph is
+/// the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph
+/// to obtain the necessary components to determine the closeness, harmonic and Lin's centralities
+/// for every node of the graph.
+// #[allow(dead_code)]
+// #[derive(Debug)]
+// pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+//     graph: GraphMemoryMap<EdgeType, Edge>,
+//     /// vec with a hyperloglog++ counter for each node of the graph
+//     counters: Vec<HyperLogLogPlus<usize, RandomState>>,
+//     /// cached slice of the sum of the distances for each node of the graph
+//     distances: AbstractedProceduralMemoryMut<f64>,
+//     /// cached slice of the sum of the inverse of the distances for each node of the graph
+//     inverse_distances: AbstractedProceduralMemoryMut<f64>,
+//     /// precision of the hyperloglog++ counters used in the algorithm
+//     precision: u8,
+//     /// maximum number of iteration --- default is 128, max is 1024 (arbitrarily large values)
+//     max_t: usize,
+// }
+//
+// #[allow(dead_code)]
+// impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType, Edge> {
+//     const DEAFULT_PRECISION: u8 = 8;
+//     const MIN_PRECISION: u8 = 4;
+//     const MAX_PRECISION: u8 = 18;
+//     const DEAFULT_MAX_DEPTH: usize = 100;
+//     const MAX_MAX_DEPTH: usize = 1024;
+//
+//     fn init_cache(
+//         graph: &GraphMemoryMap<EdgeType, Edge>,
+//     ) -> Result<
+//         (
+//             AbstractedProceduralMemoryMut<f64>,
+//             AbstractedProceduralMemoryMut<f64>,
+//         ),
+//         Box<dyn std::error::Error>,
+//     > {
+//         let d_fn = cache_file_name(
+//             graph.graph_cache.graph_filename.clone(),
+//             FileType::HyperBallDistances,
+//             None,
+//         )?;
+//         let i_fn = cache_file_name(
+//             graph.graph_cache.graph_filename.clone(),
+//             FileType::HyperBallInvDistances,
+//             None,
+//         )?;
+//         let distances = SharedSliceMut::<f64>::abst_mem_mut(d_fn, graph.size() - 1, true)?;
+//         let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(i_fn, graph.size() - 1, true)?;
+//
+//         Ok((distances, inverse_distances))
+//     }
+//
+//     fn centrality_cache_file_name(
+//         template_fn: String,
+//         centrality: Centrality,
+//     ) -> Result<String, Box<dyn std::error::Error>> {
+//         match centrality {
+//             Centrality::HYPERBALL => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallHarmonicCentrality,
+//                 Some(0),
+//             )?),
+//             Centrality::CLOSENESS => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallClosenessCentrality,
+//                 Some(0),
+//             )?),
+//             Centrality::NCLOSENESS => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallClosenessCentrality,
+//                 Some(1),
+//             )?),
+//             Centrality::NCCLOSENESS => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallClosenessCentrality,
+//                 Some(2),
+//             )?),
+//             Centrality::HARMONIC => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallHarmonicCentrality,
+//                 Some(0),
+//             )?),
+//             Centrality::NHARMONIC => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallHarmonicCentrality,
+//                 Some(1),
+//             )?),
+//             Centrality::NCHARMONIC => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallHarmonicCentrality,
+//                 Some(1),
+//             )?),
+//             Centrality::LIN => Ok(cache_file_name(
+//                 template_fn,
+//                 FileType::HyperBallLinCentrality,
+//                 None,
+//             )?),
+//         }
+//     }
+//
+//     pub fn new(
+//         graph: GraphMemoryMap<EdgeType, Edge>,
+//         precision: Option<u8>,
+//         max_depth: Option<usize>,
+//     ) -> Result<Self, Box<dyn std::error::Error>> {
+//         let (node_count, overflow) = graph.size().overflowing_sub(1);
+//         if overflow || node_count == 0 {
+//             return Err(Box::new(Error::new(
+//                 std::io::ErrorKind::Other,
+//                 "error initiating hyperball graph is empty",
+//             )));
+//         }
+//         // make sure presision is within bounds
+//         let precision = precision.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
+//             p.clamp(
+//                 HyperBall::<EdgeType, Edge>::MIN_PRECISION,
+//                 HyperBall::<EdgeType, Edge>::MAX_PRECISION,
+//             )
+//         });
+//         // make sure depth is within bounds
+//         let max_t = max_depth.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
+//             std::cmp::max(HyperBall::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
+//         });
+//         // init cached vecs for distances and inverse distances accumulation
+//         let (mut distances, mut inverse_distances) = Self::init_cache(&graph)?;
+//         // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
+//         let mut counters: Vec<HyperLogLogPlus<usize, RandomState>> =
+//             Vec::with_capacity(graph.size() - 1);
+//         (0..node_count).for_each(|u| {
+//             counters.push(HyperLogLogPlus::new(precision, RandomState::new()).unwrap());
+//             counters[u].insert(&u);
+//             *distances.get_mut(u) = 0f64;
+//             *inverse_distances.get_mut(u) = 0f64;
+//         });
+//
+//         let mut hyper_ball = Self {
+//             graph,
+//             counters,
+//             distances,
+//             inverse_distances,
+//             precision,
+//             max_t,
+//         };
+//         hyper_ball.compute()?;
+//
+//         Ok(hyper_ball)
+//     }
+//
+//     fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+//         let mut t_f64: f64 = 1.; // first iteration is initialization
+//         let mut inv_t_f64: f64 = 1.; // first iteration is initialization
+//         let mut changed = 0;
+//         let s_fn = Self::centrality_cache_file_name(
+//             self.graph.graph_cache.graph_filename.clone(),
+//             Centrality::HYPERBALL,
+//         )?;
+//         let mut swap = SharedSliceMut::<HyperLogLogPlus<usize, RandomState>>::abst_mem_mut(
+//             s_fn,
+//             self.graph.size() - 1,
+//             true,
+//         )?;
+//         let mut counters = self.counters.as_mut_slice();
+//         let mut swap = swap.mut_slice(0, self.graph.size() - 1).unwrap();
+//         loop {
+//             println!("HyperBall run {t_f64}");
+//
+//             let mem_info = sys_info::mem_info()?;
+//             println!("Available memory {t_f64}: {} MB", mem_info.avail);
+//             println!("Total memory     {t_f64}: {} MB", mem_info.free);
+//             println!("Free memory      {t_f64}: {} MB", mem_info.free);
+//             println!("Used memory      {t_f64}: {} MB", mem_info.total - mem_info.free);
+//
+//             for u in 0..self.graph.size() - 1 {
+//                 let mut a: HyperLogLogPlus<usize, RandomState> = counters[u].clone();
+//                 let prev_count = a.count();
+//                 for v in self.graph.neighbours(u)? {
+//                     a.merge(&counters[v.dest()].clone())?;
+//                 }
+//                 let curr_count = a.count();
+//                 let count_diff = curr_count - prev_count;
+//                 *self.distances.get_mut(u) += t_f64 * count_diff;
+//                 // FIXME: check if this is correct
+//                 if count_diff > 0f64 {
+//                     *self.inverse_distances.get_mut(u) += inv_t_f64 * count_diff;
+//                 }
+//                 swap[u] = a;
+//                 if curr_count != prev_count {
+//                     changed += 1;
+//                 }
+//             }
+//             println!("Changed {changed}");
+//             if changed == 0 {
+//                 break;
+//             }
+//             swap = std::mem::replace(&mut counters, swap);
+//             changed = 0;
+//             t_f64 += 1.;
+//             inv_t_f64 = 1. / t_f64;
+//         }
+//
+//         let counts = self
+//             .counters
+//             .clone()
+//             .iter_mut()
+//             .map(|c| c.count())
+//             .collect::<Vec<f64>>();
+//         println!("{:?}\nThese were counts", counts);
+//         println!(
+//             "{:?}\nThese were distances",
+//             self.distances
+//                 .shared_slice()
+//                 .slice(0, self.graph.size() - 1)
+//         );
+//         Ok(())
+//     }
+//
+//     // FIXME: for all centralities: what happens when the distance is not  normal and: is zero, or
+//     // is infinite
+//     pub fn compute_closeness_centrality(
+//         &mut self,
+//         normalize: Option<bool>,
+//     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+//         let node_count = self.graph.size() - 1; // |V|
+//         let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
+//         let c_fn = Self::centrality_cache_file_name(
+//             self.graph.graph_cache.graph_filename.clone(),
+//             normalize.map_or(Centrality::CLOSENESS, |local| {
+//                 if local {
+//                     Centrality::NCCLOSENESS
+//                 } else {
+//                     Centrality::NCLOSENESS
+//                 }
+//             }),
+//         )?;
+//         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+//         if normalize.is_none() {
+//             for idx in 0..node_count {
+//                 if !self.distances.get(idx).is_normal() {
+//                     *mem.get_mut(idx) = 0.;
+//                 } else {
+//                     *mem.get_mut(idx) = 1. / *self.distances.get(idx);
+//                 }
+//             }
+//         } else if normalize.unwrap() {
+//             for idx in 0..node_count {
+//                 if !self.distances.get(idx).is_normal() {
+//                     *mem.get_mut(idx) = 0.;
+//                 } else {
+//                     *mem.get_mut(idx) =
+//                         (self.counters[idx].count() - 1.) / *self.distances.get(idx);
+//                 }
+//             }
+//         } else {
+//             for idx in 0..node_count {
+//                 if !self.distances.get(idx).is_normal() {
+//                     *mem.get_mut(idx) = 0.;
+//                 } else {
+//                     *mem.get_mut(idx) = node_count_f64 / *self.distances.get(idx);
+//                 }
+//             }
+//         }
+//         if let Some(s) = mem.slice(0, node_count) {
+//             println!("{:?}\n centrality", s);
+//         }
+//         Ok(mem)
+//     }
+//
+//     pub fn compute_harmonic_centrality(
+//         &mut self,
+//         normalize: Option<bool>,
+//     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+//         let node_count = self.graph.size() - 1; // |V|
+//         let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
+//         let c_fn = Self::centrality_cache_file_name(
+//             self.graph.graph_cache.graph_filename.clone(),
+//             normalize.map_or(Centrality::HARMONIC, |local| {
+//                 if local {
+//                     Centrality::NCHARMONIC
+//                 } else {
+//                     Centrality::NHARMONIC
+//                 }
+//             }),
+//         )?;
+//         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+//         if normalize.is_none() {
+//             for idx in 0..node_count {
+//                 if !self.distances.get(idx).is_normal() {
+//                     *mem.get_mut(idx) = 0.;
+//                 } else {
+//                     *mem.get_mut(idx) = *self.inverse_distances.get(idx);
+//                 }
+//             }
+//         } else if normalize.unwrap() {
+//             for idx in 0..node_count {
+//                 if !self.distances.get(idx).is_normal() {
+//                     *mem.get_mut(idx) = 0.;
+//                 } else {
+//                     *mem.get_mut(idx) =
+//                         *self.inverse_distances.get(idx) / (self.counters[idx].count() - 1.);
+//                 }
+//             }
+//         } else {
+//             for idx in 0..node_count {
+//                 if !self.distances.get(idx).is_normal() {
+//                     *mem.get_mut(idx) = 0.;
+//                 } else {
+//                     *mem.get_mut(idx) = *self.inverse_distances.get(idx) / node_count_f64;
+//                 }
+//             }
+//         }
+//         if let Some(s) = mem.slice(0, node_count) {
+//             println!("{:?}\n centrality", s);
+//         }
+//         Ok(mem)
+//     }
+//
+//     pub fn compute_lins_centrality(
+//         &mut self,
+//     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+//         let node_count = self.graph.size() - 1; // |V|
+//         let c_fn = Self::centrality_cache_file_name(
+//             self.graph.graph_cache.graph_filename.clone(),
+//             Centrality::LIN,
+//         )?;
+//         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+//         for idx in 0..node_count {
+//             if !self.distances.get(idx).is_normal() {
+//                 *mem.get_mut(idx) = 1.;
+//             } else {
+//                 *mem.get_mut(idx) =
+//                     (self.counters[idx].count() - 1.).powi(2) / *self.distances.get(idx);
+//             }
+//         }
+//         if let Some(s) = mem.slice(0, node_count) {
+//             println!("{:?}\n centrality", s);
+//         }
+//         Ok(mem)
+//     }
+// }
 
 #[derive(Debug, Clone)]
 pub struct NeighbourIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -3733,10 +4112,12 @@ impl FindDisjointSetsEulerTrails {
     }
 }
 
+#[allow(dead_code)]
 pub struct EulerTrail<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: GraphMemoryMap<EdgeType, Edge>,
 }
 
+#[allow(dead_code)]
 impl<EdgeType, Edge> EulerTrail<EdgeType, Edge>
 where
     EdgeType: GenericEdgeType,
@@ -4403,6 +4784,8 @@ pub struct HKRelax<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub eps: f64,
     pub seed: Vec<usize>,
     pub psis: Vec<f64>,
+    pub target_size: Option<usize>,
+    pub target_volume: Option<usize>,
 }
 
 impl<EdgeType, Edge> HKRelax<EdgeType, Edge>
@@ -4565,6 +4948,8 @@ where
         t: f64,
         eps: f64,
         seed: Vec<usize>,
+        target_size: Option<usize>,
+        target_volume: Option<usize>,
     ) -> Result<Self, Error> {
         let () = match Self::evaluate_params(graph.clone(), t, eps, seed.clone()) {
             Ok(_) => {}
@@ -4584,13 +4969,15 @@ where
             eps,
             seed,
             psis: Self::compute_psis(n, t)?,
+            target_size,
+            target_volume,
         })
     }
 
     /// receives an instance of HKRelax for a given graph and parameters for t, epsilon and a
     /// vector of seed nodes.
     /// returns an instance of HKRelax for the same graph with parameters adjusted accordingly
-    pub fn _adjust_parameters(&self, t: f64, eps: f64, seed: Vec<usize>) -> Result<Self, Error> {
+    pub fn _adjust_parameters(&self, t: f64, eps: f64, seed: Vec<usize>, target_size: Option<usize>, target_volume: Option<usize>) -> Result<Self, Error> {
         let () = match Self::evaluate_params(self.graph.clone(), t, eps, seed.clone()) {
             Ok(_) => {}
             Err(e) => {
@@ -4608,6 +4995,8 @@ where
             eps,
             seed,
             psis: Self::compute_psis(n, t)?,
+            target_size,
+            target_volume,
         })
     }
 
@@ -4737,7 +5126,7 @@ where
 
         match self
             .graph
-            .sweep_cut_over_diffusion_vector_by_conductance(h.as_mut())
+            .sweep_cut_over_diffusion_vector_by_conductance(h.as_mut(), self.target_size, self.target_volume)
         {
             Ok(c) => {
                 println!(
@@ -5000,7 +5389,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<EdgeT
 
         match self
             .graph
-            .sweep_cut_over_diffusion_vector_by_conductance(p.as_mut())
+            .sweep_cut_over_diffusion_vector_by_conductance(p.as_mut(), Some(self.target_size), Some(self.target_vol))
         {
             Ok(c) => {
                 println!(
