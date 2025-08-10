@@ -1875,11 +1875,11 @@ where
         // as 𝑣, rather than waiting for the next subround. We refer to this
         // process as a local search at 𝑣.
 
-        // --- Core-peeling loop (Liu et al. algorithm) ---
+        // --- core-peeling loop (Liu et al. algorithm) ---
         // for nodes with degree <= 16 no bucketing is used
         let mut k = 1u8;
-        let mut remaining = node_count - total_dead_nodes; // number of vertices not yet peeled
-        let remaining_global = Arc::new(AtomicUsize::new(remaining));
+        // number of vertices not yet peeled
+        let remaining_global = Arc::new(AtomicUsize::new(node_count - total_dead_nodes));
         let frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.shared_slice());
         let swap = SharedQueueMut::<usize>::from_shared_slice(swap.shared_slice());
         let synchronize = Arc::new(Barrier::new(threads));
@@ -1907,8 +1907,7 @@ where
 
                     while remaining_global.load(Ordering::Relaxed) > 0 {
                         synchronize.wait();
-                        // Build initial frontier = all vertices with degree <= k that are still active.
-                        // FIXME:: Abstract frontier to RAM with fallback mmap
+                        // build initial frontier = all vertices with degree <= k that are still active.
                         for u in start..end {
                             if alive.get(u).load(Ordering::Relaxed)
                                 && degree.get(u).load(Ordering::Relaxed) <= k
@@ -1928,20 +1927,11 @@ where
                             continue;
                         }
 
-                        // Process subrounds for current k: peel all vertices with degree k.
-                        // FIXME: stack struct isn't being shared by threads, only memory location
+                        // process subrounds for current k: peel all vertices with degree k.
                         while !frontier.is_empty() {
                             if tid == 0 {
                                 remaining_global.fetch_sub(frontier.len(), Ordering::Relaxed);
                             }
-                            remaining = match remaining.overflowing_sub(frontier.len()) {
-                                (r, false) => r,
-                                _ => panic!(
-                                    "error overflow when decreasing remaining ({} - {})",
-                                    remaining,
-                                    frontier.len()
-                                ),
-                            };
 
                             let chunk_size = frontier.len().div_ceil(threads);
                             let start = std::cmp::min(tid * chunk_size, frontier.len());
