@@ -251,11 +251,11 @@ fn parse_bytes_mmaped<
     graph_mmaped.compute_k_core_liu_et_al(5)?;
     println!("k-core liu et al {:?}", time.elapsed());
     let time = Instant::now();
-    graph_mmaped.pkt(7)?;
-    println!("pkt {:?}", time.elapsed());
-    let time = Instant::now();
     graph_mmaped.k_truss_decomposition(7)?;
     println!("k-truss decomposition {:?}", time.elapsed());
+    let time = Instant::now();
+    graph_mmaped.pkt(7)?;
+    println!("pkt {:?}", time.elapsed());
     let time = Instant::now();
     let hk_relax = HKRelax::new(
         graph_mmaped.clone(),

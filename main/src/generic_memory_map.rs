@@ -1835,18 +1835,23 @@ where
 
                 dead_nodes.push(s.spawn(move |_| -> usize {
                     let mut dead_nodes = 0;
+
                     for u in start..end {
+
                         let deg_u = index_ptr.get(u + 1) - index_ptr.get(u);
                         *degree.get_mut(u) = AtomicU8::new(deg_u as u8);
+
                         if deg_u == 0 {
-                            *alive.get_mut(u) = AtomicBool::new(false);
                             dead_nodes += 1;
+                            *alive.get_mut(u) = AtomicBool::new(false);
                         } else {
                             *alive.get_mut(u) = AtomicBool::new(true);
                         }
                     }
+
                     dead_nodes
                 }));
+
             }
             let mut total_dead_nodes = 0;
             dead_nodes
@@ -1874,6 +1879,7 @@ where
         // for nodes with degree <= 16 no bucketing is used
         let mut k = 1u8;
         let mut remaining = node_count - total_dead_nodes; // number of vertices not yet peeled
+        let remaining_global = Arc::new(AtomicUsize::new(remaining));
         let frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.shared_slice());
         let swap = SharedQueueMut::<usize>::from_shared_slice(swap.shared_slice());
         let synchronize = Arc::new(Barrier::new(threads));
@@ -1889,14 +1895,17 @@ where
                 let mut frontier = frontier.clone();
                 let mut swap = swap.clone();
 
+                let remaining_global = Arc::clone(&remaining_global);
                 let synchronize = Arc::clone(&synchronize);
 
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
 
                 s.spawn(move |_| {
-                    let _local_queue: Vec<usize> = vec![];
-                    while remaining > 0 {
+                    let mut local_stack: Vec<usize> = vec![];
+                    let max_len = 256;
+
+                    while remaining_global.load(Ordering::Relaxed) > 0 {
                         synchronize.wait();
                         // Build initial frontier = all vertices with degree <= k that are still active.
                         // FIXME:: Abstract frontier to RAM with fallback mmap
@@ -1922,6 +1931,9 @@ where
                         // Process subrounds for current k: peel all vertices with degree k.
                         // FIXME: stack struct isn't being shared by threads, only memory location
                         while !frontier.is_empty() {
+                            if tid == 0 {
+                                remaining_global.fetch_sub(frontier.len(), Ordering::Relaxed);
+                            }
                             remaining = match remaining.overflowing_sub(frontier.len()) {
                                 (r, false) => r,
                                 _ => panic!(
@@ -1937,11 +1949,11 @@ where
 
                             if let Some(chunk) = frontier.slice(start, end) {
                                 for i in 0..end - start {
-                                    // Set coreness and decrement neighbour degrees
+                                    // set coreness and decrement neighbour degrees
                                     let u = *chunk.get(i);
                                     *coreness.get_mut(u) = k;
-                                    // For each neighbor v of u:
 
+                                    // for each neighbor v of u:
                                     for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
                                         let v = graph_ptr.get(idx).dest();
                                         if let Ok(old) = degree.get(v).fetch_update(
@@ -1962,11 +1974,54 @@ where
                                                 let life =
                                                     alive.get(v).swap(false, Ordering::Relaxed);
                                                 if life {
-                                                    let _ = swap.push(v);
+                                                    if local_stack.len() < max_len {
+                                                        local_stack.push(v);
+                                                    } else {
+                                                        let _ = swap.push(v);
+                                                    }
                                                 }
                                             }
                                         }
                                     }
+
+                                    // process local stack
+                                    let mut read_in_stack: usize = 0;
+                                    while let Some(u) = local_stack.pop() {
+                                        // set coreness and decrement neighbour degrees
+                                        read_in_stack += 1;
+                                        *coreness.get_mut(u) = k;
+
+                                        for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                                            let v = graph_ptr.get(idx).dest();
+                                            if let Ok(old) = degree.get(v).fetch_update(
+                                                Ordering::Relaxed,
+                                                Ordering::Relaxed,
+                                                |x| {
+                                                    if x > k {
+                                                        match x.overflowing_sub(1) {
+                                                            (r, false) => Some(r),
+                                                            _ => None,
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                },
+                                            ) {
+                                                if old == k + 1 {
+                                                    let life =
+                                                        alive.get(v).swap(false, Ordering::Relaxed);
+                                                    if life {
+                                                        if local_stack.len() < max_len {
+                                                            local_stack.push(v);
+                                                        } else {
+                                                            let _ = swap.push(v);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    remaining_global.fetch_sub(read_in_stack, Ordering::Relaxed);
                                 }
                             }
 
