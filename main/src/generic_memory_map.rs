@@ -1647,6 +1647,9 @@ where
             }
         };
 
+        // println!()
+        let dead_nodes = bins[0];
+
         // prefix sum to get starting indices for each degree
         let mut start_index = 0usize;
         for i in bins.iter_mut() {
@@ -1759,6 +1762,7 @@ where
                     r[i] += v[i];
                 }
             }
+            r[0] += dead_nodes as u64;
             println!("k-cores {:?}", r);
         })
         .unwrap();
@@ -2039,6 +2043,7 @@ where
                     r[i] += v[i];
                 }
             }
+            r[0] += total_dead_nodes as u64;
             println!("k-cores {:?}", r);
         })
         .unwrap();
@@ -2236,7 +2241,9 @@ where
                     };
                 }
             }
+
             let mut neighbours = HashMap::<usize, usize>::new();
+
             while let Some((u, offset)) = stack.pop() {
                 tris.get(offset).store(0, Ordering::Relaxed);
                 let v = graph_ptr.get(offset).dest();
@@ -2640,6 +2647,7 @@ where
                     }
                     total_duds.fetch_add(i, Ordering::SeqCst);
                     i = 0;
+
                     synchronize.wait();
 
                     todo = match todo.overflowing_sub(total_duds.load(Ordering::Relaxed)) {
@@ -3005,6 +3013,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<Edge
             precision,
             max_t,
         };
+
         hyper_ball.compute()?;
 
         Ok(hyper_ball)
@@ -3019,45 +3028,43 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<Edge
             self.graph.graph_cache.graph_filename.clone(),
             Centrality::HYPERBALL,
         )?;
-        let mut swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8>>::abst_mem_mut(
+        let mut swap = SharedSliceMut::<HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8>>::abst_mem_mut(
             s_fn,
             self.graph.size() - 1,
             true,
         )?;
+
         let mut counters = self.counters.shared_slice();
         let mut counters = counters.mut_slice(0, self.graph.size() - 1).unwrap();
         let mut swap = swap.mut_slice(0, self.graph.size() - 1).unwrap();
+
         loop {
-            println!("HyperBall run {t_f64}");
-
-            let mem_info = sys_info::mem_info()?;
-            println!("Available memory {t_f64}: {} MB", mem_info.avail);
-            println!("Total memory     {t_f64}: {} MB", mem_info.free);
-            println!("Free memory      {t_f64}: {} MB", mem_info.free);
-            println!("Used memory      {t_f64}: {} MB", mem_info.total - mem_info.free);
-
             for u in 0..self.graph.size() - 1 {
-                let mut a: hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = counters[u];
+
+                let mut a: HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = counters[u];
+
                 let prev_count = a.estimate_cardinality();
+
                 for v in self.graph.neighbours(u)? {
                     a |= counters[v.dest()];
                 }
+
                 let curr_count = a.estimate_cardinality();
                 let count_diff = (curr_count - prev_count) as f64;
-                *self.distances.get_mut(u) += t_f64 * count_diff;
-                // FIXME: check if this is correct
+
                 if count_diff > 0f64 {
+                    *self.distances.get_mut(u) += t_f64 * count_diff;
                     *self.inverse_distances.get_mut(u) += inv_t_f64 * count_diff;
-                }
-                swap[u] = a;
-                if curr_count != prev_count {
                     changed += 1;
                 }
+
+                swap[u] = a;
             }
-            println!("Changed {changed}");
+
             if changed == 0 {
                 break;
             }
+
             swap = std::mem::replace(&mut counters, swap);
             changed = 0;
             t_f64 += 1.;
@@ -3069,7 +3076,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<Edge
 
     fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;
-        let threads = self.graph.thread_count as usize;
+        let threads = self.graph.thread_count.max(1) as usize;
         let node_load = node_count.div_ceil(threads);
 
         let global_changed = Arc::new(AtomicUsize::new(0));
@@ -3113,13 +3120,13 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<Edge
 
                         for u in begin..end {
 
-                            let mut a: hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = *counters.get_mut(u);
+                            let mut a: HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = *counters.get_mut(u);
+
                             let prev_count = a.estimate_cardinality();
 
                             let u_n = match graph.neighbours(u) {
                                 Ok(n) => n,
                                 Err(_) => {
-                                    println!("error");
                                     return Err(Box::new(Error::new(
                                                 std::io::ErrorKind::NotFound,
                                                 format!("error HyperBall couldn't find neighbours of {u}")
@@ -3134,21 +3141,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<Edge
                             let curr_count = a.estimate_cardinality();
                             let count_diff = (curr_count - prev_count) as f64;
 
-                            *distance_accumulator.get_mut(u) += t_f64 * count_diff;
 
                             if count_diff > 0f64 {
+                                // update accumulators
+                                *distance_accumulator.get_mut(u) += t_f64 * count_diff;
                                 *inverse_distance_accumulator.get_mut(u) += inv_t_f64 * count_diff;
-                            } else if count_diff == 0f64 {
+                                // update local changed count
                                 changed += 1;
                             }
 
                             *swap.get_mut(u) = a;
                         }
 
-                        global_changed.fetch_add(changed, Ordering::SeqCst);
+                        global_changed.fetch_add(changed, Ordering::Relaxed);
                         synchronize.wait();
 
-                        if changed != 0 || global_changed.load(Ordering::SeqCst) != 0 {
+                        if changed == 0 && global_changed.load(Ordering::Relaxed) == 0 {
                             break Ok(());
                         }
 
@@ -3157,10 +3165,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<Edge
                         t_f64 += 1.;
                         inv_t_f64 = 1. / t_f64;
 
+                        synchronize.wait();
+
                         if i == 0 {
                             global_changed.store(0, Ordering::Relaxed);
                         }
-                        synchronize.wait();
                     }
                 });
             }

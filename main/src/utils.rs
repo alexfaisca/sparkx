@@ -134,54 +134,7 @@ pub fn cache_file_name(
     sequence_number: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename)?;
-
-    // construct filename: e.g., index_12345.mmap
-    let new_filename = match target_type {
-        FileType::Edges => format!("{}_{}.{}", "edges", id, "mmap"),
-        FileType::Index => format!("{}_{}.{}", "index", id, "mmap"),
-        FileType::Fst => format!("{}_{}.{}", "fst", id, "fst"),
-        FileType::EulerTmp => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "mmap"),
-            None => format!("{}_{}.{}", "eulertmp", id, "mmap"),
-        },
-        FileType::EulerPath => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
-            None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
-        },
-        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
-        FileType::KmerSortedTmp => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
-        },
-        FileType::KCore => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kcore_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kcores", id, "mmap"),
-        },
-        FileType::KTruss => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "ktruss_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "ktruss", id, "mmap"),
-        },
-        FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
-        FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
-        FileType::HyperBall => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "hyperball", i, id, "tmp"),
-            None => format!("{}_{}.{}", "hyperball", id, "mmap"),
-        },
-        FileType::HyperBallDistances => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
-        FileType::HyperBallInvDistances => {
-            format!("{}_{}.{}", "hyperball_inv_distances", id, "mmap")
-        }
-        FileType::HyperBallClosenessCentrality => {
-            format!("{}_{}.{}", "hyperball_closeness", id, "mmap")
-        }
-        FileType::HyperBallHarmonicCentrality => {
-            format!("{}_{}.{}", "hyperball_harmonic", id, "mmap")
-        }
-        FileType::HyperBallLinCentrality => {
-            format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
-        }
-    };
-
+    let new_filename = file_name_from_id_and_sequence_for_type(target_type, id, sequence_number);
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
 }
 
@@ -235,6 +188,58 @@ pub enum FileType {
     HyperBallClosenessCentrality,
     HyperBallHarmonicCentrality,
     HyperBallLinCentrality,
+}
+
+pub fn file_name_from_id_and_sequence_for_type(
+    target_type: FileType,
+    id: String,
+    sequence_number: Option<usize>,
+) -> String {
+    match target_type {
+        FileType::Edges => format!("{}_{}.{}", "edges", id, "mmap"),
+        FileType::Index => format!("{}_{}.{}", "index", id, "mmap"),
+        FileType::Fst => format!("{}_{}.{}", "fst", id, "fst"),
+        FileType::EulerTmp => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "mmap"),
+            None => format!("{}_{}.{}", "eulertmp", id, "mmap"),
+        },
+        FileType::EulerPath => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
+            None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
+        },
+        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
+        FileType::KmerSortedTmp => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
+            None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
+        },
+        FileType::KCore => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "kcore_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "kcores", id, "mmap"),
+        },
+        FileType::KTruss => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "ktruss_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "ktruss", id, "mmap"),
+        },
+        FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
+        FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
+        FileType::HyperBall => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "hyperball", i, id, "tmp"),
+            None => format!("{}_{}.{}", "hyperball", id, "mmap"),
+        },
+        FileType::HyperBallDistances => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
+        FileType::HyperBallInvDistances => {
+            format!("{}_{}.{}", "hyperball_inv_distances", id, "mmap")
+        }
+        FileType::HyperBallClosenessCentrality => {
+            format!("{}_{}.{}", "hyperball_closeness", id, "mmap")
+        }
+        FileType::HyperBallHarmonicCentrality => {
+            format!("{}_{}.{}", "hyperball_harmonic", id, "mmap")
+        }
+        FileType::HyperBallLinCentrality => {
+            format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
+        }
+    }
 }
 
 impl std::fmt::Display for FileType {
