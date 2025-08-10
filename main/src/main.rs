@@ -3,6 +3,7 @@ mod abstract_graph;
 mod generic_edge;
 mod generic_memory_map;
 mod shared_slice;
+mod utils;
 
 #[allow(unused_imports)]
 use generic_edge::{
@@ -12,9 +13,10 @@ use generic_edge::{
 
 use clap::Parser;
 use core::panic;
-use generic_memory_map::HyperBallN;
 #[allow(unused_imports)]
-use generic_memory_map::{ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax};
+use generic_memory_map::{
+    ApproxDirHKPR, EulerTrail, GraphCache, GraphMemoryMap, HKRelax, HyperBallInner,
+};
 use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
@@ -208,7 +210,7 @@ fn parse_bytes_mmaped<
     // Lookup test
     /* ********************************************************************************* */
     let time = Instant::now();
-    let mut hyper = HyperBallN::new(graph_mmaped.clone(), Some(6), Some(70))?;
+    let mut hyper = HyperBallInner::new(graph_mmaped.clone(), Some(6), Some(70))?;
     println!("hyperball {:?}", time.elapsed());
     let time = Instant::now();
     hyper.compute_harmonic_centrality(None)?;
@@ -238,10 +240,10 @@ fn parse_bytes_mmaped<
     // End of lookup test
     /* ********************************************************************************* */
 
-    let time = Instant::now();
-    let euler_trail = EulerTrail::new(graph_mmaped.clone())?;
-    euler_trail.find_eulerian_cycle(2)?;
-    println!("euler trail built {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let euler_trail = EulerTrail::new(graph_mmaped.clone())?;
+    // euler_trail.find_eulerian_cycle(2)?;
+    // println!("euler trail built {:?}", time.elapsed());
     let time = Instant::now();
     graph_mmaped.compute_k_core_bz(5)?;
     println!("k-core bz {:?}", time.elapsed());

@@ -3,22 +3,21 @@ use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedQueueMut, SharedSlice,
     SharedSliceMut,
 };
+use crate::utils::{cache_file_name, cleanup_cache, graph_id_from_cache_file_name, id_for_subgraph_export, FileType, CACHE_DIR, TEMP_CACHE_DIR};
+
 use core::{f64, fmt, panic};
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
-use glob::glob;
-use hyperloglogplus::HyperLogLogPlus;
+#[allow(unused_imports)]
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use ordered_float::{Float, OrderedFloat};
 use rand::Rng;
 use rand_distr::{Distribution, Poisson};
-use regex::Regex;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
 use std::{
-    any::type_name,
-    collections::{HashMap, HashSet, VecDeque, hash_map::RandomState},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Debug,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Error, Read, Write},
@@ -34,171 +33,8 @@ use std::{
 use zerocopy::*;
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
-
-static CACHE_DIR: &str = "./cache/";
-static TEMP_CACHE_DIR: &str = "./cache/tmp/";
 static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
-static DEFAULT_BATCH_SIZE: usize = 10_000usize;
 
-fn _type_of<T>(_: T) -> &'static str {
-    type_name::<T>()
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-enum FileType {
-    Edges,
-    Index,
-    Fst,
-    EulerPath,
-    EulerTmp,
-    KmerTmp,
-    KmerSortedTmp,
-    KCore,
-    KTruss,
-    EdgeReciprocal,
-    EdgeOver,
-    /// doesn't yield a filename --- yields id to be used in filename
-    ExportGraphMask,
-    HyperBall,
-    HyperBallDistances,
-    HyperBallInvDistances,
-    HyperBallClosenessCentrality,
-    HyperBallHarmonicCentrality,
-    HyperBallLinCentrality,
-}
-
-fn cache_file_name(
-    original_filename: String,
-    target_type: FileType,
-    sequence_number: Option<usize>,
-) -> Result<String, Error> {
-    let path = Path::new(original_filename.as_str());
-
-    let file_name = match path.file_name() {
-        Some(i) => match i.to_str() {
-            Some(i) => i,
-            None => {
-                return Err(Error::new(
-                    std::io::ErrorKind::Other,
-                    "error invalid file path --- empty path",
-                ));
-            }
-        },
-        None => {
-            return Err(Error::new(
-                std::io::ErrorKind::Other,
-                "error invalid file path --- path not found",
-            ));
-        }
-    };
-    let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
-
-    // extract id from filename
-    let re = match Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).ok() {
-        Some(i) => i,
-        None => {
-            return Err(Error::new(
-                std::io::ErrorKind::Other,
-                "error analyzing file name (regex failed)",
-            ));
-        }
-    };
-    let caps = match re.captures(file_name) {
-        Some(i) => i,
-        None => {
-            return Err(Error::new(
-                std::io::ErrorKind::Other,
-                "error capturing filnr name (regex captures failed: fail point 1)",
-            ));
-        }
-    };
-    let id = match caps.get(1) {
-        Some(i) => i.as_str(),
-        None => {
-            return Err(Error::new(
-                std::io::ErrorKind::Other,
-                "error capturing filne name (regex capture failed: fail point 2)",
-            ));
-        }
-    };
-
-    // construct filename: e.g., index_12345.mmap
-    let new_filename = match target_type {
-        FileType::Edges => format!("{}_{}.{}", "edges", id, "mmap"),
-        FileType::Index => format!("{}_{}.{}", "index", id, "mmap"),
-        FileType::Fst => format!("{}_{}.{}", "fst", id, "fst"),
-        FileType::EulerTmp => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "mmap"),
-            None => format!("{}_{}.{}", "eulertmp", id, "mmap"),
-        },
-        FileType::EulerPath => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
-            None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
-        },
-        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
-        FileType::KmerSortedTmp => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
-        },
-        FileType::KCore => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kcore_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kcores", id, "mmap"),
-        },
-        FileType::KTruss => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "ktruss_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "ktruss", id, "mmap"),
-        },
-        FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
-        FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
-        // this isn't a filename --- it's an id to be used in filenames
-        FileType::ExportGraphMask => match sequence_number {
-            Some(i) => {
-                return Ok(format!("{}_{}_{}", "masked_export", i, id));
-            }
-            None => {
-                return Ok(format!("{}_{}", "masked_export", id));
-            }
-        },
-        FileType::HyperBall => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "hyperball", i, id, "tmp"),
-            None => format!("{}_{}.{}", "hyperball", id, "mmap"),
-        },
-        FileType::HyperBallDistances => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
-        FileType::HyperBallInvDistances => {
-            format!("{}_{}.{}", "hyperball_inv_distances", id, "mmap")
-        }
-        FileType::HyperBallClosenessCentrality => {
-            format!("{}_{}.{}", "hyperball_closeness", id, "mmap")
-        }
-        FileType::HyperBallHarmonicCentrality => {
-            format!("{}_{}.{}", "hyperball_harmonic", id, "mmap")
-        }
-        FileType::HyperBallLinCentrality => {
-            format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
-        }
-    };
-
-    Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
-}
-
-fn cleanup_cache() -> Result<(), Error> {
-    match glob((CACHE_DIR.to_string() + "/*.tmp").as_str()) {
-        Ok(entries) => {
-            for entry in entries {
-                match entry {
-                    Ok(path) => std::fs::remove_file(path)?,
-                    Err(e) => panic!("{}", e),
-                };
-            }
-            Ok(())
-        }
-        Err(e) => Err(Error::new(
-            std::io::ErrorKind::Other,
-            format!("error cleaning up cache: {e}"),
-        )),
-    }
-}
 
 pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub graph_file: Arc<File>,
@@ -391,7 +227,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
             // convert each line to str temporarily && cut off ">" char
             let line_str = std::str::from_utf8(&line[1..])?;
-            
+
             let sequence_line = match lines.next() {
                 None => { 
                     return Err(Box::new(Error::new(
@@ -480,7 +316,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             index_bytes: 0,
             readonly: false,
             batch: if let Some(n) = batch {
-                Some(std::cmp::max(n, DEFAULT_BATCH_SIZE))
+                Some(std::cmp::max(n, Self::DEFAULT_BATCHING_SIZE))
             } else {
                 batch
             },
@@ -528,26 +364,33 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     }
 
     fn process_chunk(&mut self, input: &[u8], end: usize, batch_num: Arc<AtomicUsize>, batch_size: usize, in_fst: fn(usize) -> bool) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-        let mut batches = Vec::new();
-        let mut current_batch: Vec<(&[u8], u64)> = Vec::with_capacity(batch_size);
         let mut begin_pos = 0;
         let mut end_pos = 0;
+
+        let mut current_batch: Vec<(&[u8], u64)> = Vec::with_capacity(batch_size);
+        let mut batches = Vec::new();
 
         // find beginning of next node entry (marked by '>')
         while begin_pos < input.len() && input[begin_pos] != b'>' {
             begin_pos += 1;
         }
+
         // find beginning of next node entry after end of slice (marked by '\n>')
         while end + end_pos + 1 < input.len() && input[end + end_pos + 1] != b'>' {
             end_pos += 1;
         }
+
         // truncate input
         let input = &input[begin_pos..=std::cmp::min(input.len() - 1, end + end_pos)];
+
         let mut lines = input.split(|&b| b == b'\n');
+
         while let Some(line) = lines.next() {
+
             if line.is_empty() {
                 continue;
             }
+
             // convert each line to str temporarily && cut off ">" char
             let line_str = std::str::from_utf8(&line[1..])?;
             let label_line = match lines.next() {
@@ -560,20 +403,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 },
                 Some(i) => i,
             };
-            // FIXME: is converting label to String really necessary?
-            // convert each line to str temporarily -> cut off ">" char 
+
             let line_str = std::str::from_utf8(&line[1..line.len()])?;
             let node = line_str.split_whitespace().collect::<Vec<&str>>();
             let id: usize = node.first().unwrap().parse()?;
-            // convert each line to str temporarily && cut off ">" char
+
             if in_fst(id) {
+
                 current_batch.push((label_line, id as u64));
+
                 if current_batch.len() >= batch_size {
                     println!("wrote {}", batch_num.load(Ordering::Relaxed));
                     let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
                     batches.push(tmp_fst);
                     current_batch.clear();
                 }
+
             }
         }
 
@@ -582,6 +427,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
             batches.push(tmp_fst);
         }
+
         Ok(batches)
 }
 
@@ -599,19 +445,26 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         ))
                 );
         }
-        let file_size = input.len();
-        let chunk_size = file_size / threads;
+
+        let input_size = input.len();
+        let chunk_size = input_size / threads;
         let batch_num = Arc::new(AtomicUsize::new(0));
+
         let shared_slice = SharedSlice::from_slice(input);
+
         let batches = thread::scope(|s| -> Result<Vec<PathBuf>,  Box<dyn std::error::Error>> {
             let mut batches = Vec::new();
             for i in 0..threads {
-                let start = std::cmp::min(i * chunk_size, file_size);
-                let end = std::cmp::min(start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE, file_size);
-                let batch_num = Arc::clone(&batch_num);
                 let mut cache = self.clone();
 
+                let batch_num = Arc::clone(&batch_num);
+
+                let start = std::cmp::min(i * chunk_size, input_size);
+                let end = std::cmp::min(start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE, input_size);
+
+
                 let thread_handle = s.spawn(move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+
                     let input = match shared_slice.slice(start, end) {
                         Some(slice) => slice,
                         None => {
@@ -619,25 +472,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                                         std::io::ErrorKind::InvalidData,
                                         "error occured while chunking input in slices"
                                         ))
-                            )}
+                            );
+                        }
                     };
+
                     match cache.process_chunk(input, chunk_size, batch_num, batch_size, in_fst) {
                         Ok(b) => Ok(b),
                         Err(e) => {
-                            eprintln!("error {i} {e}");
                             Err(Box::new(Error::new(
                                         std::io::ErrorKind::InvalidData,
                                         format!("error occured while batching fst build in parallel: {e}")
                                         ))
-                            )}
+                            )
+                        }
                     }
+
                 });
-    
-                let mem_info = sys_info::mem_info()?;
-                println!("Available memory {i}: {} MB", mem_info.avail);
-                println!("Total memory     {i}: {} MB", mem_info.free);
-                println!("Free memory      {i}: {} MB", mem_info.free);
-                println!("Used memory      {i}: {} MB", mem_info.total - mem_info.free);
 
                 batches.push(thread_handle);
             }
@@ -673,17 +523,19 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             Ok(b)
         }).unwrap()?;
 
-        println!("num batches {}", batches.len());
         // if graph cache was used to build a graph then the graph's fst 
         //  holds kmer_filename open, hence, it must be removed so that the new fst may 
         //  be built 
         std::fs::remove_file(self.kmer_filename.clone())?;
+
         // Now merge all batch FSTs into option 
         self.merge_fsts(&batches)?;
+
         // Cleanup temp batch files 
         for batch_file in batches {
             let _ = std::fs::remove_file(batch_file);
         }
+
         Ok(())
     }
 
@@ -727,6 +579,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// )?;
     /// ```
     ///
+    #[deprecated]
     fn fst_from_ggcat_bytes(
         &mut self,
         input: &[u8],
@@ -736,16 +589,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // this assumes UTF-8 but avoids full conversion
 
         let mut batch_num: usize = 0usize;
-        let mut batches = Vec::new();
+
         let mut current_batch: Vec<(&[u8], u64)> = Vec::with_capacity(batch_size);
+        let mut batches = Vec::new();
 
         let mut lines = input.split(|&b| b == b'\n');
-        let mem_info = sys_info::mem_info()?;
-
-        println!("Available memory: {} MB", mem_info.avail);
-        println!("Total memory    : {} MB", mem_info.free);
-        println!("Free memory     : {} MB", mem_info.free);
-        println!("Used memory     : {} MB", mem_info.total - mem_info.free);
 
         while let Some(line) = lines.next() {
             if line.is_empty() {
@@ -764,14 +612,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 },
                 Some(i) => i,
             };
-            // FIXME: is converting label to String really necessary?
-            // convert each line to str temporarily -> cut off ">" char 
+
             let line = std::str::from_utf8(&line[1..])?;
             let node = line.split_whitespace().collect::<Vec<&str>>();
             let id: usize = node.first().unwrap().parse()?;
 
             if in_fst(id) {
-                // FIXME: redundant slicing for the whole range
                 current_batch.push((sequence_line, id as u64));
                 if current_batch.len() >= batch_size {
                     let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num)?;
@@ -781,12 +627,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 }
             }
         }
-    
-        let mem_info = sys_info::mem_info()?;
-        println!("Available memory: {} MB", mem_info.avail);
-        println!("Total memory    : {} MB", mem_info.free);
-        println!("Free memory     : {} MB", mem_info.free);
-        println!("Used memory     : {} MB", mem_info.total - mem_info.free);
 
         // Process the last batch if not empty
         if !current_batch.is_empty() {
@@ -825,13 +665,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
  
         let input = Self::read_input_file(path)?;
-        // self.parallel_fst_from_ggcat_bytes(input.as_slice(), batching, in_fst, num_cpus::get_physical())?;
-        self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
-    let mem_info = sys_info::mem_info()?;
-    println!("Available memory: {} MB", mem_info.avail);
-    println!("Total memory    : {} MB", mem_info.free);
-    println!("Free memory     : {} MB", mem_info.free);
-    println!("Used memory     : {} MB", mem_info.total - mem_info.free);
+        // FIXME: Out Of Memory
+        self.parallel_fst_from_ggcat_bytes(input.as_slice(), batching, in_fst, num_cpus::get_physical())?;
+        // self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
+        //
         Ok(())
     }
 
@@ -1221,6 +1058,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
+    #[inline]
+    pub fn cache_id(&self) -> Result<String, Box<dyn std::error::Error>> {
+        graph_id_from_cache_file_name(self.graph_filename.clone())
+    }
+
     pub fn cleanup_cache(&self) -> Result<(), Error> {
         cleanup_cache()
     }
@@ -1265,6 +1107,10 @@ where
             std::io::ErrorKind::InvalidData,
             "error graph cache must be readonly to be memmapped",
         )))
+    }
+
+    pub fn graph_id(&self) -> Result<String, Box<dyn std::error::Error>> {
+        self.graph_cache.cache_id()
     }
 
     #[inline(always)]
@@ -1592,9 +1438,8 @@ where
         let mut kmer_stream = self.kmers.stream();
         let id = match identifier {
             Some(id) => id,
-            None => cache_file_name(
-                self.graph_cache.graph_filename.clone(),
-                FileType::ExportGraphMask,
+            None => id_for_subgraph_export(
+                self.graph_id()?,
                 Some(self.clone().get_exports_add_one()? as usize),
             )?,
         };
@@ -1678,7 +1523,7 @@ where
         Ok(graph)
     }
 
-    fn init_procedural_memory_bz(&self, mmap: u8) -> Result<ProceduralMemoryBZ, Error> {
+    fn init_procedural_memory_bz(&self, mmap: u8) -> Result<ProceduralMemoryBZ, Box<dyn std::error::Error>> {
         let node_count = self.size() - 1;
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -1924,7 +1769,7 @@ where
         Ok(output_filename)
     }
 
-    fn init_procedural_memory_liu_et_al(&self, mmap: u8) -> Result<ProceduralMemoryLiuEtAL, Error> {
+    fn init_procedural_memory_liu_et_al(&self, mmap: u8) -> Result<ProceduralMemoryLiuEtAL, Box<dyn std::error::Error>> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
 
@@ -1946,15 +1791,15 @@ where
         Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
     }
 
-    pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Error> {
+    pub fn compute_k_core_liu_et_al(&self, mmap: u8) -> Result<String, Box<dyn std::error::Error>> {
         let node_count = self.size() - 1;
         let edge_count = self.width();
 
         if node_count == 0 {
-            return Err(Error::new(
+            return Err(Box::new(Error::new(
                 std::io::ErrorKind::Other,
                 "Graph has no vertices",
-            ));
+            )));
         }
 
         let threads = self.thread_count.max(1) as usize;
@@ -2206,7 +2051,7 @@ where
     fn init_procedural_memory_k_truss_decomposition(
         &self,
         mmap: u8,
-    ) -> Result<ProceduralMemoryKTDecomposition, Error> {
+    ) -> Result<ProceduralMemoryKTDecomposition, Box<dyn std::error::Error>> {
         let edge_count = self.width();
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -2349,15 +2194,24 @@ where
                     stack.push((u, edge_offset));
                     idx = match idx.overflowing_add(1) {
                         (r, false) => r,
-                        _ => panic!("error overflow adding to idx ({} + {})", idx, 1),
+                        _ => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("error overflow add to idx ({idx} + 1)",)
+                                        ))
+                                );
+                        }
                     };
                 } else if t_count == 0 {
                     edge_count = match edge_count.overflowing_sub(1) {
                         (r, false) => r,
-                        _ => panic!(
-                            "error overflow subtracting to edge_count ({} - {})",
-                            edge_count, 1
-                        ),
+                        _ => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("error overflow add to edge_count ({edge_count} + 1)",)
+                                        ))
+                                );
+                        }
                     };
                     let e_index = *edge_index.get(edge_count);
                     let r_index = *edges.get(edge_offset);
@@ -2372,7 +2226,13 @@ where
                 } else {
                     idx = match idx.overflowing_add(1) {
                         (r, false) => r,
-                        _ => panic!("error overflow adding to idx ({} + {})", idx, 1),
+                        _ => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("error overflow add to idx ({idx} + 1)",)
+                                        ))
+                                );
+                        }
                     };
                 }
             }
@@ -2416,11 +2276,11 @@ where
         println!("k-trussness {:?}", test);
         edge_trussness.flush()?;
 
-        Ok(cache_file_name(
+        cache_file_name(
             self.graph_cache.graph_filename.clone(),
             FileType::KTruss,
             None,
-        )?)
+        )
     }
 
     fn init_procedural_memory_build_reciprocal(
@@ -2430,7 +2290,7 @@ where
             AbstractedProceduralMemoryMut<usize>,
             AbstractedProceduralMemoryMut<usize>,
         ),
-        Error,
+        Box<dyn std::error::Error>,
     > {
         let edge_count = self.width();
         let node_count = self.size() - 1;
@@ -2452,7 +2312,7 @@ where
             AbstractedProceduralMemoryMut<usize>,
             AbstractedProceduralMemoryMut<usize>,
         ),
-        Error,
+        Box<dyn std::error::Error>,
     > {
         let node_count = self.size() - 1;
         let edge_count = self.width();
@@ -2575,7 +2435,7 @@ where
         Ok(er?)
     }
 
-    fn get_edge_dest_id_over_source(&self) -> Result<AbstractedProceduralMemory<usize>, Error> {
+    fn get_edge_dest_id_over_source(&self) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let fn_template = self.graph_cache.graph_filename.clone();
         let eo_fn = cache_file_name(fn_template.clone(), FileType::EdgeOver, None)?;
         let dud = Vec::new();
@@ -2599,10 +2459,10 @@ where
                 }
             }
         };
-        eo
+        Ok(eo?)
     }
 
-    fn init_procedural_memory_pkt(&self, mmap: u8) -> Result<ProceduralMemoryPKT, Error> {
+    fn init_procedural_memory_pkt(&self, mmap: u8) -> Result<ProceduralMemoryPKT, Box<dyn std::error::Error>> {
         let edge_count = self.width();
 
         let template_fn = self.graph_cache.graph_filename.clone();
@@ -2992,11 +2852,11 @@ where
         })
         .unwrap();
 
-        Ok(cache_file_name(
+        cache_file_name(
             self.graph_cache.graph_filename.clone(),
             FileType::KTruss,
             None,
-        )?)
+        )
     }
 
     pub fn cleanup_cache(&self) -> Result<(), Error> {
@@ -3010,7 +2870,7 @@ where
 /// for every node of the graph.
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct HyperBallN<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct HyperBallInner<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: GraphMemoryMap<EdgeType, Edge>,
     /// vec with a hyperloglog++ counter for each node of the graph
     counters: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>,
@@ -3026,23 +2886,14 @@ pub struct HyperBallN<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 }
 
 #[allow(dead_code)]
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType, Edge> {
+impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallInner<EdgeType, Edge> {
     const DEAFULT_PRECISION: u8 = 8;
     const MIN_PRECISION: u8 = 4;
     const MAX_PRECISION: u8 = 18;
     const DEAFULT_MAX_DEPTH: usize = 100;
     const MAX_MAX_DEPTH: usize = 1024;
 
-    fn init_cache(
-        graph: &GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>,
-            AbstractedProceduralMemoryMut<f64>,
-            AbstractedProceduralMemoryMut<f64>,
-        ),
-        Box<dyn std::error::Error>,
-    > {
+    fn init_cache(graph: &GraphMemoryMap<EdgeType, Edge>) -> Result<ProceduralMemoryHB, Box<dyn std::error::Error>> {
         let c_fn = cache_file_name(
             graph.graph_cache.graph_filename.clone(),
             FileType::HyperBall,
@@ -3126,15 +2977,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
             )));
         }
         // make sure presision is within bounds
-        let precision = precision.map_or(HyperBallN::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
+        let precision = precision.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
             p.clamp(
-                HyperBallN::<EdgeType, Edge>::MIN_PRECISION,
-                HyperBallN::<EdgeType, Edge>::MAX_PRECISION,
+                HyperBallInner::<EdgeType, Edge>::MIN_PRECISION,
+                HyperBallInner::<EdgeType, Edge>::MAX_PRECISION,
             )
         });
         // make sure depth is within bounds
-        let max_t = max_depth.map_or(HyperBallN::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
-            std::cmp::max(HyperBallN::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
+        let max_t = max_depth.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
+            std::cmp::max(HyperBallInner::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
         });
         // init cached vecs for distances and inverse distances accumulation
         let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(&graph)?;
@@ -3159,7 +3010,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
         Ok(hyper_ball)
     }
 
-    fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    #[deprecated]
+    fn _compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut t_f64: f64 = 1.; // first iteration is initialization
         let mut inv_t_f64: f64 = 1.; // first iteration is initialization
         let mut changed = 0;
@@ -3212,18 +3064,127 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
             inv_t_f64 = 1. / t_f64;
         }
 
-        // let counts = self
-        //     .counters.shared_slice()
-        //     .slice(0, self.graph.size() - 1).to_owned().into_iter()
-        //     .map(|c| c.estimate_cardinality())
-        //     .collect::<Vec<f64>>();
-        // println!("{:?}\nThese were counts", counts);
-        // println!(
-        //     "{:?}\nThese were distances",
-        //     self.distances
-        //         .shared_slice()
-        //         .slice(0, self.graph.size() - 1)
-        // );
+        Ok(())
+    }
+
+    fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1;
+        let threads = self.graph.thread_count as usize;
+        let node_load = node_count.div_ceil(threads);
+
+        let global_changed = Arc::new(AtomicUsize::new(0));
+        let synchronize = Arc::new(Barrier::new(threads));
+
+        let mut t_f64: f64 = 1.; // first iteration is initialization
+        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
+        let mut changed = 0;
+
+        let s_fn = Self::centrality_cache_file_name(
+            self.graph.graph_cache.graph_filename.clone(),
+            Centrality::HYPERBALL,
+        )?;
+        let swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8>>::abst_mem_mut(
+            s_fn,
+            self.graph.size() - 1,
+            true,
+        )?;
+
+        let counters = self.counters.shared_slice();
+        let swap = swap.shared_slice();
+
+        match thread::scope(|scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            for i in 0..threads {
+                let graph = self.graph.clone();
+
+                let mut counters = counters;
+                let mut swap = swap;
+                let mut distance_accumulator = self.distances.shared_slice();
+                let mut inverse_distance_accumulator = self.inverse_distances.shared_slice();
+
+                let global_changed = Arc::clone(&global_changed);
+                let synchronize = Arc::clone(&synchronize);
+
+                let begin = std::cmp::min(i * node_load, node_count);
+                let end = std::cmp::min(begin + node_load, node_count);
+                scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+
+                    loop {
+                        println!("HyperBall run {t_f64} (thread {i})");
+
+                        for u in begin..end {
+
+                            let mut a: hyperloglog_rs::prelude::HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = *counters.get_mut(u);
+                            let prev_count = a.estimate_cardinality();
+
+                            let u_n = match graph.neighbours(u) {
+                                Ok(n) => n,
+                                Err(_) => {
+                                    println!("error");
+                                    return Err(Box::new(Error::new(
+                                                std::io::ErrorKind::NotFound,
+                                                format!("error HyperBall couldn't find neighbours of {u}")
+                                                )));
+                                }
+                            };
+
+                            for v in u_n {
+                                a |= counters.get(v.dest());
+                            }
+
+                            let curr_count = a.estimate_cardinality();
+                            let count_diff = (curr_count - prev_count) as f64;
+
+                            *distance_accumulator.get_mut(u) += t_f64 * count_diff;
+
+                            if count_diff > 0f64 {
+                                *inverse_distance_accumulator.get_mut(u) += inv_t_f64 * count_diff;
+                            } else if count_diff == 0f64 {
+                                changed += 1;
+                            }
+
+                            *swap.get_mut(u) = a;
+                        }
+
+                        global_changed.fetch_add(changed, Ordering::SeqCst);
+                        synchronize.wait();
+
+                        if changed != 0 || global_changed.load(Ordering::SeqCst) != 0 {
+                            break Ok(());
+                        }
+
+                        swap = std::mem::replace(&mut counters, swap);
+                        changed = 0;
+                        t_f64 += 1.;
+                        inv_t_f64 = 1. / t_f64;
+
+                        if i == 0 {
+                            global_changed.store(0, Ordering::Relaxed);
+                        }
+                        synchronize.wait();
+                    }
+                });
+            }
+            Ok(())
+        })
+        .unwrap() {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Box::new(Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("error HyperBall: {e}")
+                            ))
+                    );
+            }
+
+        };
+        self.counters.flush()?;
+        cleanup_cache()?;
+
+        // for i in 0..node_count {
+        //     print!("\t|id: {i} ==> counter: {}|", self.counters.get(i).estimate_cardinality());
+        // }
+        // println!();
+
         Ok(())
     }
 
@@ -3235,6 +3196,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1; // |V|
         let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
+
         let c_fn = Self::centrality_cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             normalize.map_or(Centrality::CLOSENESS, |local| {
@@ -3246,6 +3208,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
             }),
         )?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+
+        // unnormalized
         if normalize.is_none() {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
@@ -3254,6 +3218,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
                     *mem.get_mut(idx) = 1. / *self.distances.get(idx);
                 }
             }
+        // normalized by number of reacheable nodes
         } else if normalize.unwrap() {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
@@ -3263,6 +3228,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
                         (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.) / *self.distances.get(idx);
                 }
             }
+        // normalized by node count
         } else {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
@@ -3284,6 +3250,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1; // |V|
         let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
+
         let c_fn = Self::centrality_cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             normalize.map_or(Centrality::HARMONIC, |local| {
@@ -3295,6 +3262,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
             }),
         )?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+
+        // unnormalized
         if normalize.is_none() {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
@@ -3303,6 +3272,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
                     *mem.get_mut(idx) = *self.inverse_distances.get(idx);
                 }
             }
+        // normalized by number of reacheable nodes
         } else if normalize.unwrap() {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
@@ -3312,6 +3282,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
                         *self.inverse_distances.get(idx) / (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.);
                 }
             }
+        // normalized by node count
         } else {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
@@ -3331,11 +3302,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBallN<EdgeType
         &mut self,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1; // |V|
+
         let c_fn = Self::centrality_cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             Centrality::LIN,
         )?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+
+        // lin's centrality is like a closeness centraility doubly normalized by number of
+        // reacheable nodes
         for idx in 0..node_count {
             if !self.distances.get(idx).is_normal() {
                 *mem.get_mut(idx) = 1.;
@@ -3364,350 +3339,6 @@ enum Centrality {
     NCCLOSENESS,
     LIN,
 }
-
-
-
-
-/// De Bruijn graphs are simmetric graphs, so running the HyperBall algorithm on the graph is
-/// the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph
-/// to obtain the necessary components to determine the closeness, harmonic and Lin's centralities
-/// for every node of the graph.
-// #[allow(dead_code)]
-// #[derive(Debug)]
-// pub struct HyperBall<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-//     graph: GraphMemoryMap<EdgeType, Edge>,
-//     /// vec with a hyperloglog++ counter for each node of the graph
-//     counters: Vec<HyperLogLogPlus<usize, RandomState>>,
-//     /// cached slice of the sum of the distances for each node of the graph
-//     distances: AbstractedProceduralMemoryMut<f64>,
-//     /// cached slice of the sum of the inverse of the distances for each node of the graph
-//     inverse_distances: AbstractedProceduralMemoryMut<f64>,
-//     /// precision of the hyperloglog++ counters used in the algorithm
-//     precision: u8,
-//     /// maximum number of iteration --- default is 128, max is 1024 (arbitrarily large values)
-//     max_t: usize,
-// }
-//
-// #[allow(dead_code)]
-// impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> HyperBall<EdgeType, Edge> {
-//     const DEAFULT_PRECISION: u8 = 8;
-//     const MIN_PRECISION: u8 = 4;
-//     const MAX_PRECISION: u8 = 18;
-//     const DEAFULT_MAX_DEPTH: usize = 100;
-//     const MAX_MAX_DEPTH: usize = 1024;
-//
-//     fn init_cache(
-//         graph: &GraphMemoryMap<EdgeType, Edge>,
-//     ) -> Result<
-//         (
-//             AbstractedProceduralMemoryMut<f64>,
-//             AbstractedProceduralMemoryMut<f64>,
-//         ),
-//         Box<dyn std::error::Error>,
-//     > {
-//         let d_fn = cache_file_name(
-//             graph.graph_cache.graph_filename.clone(),
-//             FileType::HyperBallDistances,
-//             None,
-//         )?;
-//         let i_fn = cache_file_name(
-//             graph.graph_cache.graph_filename.clone(),
-//             FileType::HyperBallInvDistances,
-//             None,
-//         )?;
-//         let distances = SharedSliceMut::<f64>::abst_mem_mut(d_fn, graph.size() - 1, true)?;
-//         let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(i_fn, graph.size() - 1, true)?;
-//
-//         Ok((distances, inverse_distances))
-//     }
-//
-//     fn centrality_cache_file_name(
-//         template_fn: String,
-//         centrality: Centrality,
-//     ) -> Result<String, Box<dyn std::error::Error>> {
-//         match centrality {
-//             Centrality::HYPERBALL => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallHarmonicCentrality,
-//                 Some(0),
-//             )?),
-//             Centrality::CLOSENESS => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallClosenessCentrality,
-//                 Some(0),
-//             )?),
-//             Centrality::NCLOSENESS => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallClosenessCentrality,
-//                 Some(1),
-//             )?),
-//             Centrality::NCCLOSENESS => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallClosenessCentrality,
-//                 Some(2),
-//             )?),
-//             Centrality::HARMONIC => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallHarmonicCentrality,
-//                 Some(0),
-//             )?),
-//             Centrality::NHARMONIC => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallHarmonicCentrality,
-//                 Some(1),
-//             )?),
-//             Centrality::NCHARMONIC => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallHarmonicCentrality,
-//                 Some(1),
-//             )?),
-//             Centrality::LIN => Ok(cache_file_name(
-//                 template_fn,
-//                 FileType::HyperBallLinCentrality,
-//                 None,
-//             )?),
-//         }
-//     }
-//
-//     pub fn new(
-//         graph: GraphMemoryMap<EdgeType, Edge>,
-//         precision: Option<u8>,
-//         max_depth: Option<usize>,
-//     ) -> Result<Self, Box<dyn std::error::Error>> {
-//         let (node_count, overflow) = graph.size().overflowing_sub(1);
-//         if overflow || node_count == 0 {
-//             return Err(Box::new(Error::new(
-//                 std::io::ErrorKind::Other,
-//                 "error initiating hyperball graph is empty",
-//             )));
-//         }
-//         // make sure presision is within bounds
-//         let precision = precision.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
-//             p.clamp(
-//                 HyperBall::<EdgeType, Edge>::MIN_PRECISION,
-//                 HyperBall::<EdgeType, Edge>::MAX_PRECISION,
-//             )
-//         });
-//         // make sure depth is within bounds
-//         let max_t = max_depth.map_or(HyperBall::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
-//             std::cmp::max(HyperBall::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
-//         });
-//         // init cached vecs for distances and inverse distances accumulation
-//         let (mut distances, mut inverse_distances) = Self::init_cache(&graph)?;
-//         // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
-//         let mut counters: Vec<HyperLogLogPlus<usize, RandomState>> =
-//             Vec::with_capacity(graph.size() - 1);
-//         (0..node_count).for_each(|u| {
-//             counters.push(HyperLogLogPlus::new(precision, RandomState::new()).unwrap());
-//             counters[u].insert(&u);
-//             *distances.get_mut(u) = 0f64;
-//             *inverse_distances.get_mut(u) = 0f64;
-//         });
-//
-//         let mut hyper_ball = Self {
-//             graph,
-//             counters,
-//             distances,
-//             inverse_distances,
-//             precision,
-//             max_t,
-//         };
-//         hyper_ball.compute()?;
-//
-//         Ok(hyper_ball)
-//     }
-//
-//     fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-//         let mut t_f64: f64 = 1.; // first iteration is initialization
-//         let mut inv_t_f64: f64 = 1.; // first iteration is initialization
-//         let mut changed = 0;
-//         let s_fn = Self::centrality_cache_file_name(
-//             self.graph.graph_cache.graph_filename.clone(),
-//             Centrality::HYPERBALL,
-//         )?;
-//         let mut swap = SharedSliceMut::<HyperLogLogPlus<usize, RandomState>>::abst_mem_mut(
-//             s_fn,
-//             self.graph.size() - 1,
-//             true,
-//         )?;
-//         let mut counters = self.counters.as_mut_slice();
-//         let mut swap = swap.mut_slice(0, self.graph.size() - 1).unwrap();
-//         loop {
-//             println!("HyperBall run {t_f64}");
-//
-//             let mem_info = sys_info::mem_info()?;
-//             println!("Available memory {t_f64}: {} MB", mem_info.avail);
-//             println!("Total memory     {t_f64}: {} MB", mem_info.free);
-//             println!("Free memory      {t_f64}: {} MB", mem_info.free);
-//             println!("Used memory      {t_f64}: {} MB", mem_info.total - mem_info.free);
-//
-//             for u in 0..self.graph.size() - 1 {
-//                 let mut a: HyperLogLogPlus<usize, RandomState> = counters[u].clone();
-//                 let prev_count = a.count();
-//                 for v in self.graph.neighbours(u)? {
-//                     a.merge(&counters[v.dest()].clone())?;
-//                 }
-//                 let curr_count = a.count();
-//                 let count_diff = curr_count - prev_count;
-//                 *self.distances.get_mut(u) += t_f64 * count_diff;
-//                 // FIXME: check if this is correct
-//                 if count_diff > 0f64 {
-//                     *self.inverse_distances.get_mut(u) += inv_t_f64 * count_diff;
-//                 }
-//                 swap[u] = a;
-//                 if curr_count != prev_count {
-//                     changed += 1;
-//                 }
-//             }
-//             println!("Changed {changed}");
-//             if changed == 0 {
-//                 break;
-//             }
-//             swap = std::mem::replace(&mut counters, swap);
-//             changed = 0;
-//             t_f64 += 1.;
-//             inv_t_f64 = 1. / t_f64;
-//         }
-//
-//         let counts = self
-//             .counters
-//             .clone()
-//             .iter_mut()
-//             .map(|c| c.count())
-//             .collect::<Vec<f64>>();
-//         println!("{:?}\nThese were counts", counts);
-//         println!(
-//             "{:?}\nThese were distances",
-//             self.distances
-//                 .shared_slice()
-//                 .slice(0, self.graph.size() - 1)
-//         );
-//         Ok(())
-//     }
-//
-//     // FIXME: for all centralities: what happens when the distance is not  normal and: is zero, or
-//     // is infinite
-//     pub fn compute_closeness_centrality(
-//         &mut self,
-//         normalize: Option<bool>,
-//     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-//         let node_count = self.graph.size() - 1; // |V|
-//         let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
-//         let c_fn = Self::centrality_cache_file_name(
-//             self.graph.graph_cache.graph_filename.clone(),
-//             normalize.map_or(Centrality::CLOSENESS, |local| {
-//                 if local {
-//                     Centrality::NCCLOSENESS
-//                 } else {
-//                     Centrality::NCLOSENESS
-//                 }
-//             }),
-//         )?;
-//         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
-//         if normalize.is_none() {
-//             for idx in 0..node_count {
-//                 if !self.distances.get(idx).is_normal() {
-//                     *mem.get_mut(idx) = 0.;
-//                 } else {
-//                     *mem.get_mut(idx) = 1. / *self.distances.get(idx);
-//                 }
-//             }
-//         } else if normalize.unwrap() {
-//             for idx in 0..node_count {
-//                 if !self.distances.get(idx).is_normal() {
-//                     *mem.get_mut(idx) = 0.;
-//                 } else {
-//                     *mem.get_mut(idx) =
-//                         (self.counters[idx].count() - 1.) / *self.distances.get(idx);
-//                 }
-//             }
-//         } else {
-//             for idx in 0..node_count {
-//                 if !self.distances.get(idx).is_normal() {
-//                     *mem.get_mut(idx) = 0.;
-//                 } else {
-//                     *mem.get_mut(idx) = node_count_f64 / *self.distances.get(idx);
-//                 }
-//             }
-//         }
-//         if let Some(s) = mem.slice(0, node_count) {
-//             println!("{:?}\n centrality", s);
-//         }
-//         Ok(mem)
-//     }
-//
-//     pub fn compute_harmonic_centrality(
-//         &mut self,
-//         normalize: Option<bool>,
-//     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-//         let node_count = self.graph.size() - 1; // |V|
-//         let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
-//         let c_fn = Self::centrality_cache_file_name(
-//             self.graph.graph_cache.graph_filename.clone(),
-//             normalize.map_or(Centrality::HARMONIC, |local| {
-//                 if local {
-//                     Centrality::NCHARMONIC
-//                 } else {
-//                     Centrality::NHARMONIC
-//                 }
-//             }),
-//         )?;
-//         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
-//         if normalize.is_none() {
-//             for idx in 0..node_count {
-//                 if !self.distances.get(idx).is_normal() {
-//                     *mem.get_mut(idx) = 0.;
-//                 } else {
-//                     *mem.get_mut(idx) = *self.inverse_distances.get(idx);
-//                 }
-//             }
-//         } else if normalize.unwrap() {
-//             for idx in 0..node_count {
-//                 if !self.distances.get(idx).is_normal() {
-//                     *mem.get_mut(idx) = 0.;
-//                 } else {
-//                     *mem.get_mut(idx) =
-//                         *self.inverse_distances.get(idx) / (self.counters[idx].count() - 1.);
-//                 }
-//             }
-//         } else {
-//             for idx in 0..node_count {
-//                 if !self.distances.get(idx).is_normal() {
-//                     *mem.get_mut(idx) = 0.;
-//                 } else {
-//                     *mem.get_mut(idx) = *self.inverse_distances.get(idx) / node_count_f64;
-//                 }
-//             }
-//         }
-//         if let Some(s) = mem.slice(0, node_count) {
-//             println!("{:?}\n centrality", s);
-//         }
-//         Ok(mem)
-//     }
-//
-//     pub fn compute_lins_centrality(
-//         &mut self,
-//     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-//         let node_count = self.graph.size() - 1; // |V|
-//         let c_fn = Self::centrality_cache_file_name(
-//             self.graph.graph_cache.graph_filename.clone(),
-//             Centrality::LIN,
-//         )?;
-//         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
-//         for idx in 0..node_count {
-//             if !self.distances.get(idx).is_normal() {
-//                 *mem.get_mut(idx) = 1.;
-//             } else {
-//                 *mem.get_mut(idx) =
-//                     (self.counters[idx].count() - 1.).powi(2) / *self.distances.get(idx);
-//             }
-//         }
-//         if let Some(s) = mem.slice(0, node_count) {
-//             println!("{:?}\n centrality", s);
-//         }
-//         Ok(mem)
-//     }
-// }
 
 #[derive(Debug, Clone)]
 pub struct NeighbourIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -3981,32 +3612,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
     }
 }
 
-impl fmt::Display for FileType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            FileType::Edges => "Edges",
-            FileType::Index => "Index",
-            FileType::Fst => "Fst",
-            FileType::EulerPath => "EulerPath",
-            FileType::EulerTmp => "EulerTmp",
-            FileType::KmerTmp => "KmerTmp",
-            FileType::KmerSortedTmp => "KmerSortedTmp",
-            FileType::KCore => "KCore",
-            FileType::KTruss => "KTruss",
-            FileType::EdgeReciprocal => "EdgeReciprocal",
-            FileType::EdgeOver => "EdgeOver",
-            FileType::ExportGraphMask => "GraphExport",
-            FileType::HyperBall => "HyperBall",
-            FileType::HyperBallDistances => "HyperBallDistances",
-            FileType::HyperBallInvDistances => "HyperBallInverseDistances",
-            FileType::HyperBallClosenessCentrality => "HyperBallClosenessCentrality",
-            FileType::HyperBallHarmonicCentrality => "HyperBallHarmonicCentrality",
-            FileType::HyperBallLinCentrality => "HyperBallLinCentrality",
-        };
-        write!(f, "{}", s)
-    }
-}
-
 impl fmt::Display for ApproxDirichletHeatKernelK {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
@@ -4049,6 +3654,12 @@ type ProceduralMemoryPKT = (
     AbstractedProceduralMemoryMut<bool>,
     AbstractedProceduralMemoryMut<bool>,
     AbstractedProceduralMemoryMut<AtomicU8>,
+);
+
+type ProceduralMemoryHB = (
+    AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>,
+    AbstractedProceduralMemoryMut<f64>,
+    AbstractedProceduralMemoryMut<f64>,
 );
 
 #[derive(Clone)]
@@ -4151,7 +3762,7 @@ where
     fn merge_euler_trails(
         &self,
         cycle_offsets: Vec<(usize, usize, usize)>,
-    ) -> Result<Vec<(u64, u64)>, Error> {
+    ) -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
         let mut trail_heads: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
         let mmap_fn = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
@@ -4322,7 +3933,7 @@ where
     fn _merge_euler_trails_no_mmap(
         &self,
         cycles: Mutex<Vec<Vec<usize>>>,
-    ) -> Result<Vec<(usize, usize)>, Error> {
+    ) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
         let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
         let cycles = cycles.into_inner().unwrap();
         cycles.iter().enumerate().for_each(|(idx, trail)| {
@@ -4468,7 +4079,7 @@ where
             AbstractedProceduralMemoryMut<AtomicUsize>,
             AbstractedProceduralMemoryMut<AtomicU8>,
         ),
-        Error,
+        Box<dyn std::error::Error>,
     > {
         let node_count = self.graph.size() - 1;
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
@@ -4513,7 +4124,7 @@ where
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Error> {
+    pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
         let node_count = match self.graph.size() - 1 {
             0 => panic!("Graph has no vertices"),
             i => i,
@@ -4645,7 +4256,7 @@ where
     /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn _find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(usize, usize)>, Error> {
+    pub fn _find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
         let node_count = match self.graph.size() - 1 {
             0 => panic!("Graph has no vertices"),
             i => i,

@@ -26,7 +26,6 @@ fst-bin = "0.4.3"
 tempfile = "3.20.0"
 bstr = "1.12.0"
 crossbeam-channel = "0.5.15"
-hyperloglogplus = { version = "0.4.1", features = ["const-loop"] }
 num_cpus = "1.17.0"
 sys-info = "0.9.1"
 hyperloglog-rs = "0.1.56"
