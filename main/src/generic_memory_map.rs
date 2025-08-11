@@ -1815,6 +1815,29 @@ where
         Ok(graph)
     }
 
+    pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
+        let mut graph = DiGraph::<(), ()>::new();
+        let node_count = self.size() - 1;
+
+        (0..node_count).for_each(|_| {
+            graph.add_node(());
+        });
+        (0..node_count)
+            .map(|u| match self.neighbours(u) {
+                Ok(neighbours_of_u) => (u, neighbours_of_u),
+                Err(e) => panic!(
+                    "while exporting petgraph `DiGraphMap`, error getting neighbours of {u}: {e}",
+                ),
+            })
+            .for_each(|(u, u_n)| {
+                u_n.for_each(|v| {
+                    graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), ());
+                });
+            });
+
+        Ok(graph)
+    }
+
 
     fn init_procedural_memory_build_reciprocal(
         &self,

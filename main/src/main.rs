@@ -1,4 +1,6 @@
+#[allow(unused_imports)]
 use tool::centralities::hyper_ball::*;
+#[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
 #[allow(unused_imports)]
 use tool::generic_edge::{
@@ -7,8 +9,11 @@ use tool::generic_edge::{
 };
 #[allow(unused_imports)]
 use tool::generic_memory_map::{GraphCache, GraphMemoryMap};
+#[allow(unused_imports)]
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
+#[allow(unused_imports)]
 use tool::k_truss::{burkhardt_et_al::*, pkt::*};
+#[allow(unused_imports)]
 use tool::trails::euler_trail::*;
 
 use clap::Parser;
@@ -32,7 +37,7 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
     name = "'The Tool'",
     version = "0.1",
     about = "Named 'The Tool'",
-    long_about = "Very pretentious name. I know... ('~') but a man has to make an impact for his dissertation. (T.T)\n The contents of this crate should be a good start though. :)"
+    long_about = "Very pretentious name. I know... ('~') but a man has to make an impression for his dissertation. (T.T)\n The contents of this crate should be a good start though. :)"
 )]
 struct ProgramArgs {
     /// enable debugging mode
@@ -206,74 +211,77 @@ fn parse_bytes_mmaped<
     /* ********************************************************************************* */
     // End of lookup test
     /* ********************************************************************************* */
-
+    //
     let time = Instant::now();
-    let euler_trail = EulerTrail::new(&graph_mmaped)?;
-    euler_trail.find_eulerian_cycle(2)?;
+    let _euler_trail = EulerTrail::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
     println!("euler trail built {:?}", time.elapsed());
-    let time = Instant::now();
-    let mut hyper = HyperBallInner::new(&graph_mmaped, Some(6), Some(70))?;
-    println!("hyperball {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_harmonic_centrality(None)?;
-    println!("centrality harmonic None {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_harmonic_centrality(Some(false))?;
-    println!("centrality harmonic false {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_harmonic_centrality(Some(true))?;
-    println!("centrality harmonic true {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_closeness_centrality(None)?;
-    println!("centrality closeness None {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_closeness_centrality(Some(false))?;
-    println!("centrality closeness false {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_closeness_centrality(Some(true))?;
-    println!("centrality closeness true {:?}", time.elapsed());
-    let time = Instant::now();
-    hyper.compute_lins_centrality()?;
-    println!("centrality lin {:?}", time.elapsed());
-    let time = Instant::now();
-    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    println!("k-core bz {:?}", time.elapsed());
-    let time = Instant::now();
-    let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    println!("k-core liu et al {:?}", time.elapsed());
-    let time = Instant::now();
-    let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
-    println!("k-truss decomposition {:?}", time.elapsed());
-    let time = Instant::now();
-    let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    println!("pkt {:?}", time.elapsed());
-    let time = Instant::now();
-    let hk_relax = HKRelax::new(
-        &graph_mmaped,
-        20.,
-        0.0001,
-        vec![64256],
-        Some(10_000),
-        Some(50_000),
-    )?;
-    let _ = hk_relax.compute()?;
-    println!("HKRelax {:?}", time.elapsed());
-    let time = Instant::now();
-    let _approx_dirichlet_hkpr =
-        ApproxDirHKPR::new(&graph_mmaped, 0.008, 8, 100000, 4000000, 0.05)?;
-    let _ = _approx_dirichlet_hkpr.compute()?;
-    println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
-    let _ = graph_mmaped.cleanup_cache();
+    // let time = Instant::now();
+    // let mut hyper = HyperBallInner::new(&graph_mmaped, Some(6), Some(70))?;
+    // println!("hyperball {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_harmonic_centrality(None)?;
+    // println!("centrality harmonic None {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_harmonic_centrality(Some(false))?;
+    // println!("centrality harmonic false {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_harmonic_centrality(Some(true))?;
+    // println!("centrality harmonic true {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_closeness_centrality(None)?;
+    // println!("centrality closeness None {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_closeness_centrality(Some(false))?;
+    // println!("centrality closeness false {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_closeness_centrality(Some(true))?;
+    // println!("centrality closeness true {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyper.compute_lins_centrality()?;
+    // println!("centrality lin {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    // println!("k-core bz {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    // println!("k-core liu et al {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    // println!("k-truss decomposition {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    // println!("pkt {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let hk_relax = HKRelax::new(
+    //     &graph_mmaped,
+    //     20.,
+    //     0.0001,
+    //     vec![64256],
+    //     Some(10_000),
+    //     Some(50_000),
+    // )?;
+    // let _ = hk_relax.compute()?;
+    // println!("HKRelax {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _approx_dirichlet_hkpr =
+    //     ApproxDirHKPR::new(&graph_mmaped, 0.008, 8, 100000, 4000000, 0.05)?;
+    // let _ = _approx_dirichlet_hkpr.compute()?;
+    // println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
+    // let _ = graph_mmaped.cleanup_cache();
     // let b = graph_mmaped
     //     .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
     // println!("graph even nodes {:?}", b);
 
-    // let a = graph_mmaped.export_petgraph()?;
-    // println!("rustworkx_core export {:?}", a);
+    // let time = Instant::now();
+    // let a = graph_mmaped.export_petgraph_stripped()?;
+    // println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
+    // let time = Instant::now();
     // use rustworkx_core::centrality::betweenness_centrality;
     // println!(
-    //     "rustworkx_core export {:?}",
-    //     betweenness_centrality(&a, false, true, 50)
+    //     "rustworkx_core export {:?} {:?}",
+    //     betweenness_centrality(&a, false, true, 50),
+    //     time.elapsed()
     // );
     Ok(graph_mmaped)
 }

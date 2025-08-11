@@ -200,8 +200,8 @@ pub fn file_name_from_id_and_sequence_for_type(
         FileType::Index => format!("{}_{}.{}", "index", id, "mmap"),
         FileType::Fst => format!("{}_{}.{}", "fst", id, "fst"),
         FileType::EulerTmp => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "mmap"),
-            None => format!("{}_{}.{}", "eulertmp", id, "mmap"),
+            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "eulertmp", id, "tmp"),
         },
         FileType::EulerPath => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
