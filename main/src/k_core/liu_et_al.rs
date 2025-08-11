@@ -1,0 +1,350 @@
+use crate::generic_edge::*;
+use crate::generic_memory_map::*;
+use crate::shared_slice::*;
+use crate::utils::*;
+
+use crossbeam::thread;
+use num_cpus::get_physical;
+use std::sync::{
+    Arc, Barrier,
+    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+};
+
+type ProceduralMemoryLiuEtAL = (
+    AbstractedProceduralMemoryMut<AtomicU8>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<AtomicBool>,
+    AbstractedProceduralMemoryMut<u8>,
+    AbstractedProceduralMemoryMut<usize>,
+    AbstractedProceduralMemoryMut<usize>,
+);
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct AlgoLiuEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    /// memmapped slice containing the coreness of each edge
+    k_cores: AbstractedProceduralMemoryMut<u8>,
+}
+
+#[allow(dead_code)]
+impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a, EdgeType, Edge> {
+    pub fn new(
+        graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KCore, None)?;
+        let k_cores =
+            SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
+        let liu_et_al = Self { graph, k_cores };
+        liu_et_al.compute(10)?;
+        Ok(liu_et_al)
+    }
+
+    fn init_procedural_memory_liu_et_al(
+        &self,
+        mmap: u8,
+    ) -> Result<ProceduralMemoryLiuEtAL, Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1;
+        let edge_count = self.graph.width();
+
+        let template_fn = self.graph.cache_edges_filename();
+        let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
+        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(5))?;
+        let a_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
+        let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
+        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(4))?;
+
+        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
+        let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, node_count, mmap > 3)?;
+        let alive = SharedSliceMut::<AtomicBool>::abst_mem_mut(a_fn, node_count, mmap > 1)?;
+        let coreness = SharedSliceMut::<u8>::abst_mem_mut(c_fn, node_count, mmap > 2)?;
+        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, edge_count, mmap > 3)?;
+        let frontier_swap = SharedSliceMut::<usize>::abst_mem_mut(fs_fn, edge_count, mmap > 3)?;
+
+        Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
+    }
+
+    pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = self.graph.size() - 1;
+        let edge_count = self.graph.width();
+
+        if node_count == 0 {
+            return Ok(());
+        }
+
+        let threads = self.graph.thread_num().max(get_physical());
+        let thread_load = node_count.div_ceil(threads);
+
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.graph.index_ptr(),
+            node_count + 1,
+        ));
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count));
+
+        let (degree, _node_index, alive, coreness, frontier, swap) =
+            self.init_procedural_memory_liu_et_al(mmap)?;
+
+        // Initialize
+        let total_dead_nodes = thread::scope(|s| -> usize {
+            let mut dead_nodes = vec![];
+            for tid in 0..threads {
+                let index_ptr = &index_ptr;
+
+                let mut degree = degree.shared_slice();
+                let mut alive = alive.shared_slice();
+
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
+
+                dead_nodes.push(s.spawn(move |_| -> usize {
+                    let mut dead_nodes = 0;
+
+                    for u in start..end {
+                        let deg_u = index_ptr.get(u + 1) - index_ptr.get(u);
+                        *degree.get_mut(u) = AtomicU8::new(deg_u as u8);
+
+                        if deg_u == 0 {
+                            dead_nodes += 1;
+                            *alive.get_mut(u) = AtomicBool::new(false);
+                        } else {
+                            *alive.get_mut(u) = AtomicBool::new(true);
+                        }
+                    }
+
+                    dead_nodes
+                }));
+            }
+            let mut total_dead_nodes = 0;
+            dead_nodes
+                .into_iter()
+                .map(|e| e.join().expect("error"))
+                .for_each(|e| total_dead_nodes += e);
+            let _ = degree.flush_async();
+            let _ = alive.flush_async();
+            total_dead_nodes
+        })
+        .unwrap();
+
+        // ditch node sampling as graphs are inherintely sparse
+        // use veertical granularity control:
+        // When peeling a low-degree vertex 𝑣, we
+        // place all its active neighbors in a FIFO queue, referred to as the local
+        // queue of 𝑣, and process all vertices in the local queue sequentially.
+        // When we decrementing the induced degree of a neighbor 𝑢, if 𝑑˜ [𝑢]
+        // drops to 𝑘 (line 6 in Alg. 3), instead of adding 𝑢 to Fnext , we add 𝑢 to
+        // the local queue. This allows 𝑢 to be processed in the same subround
+        // as 𝑣, rather than waiting for the next subround. We refer to this
+        // process as a local search at 𝑣.
+
+        // --- core-peeling loop (Liu et al. algorithm) ---
+        // for nodes with degree <= 16 no bucketing is used
+        let mut k = 1u8;
+        // number of vertices not yet peeled
+        let remaining_global = Arc::new(AtomicUsize::new(node_count - total_dead_nodes));
+        let frontier = SharedQueueMut::<usize>::from_shared_slice(frontier.shared_slice());
+        let swap = SharedQueueMut::<usize>::from_shared_slice(swap.shared_slice());
+        let synchronize = Arc::new(Barrier::new(threads));
+
+        thread::scope(|s| {
+            for tid in 0..threads {
+                let index_ptr = &index_ptr;
+                let graph_ptr = &graph_ptr;
+
+                let degree = &degree;
+                let alive = alive.shared_slice();
+                let mut coreness = coreness.shared_slice();
+                let mut frontier = frontier.clone();
+                let mut swap = swap.clone();
+
+                let remaining_global = Arc::clone(&remaining_global);
+                let synchronize = Arc::clone(&synchronize);
+
+                let start = std::cmp::min(tid * thread_load, node_count);
+                let end = std::cmp::min(start + thread_load, node_count);
+
+                s.spawn(move |_| {
+                    let mut local_stack: Vec<usize> = vec![];
+                    let max_len = 256;
+
+                    while remaining_global.load(Ordering::Relaxed) > 0 {
+                        synchronize.wait();
+                        // build initial frontier = all vertices with degree <= k that are still active.
+                        for u in start..end {
+                            if alive.get(u).load(Ordering::Relaxed)
+                                && degree.get(u).load(Ordering::Relaxed) <= k
+                            {
+                                alive.get(u).store(false, Ordering::Relaxed);
+                                let _ = frontier.push(u);
+                            }
+                        }
+
+                        synchronize.wait();
+
+                        if frontier.is_empty() {
+                            k = match k.overflowing_add(1) {
+                                (r, false) => r,
+                                _ => panic!("error overflow when adding to k ({} + {})", k, 1),
+                            };
+                            continue;
+                        }
+
+                        // process subrounds for current k: peel all vertices with degree k.
+                        while !frontier.is_empty() {
+                            if tid == 0 {
+                                remaining_global.fetch_sub(frontier.len(), Ordering::Relaxed);
+                            }
+
+                            let chunk_size = frontier.len().div_ceil(threads);
+                            let start = std::cmp::min(tid * chunk_size, frontier.len());
+                            let end = std::cmp::min(start + chunk_size, frontier.len());
+
+                            if let Some(chunk) = frontier.slice(start, end) {
+                                for i in 0..end - start {
+                                    // set coreness and decrement neighbour degrees
+                                    let u = *chunk.get(i);
+                                    *coreness.get_mut(u) = k;
+
+                                    // for each neighbor v of u:
+                                    for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                                        let v = graph_ptr.get(idx).dest();
+                                        if let Ok(old) = degree.get(v).fetch_update(
+                                            Ordering::Relaxed,
+                                            Ordering::Relaxed,
+                                            |x| {
+                                                if x > k {
+                                                    match x.overflowing_sub(1) {
+                                                        (r, false) => Some(r),
+                                                        _ => None,
+                                                    }
+                                                } else {
+                                                    None
+                                                }
+                                            },
+                                        ) {
+                                            if old == k + 1 {
+                                                let life =
+                                                    alive.get(v).swap(false, Ordering::Relaxed);
+                                                if life {
+                                                    if local_stack.len() < max_len {
+                                                        local_stack.push(v);
+                                                    } else {
+                                                        let _ = swap.push(v);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // process local stack
+                                    let mut read_in_stack: usize = 0;
+                                    while let Some(u) = local_stack.pop() {
+                                        // set coreness and decrement neighbour degrees
+                                        read_in_stack += 1;
+                                        *coreness.get_mut(u) = k;
+
+                                        for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                                            let v = graph_ptr.get(idx).dest();
+                                            if let Ok(old) = degree.get(v).fetch_update(
+                                                Ordering::Relaxed,
+                                                Ordering::Relaxed,
+                                                |x| {
+                                                    if x > k {
+                                                        match x.overflowing_sub(1) {
+                                                            (r, false) => Some(r),
+                                                            _ => None,
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                },
+                                            ) {
+                                                if old == k + 1 {
+                                                    let life =
+                                                        alive.get(v).swap(false, Ordering::Relaxed);
+                                                    if life {
+                                                        if local_stack.len() < max_len {
+                                                            local_stack.push(v);
+                                                        } else {
+                                                            let _ = swap.push(v);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    remaining_global.fetch_sub(read_in_stack, Ordering::Relaxed);
+                                }
+                            }
+
+                            synchronize.wait();
+
+                            swap = std::mem::replace(&mut frontier, swap).clear();
+
+                            synchronize.wait();
+                        }
+                        k = match k.overflowing_add(1) {
+                            (r, false) => r,
+                            _ => panic!("error overflow when adding to k ({} + {})", k, 1),
+                        };
+                    }
+                });
+            }
+        })
+        .unwrap();
+        coreness.flush()?;
+
+        // --- Compute per-edge core labels and write output ---
+        // Create an output memory-mapped buffer for edge labels (u32 per directed edge).
+        let out = self.k_cores.shared_slice();
+
+        // parallel edge labeling: partition vertices among threads and write edge core values
+        thread::scope(|scope| {
+            let mut res = vec![];
+            for tid in 0..threads {
+                let index_ptr = &index_ptr;
+                let graph_ptr = &graph_ptr;
+                let coreness = coreness.shared_slice();
+                let start = thread_load * tid;
+                let end = std::cmp::min(start + thread_load, node_count);
+                let mut edge_coreness = out;
+                res.push(scope.spawn(move |_| -> Vec<u64> {
+                    let mut res = vec![0u64; 20];
+                    for u in start..end {
+                        let core_u = *coreness.get(u);
+                        for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                            let v = graph_ptr.get(e).dest();
+                            // edge_coreness = min(core[u], core[v])
+                            let core_val = if *coreness.get(u) < *coreness.get(v) {
+                                core_u
+                            } else {
+                                *coreness.get(v)
+                            };
+                            *edge_coreness.get_mut(e) = core_val;
+                            res[core_val as usize] += 1;
+                        }
+                    }
+                    res
+                }));
+            }
+            let joined_res: Vec<Vec<u64>> = res
+                .into_iter()
+                .map(|v| v.join().expect("error thread panicked"))
+                .collect();
+            let mut r = vec![0u64; 16];
+            for i in 0..16 {
+                for v in joined_res.clone() {
+                    r[i] += v[i];
+                }
+            }
+            r[0] += total_dead_nodes as u64;
+            println!("k-cores {:?}", r);
+        })
+        .unwrap();
+
+        // flush output to ensure all data is written to disk
+        self.k_cores.flush_async()?;
+
+        Ok(())
+    }
+}

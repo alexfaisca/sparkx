@@ -1,0 +1,382 @@
+use crate::generic_edge::*;
+use crate::generic_memory_map::*;
+
+use std::{
+    collections::{HashMap, VecDeque},
+    io::Error,
+};
+
+#[derive(Clone)]
+pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    pub n: usize,
+    pub t: f64,
+    pub eps: f64,
+    pub seed: Vec<usize>,
+    pub psis: Vec<f64>,
+    pub target_size: Option<usize>,
+    pub target_volume: Option<usize>,
+}
+
+impl<'a, EdgeType, Edge> HKRelax<'a, EdgeType, Edge>
+where
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
+{
+    #[inline(always)]
+    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
+        if !val.is_normal() {
+            panic!(
+                "error hk-relax abnormal value at {} = {}",
+                op_description, val
+            );
+        }
+        Ok(val)
+    }
+
+    fn f64_to_usize_safe(x: f64) -> Option<usize> {
+        if x.is_normal() && x > 0f64 && x <= usize::MAX as f64 {
+            Some(x as usize) // truncates toward zero
+        } else {
+            None
+        }
+    }
+
+    fn evaluate_params(
+        graph: GraphMemoryMap<EdgeType, Edge>,
+        t: f64,
+        eps: f64,
+        seed: Vec<usize>,
+    ) -> Result<(), Error> {
+        let node_count = match graph.size().overflowing_sub(1) {
+            (_, true) => {
+                panic!("error hk-relax invalid parameters: |V| == 0, the graph is empty");
+            }
+            (i, _) => {
+                if i == 0 {
+                    panic!(
+                        "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
+                    );
+                }
+                i
+            }
+        };
+        if !t.is_normal() || t <= 0f64 {
+            panic!(
+                "error hk-relax invalid parameters: t == {} doesn't satisfy t > 0.0",
+                t
+            );
+        }
+        if !eps.is_normal() || eps <= 0f64 || eps >= 1f64 {
+            panic!(
+                "error hk-relax invalid parameters: ε == {} doesn't satisfy 0.0 < ε 1.0",
+                eps
+            );
+        }
+        if seed.is_empty() {
+            panic!(
+                "error hk-relax invalid parameters: seed_nodes.len() == 0, please provide at least one seed node"
+            );
+        }
+        for (idx, seed_node) in seed.iter().enumerate() {
+            if *seed_node > node_count - 1 {
+                panic!(
+                    "error hk-relax invalid parameters: id(seed_nodes[{}]) == {} but max_id(v in V) == {}",
+                    idx,
+                    seed_node,
+                    node_count - 1
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_psis(n: usize, t: f64) -> Result<Vec<f64>, Error> {
+        let mut psis = vec![0f64; n + 1];
+        psis[n] = 1f64;
+        for i in (0..n).rev() {
+            psis[i] = Self::f64_is_nomal(
+                psis[i + 1] * t / (i as f64 + 1f64) + 1f64,
+                format!(
+                    "{{at round: {}}} (psis[{i} + 1] * t / (i + 1) + 1)",
+                    n - i + 1,
+                )
+                .as_str(),
+            )?;
+        }
+        Ok(psis)
+    }
+
+    fn compute_n(t: f64, eps: f64) -> Result<usize, Error> {
+        let bound = Self::f64_is_nomal(eps / 2f64, "ε/2")?;
+
+        let n_plus_two_i32 = match i32::try_from(t.floor() as i64) {
+            Ok(n) => match n.overflowing_add(1) {
+                (r, false) => r,
+                (_, true) => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error computing n + 2 for hk-relax {n} + 1 overflowed",),
+                    ));
+                }
+            },
+            Err(e) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error computing n for hk-relax couldn't cast t: {t} to i32: {e}",),
+                ));
+            }
+        };
+
+        let mut t_power_n_plus_one = Self::f64_is_nomal(t.powi(n_plus_two_i32 - 1), "t^(n + 1)")?;
+
+        let mut n_plus_one_fac = match (2..n_plus_two_i32).try_fold(1.0_f64, |acc, x| {
+            let res = acc * (x as f64);
+            if res.is_finite() { Some(res) } else { None }
+        }) {
+            Some(fac) => Self::f64_is_nomal(fac, "(n + 1)!")?,
+            None => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "error computing n for hk-relax overflowed trying to compute ({})!",
+                        n_plus_two_i32 - 1
+                    ),
+                ));
+            }
+        };
+
+        let mut n_plus_two = n_plus_two_i32 as f64;
+
+        while (t_power_n_plus_one * n_plus_two / n_plus_one_fac / (n_plus_two - t)) >= bound {
+            t_power_n_plus_one = Self::f64_is_nomal(t_power_n_plus_one * t, "t^(n + 1)")?;
+            n_plus_one_fac = Self::f64_is_nomal(n_plus_one_fac * n_plus_two, "(n + 1)!")?;
+            n_plus_two += 1f64;
+        }
+
+        // convert the f64 value to usize subtract 2 and output n
+        // FIXME: are there other methods to validate n?
+        match Self::f64_to_usize_safe(n_plus_two) {
+            Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
+                (n, false) => Ok(n),
+                (_, true) => Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "error computing n for hk-relax overflowed trying to compute {n_plus_two_usize} - 2",
+                    ),
+                )),
+            },
+            None => Err(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("error computing n for hk-relax can't convert {n_plus_two} to usize",),
+            )),
+        }
+    }
+
+    pub fn new(
+        graph: &'a GraphMemoryMap<EdgeType, Edge>,
+        t: f64,
+        eps: f64,
+        seed: Vec<usize>,
+        target_size: Option<usize>,
+        target_volume: Option<usize>,
+    ) -> Result<Self, Error> {
+        let () = match Self::evaluate_params(graph.clone(), t, eps, seed.clone()) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error creating HKRelax instance: {e}"),
+                ));
+            }
+        };
+        let n = Self::compute_n(t, eps)?;
+        println!("n computed to be {}", n);
+        Ok(HKRelax {
+            graph,
+            n,
+            t,
+            eps,
+            seed,
+            psis: Self::compute_psis(n, t)?,
+            target_size,
+            target_volume,
+        })
+    }
+
+    /// receives an instance of HKRelax for a given graph and parameters for t, epsilon and a
+    /// vector of seed nodes.
+    /// returns an instance of HKRelax for the same graph with parameters adjusted accordingly
+    pub fn _adjust_parameters(
+        &self,
+        t: f64,
+        eps: f64,
+        seed: Vec<usize>,
+        target_size: Option<usize>,
+        target_volume: Option<usize>,
+    ) -> Result<Self, Error> {
+        let () = match Self::evaluate_params(self.graph.clone(), t, eps, seed.clone()) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error creating HKRelax instance: {e}"),
+                ));
+            }
+        };
+        let n = Self::compute_n(t, eps)?;
+        Ok(HKRelax {
+            graph: self.graph,
+            n,
+            t,
+            eps,
+            seed,
+            psis: Self::compute_psis(n, t)?,
+            target_size,
+            target_volume,
+        })
+    }
+
+    pub fn compute(&self) -> Result<Community<usize>, Error> {
+        let n = self.n as f64;
+        let threshold_pre_u_pre_j = Self::f64_is_nomal(self.t.exp() * self.eps / n, "e^t * ε / n")?;
+        let mut x: HashMap<usize, f64> = HashMap::new();
+        let mut r: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+
+        let seed_len_f64 = self.seed.clone().len() as f64;
+        for seed_node in self.seed.iter() {
+            if r.contains_key(&(*seed_node, 0usize)) {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "error hk-relax seed node {seed_node} is present multiple times in seed array"
+                    ),
+                ));
+            }
+            // r[(s, 0)] = 1. / len(seed)
+            r.insert((*seed_node, 0usize), 1f64 / seed_len_f64);
+            queue.push_back((*seed_node, 0));
+        }
+
+        while let Some((v, j)) = queue.pop_front() {
+            let rvj = match r.get(&(v, j)) {
+                Some(i) => *i,
+                None => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error hk-relax ({v}, {j}) present in queue but not in residual",),
+                    ));
+                }
+            };
+
+            // x[v] += rvj && check if r[(v, j)] is normal
+            match x.get_mut(&v) {
+                Some(x_v) => {
+                    *x_v = Self::f64_is_nomal(*x_v + rvj, "x[v] + r([v, j])")?;
+                }
+                None => {
+                    x.insert(v, Self::f64_is_nomal(rvj, "r([v, j])")?);
+                }
+            };
+
+            // r[(v, j)] = 0
+            match r.get_mut(&(v, j)) {
+                Some(rvj) => *rvj = 0f64,
+                None => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error hk-relax r({v}, {j}) Some and None"),
+                    ));
+                }
+            };
+
+            //  mass = (t * rvj / (float(j) + 1.)) / len(G[v]) /* calculation validity checked when poppped from queue */
+            let (deg_v, v_n) = match self.graph.neighbours(v) {
+                Ok(v_n) => (v_n.remaining_neighbours() as f64, v_n),
+                Err(e) => {
+                    return Err(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error hk-relax getting neighbours of {v}: {e}"),
+                    ));
+                }
+            };
+            let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
+
+            for u in v_n {
+                let u = u.dest();
+                let next = (u, j + 1);
+                if j + 1 == self.n {
+                    // x[u] += rvj / len(G[v])
+                    match x.get_mut(&u) {
+                        Some(x_u) => {
+                            *x_u = Self::f64_is_nomal(
+                                *x_u + rvj / deg_v,
+                                "x[u] + (r[(v, j)] / deg_v)",
+                            )?
+                        }
+                        None => {
+                            x.insert(u, Self::f64_is_nomal(rvj / deg_v, "r[(v, j)] / deg_v")?);
+                        }
+                    };
+                    continue;
+                }
+                // if next not in r: r[next] = 0.
+                let r_next = match r.get_mut(&next) {
+                    Some(r_next) => r_next,
+                    None => {
+                        r.insert(next, 0f64);
+                        match r.get_mut(&next) {
+                            Some(r_next) => r_next,
+                            None => {
+                                return Err(Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    format!(
+                                        "error hk-relax just inserted ({u}, {}) into residual and got None",
+                                        j + 1
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                };
+                // thresh = math.exp(t) * eps * len(G[u]) / (N * psis[j + 1])
+                let deg_u = self.graph.node_degree(u) as f64;
+                let threshold = Self::f64_is_nomal(
+                    threshold_pre_u_pre_j * deg_u / self.psis[j + 1],
+                    "e^t * ε * deg_u / (n * psis[j + 1])",
+                )?;
+
+                // if r[next] < thresh and r[next] + mass >= thresh:
+                if *r_next < threshold && *r_next + mass >= threshold {
+                    queue.push_back(next);
+                }
+                // r[next] = r[next] + mass
+                *r_next += mass;
+            }
+        }
+
+        let mut h: Vec<(usize, f64)> = x
+            .keys()
+            .map(|v| (*v, x.get(v).unwrap() / self.graph.node_degree(*v) as f64))
+            .collect::<Vec<(usize, f64)>>();
+
+        match self.graph.sweep_cut_over_diffusion_vector_by_conductance(
+            h.as_mut(),
+            self.target_size,
+            self.target_volume,
+        ) {
+            Ok(c) => {
+                println!(
+                    "best community hkrelax {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                    c.size, c.width, c.conductance
+                );
+                Ok(c)
+            }
+            Err(e) => Err(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("error hk-relax: {e}"),
+            )),
+        }
+    }
+}

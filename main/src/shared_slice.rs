@@ -135,12 +135,18 @@ impl<T> SharedSlice<T> {
             mmap,
         ))
     }
+    pub(self) fn ptr(&self) -> *const T {
+        self.ptr
+    }
     pub fn get(&self, idx: usize) -> &T {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
     pub fn len(&self) -> usize {
         self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         if start >= self.len {
@@ -200,7 +206,7 @@ impl<T> SharedSliceMut<T> {
             len: slice.len(),
         }
     }
-    pub fn _from_shared_slice(slice: SharedSliceMut<T>) -> Self {
+    pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
         SharedSliceMut::<T> {
             ptr: slice.ptr,
             len: slice.len,
@@ -223,7 +229,10 @@ impl<T> SharedSliceMut<T> {
             mmap,
         ))
     }
-    pub unsafe fn _cast<U>(&self) -> Option<SharedSliceMut<U>> {
+    pub(self) fn ptr(&self) -> *const T {
+        self.ptr
+    }
+    pub unsafe fn cast<U>(&self) -> Option<SharedSliceMut<U>> {
         if std::mem::size_of::<T>() != std::mem::size_of::<U>() {
             return None;
         }
@@ -242,6 +251,9 @@ impl<T> SharedSliceMut<T> {
     }
     pub fn len(&self) -> usize {
         self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         assert!(start <= end && end <= self.len);
@@ -266,7 +278,21 @@ impl<T> SharedSliceMut<T> {
     ) -> Option<usize> {
         assert!(idx + len <= self.len);
         unsafe {
-            std::ptr::copy_nonoverlapping(slice.ptr.add(from), self.ptr.add(idx), len);
+            std::ptr::copy_nonoverlapping(slice.ptr().add(from), self.ptr.add(idx), len);
+        };
+        Some(idx + slice.len())
+    }
+
+    pub fn write_shared_slice_mut(
+        &mut self,
+        slice: SharedSliceMut<T>,
+        idx: usize,
+        from: usize,
+        len: usize,
+    ) -> Option<usize> {
+        assert!(idx + len <= self.len);
+        unsafe {
+            std::ptr::copy_nonoverlapping(slice.ptr().add(from), self.ptr.add(idx), len);
         };
         Some(idx + slice.len())
     }
