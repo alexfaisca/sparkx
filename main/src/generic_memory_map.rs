@@ -6,6 +6,8 @@ use crate::shared_slice::{
 use crate::utils::{cache_file_name, cleanup_cache, graph_id_from_cache_file_name, id_for_subgraph_export, FileType, CACHE_DIR, TEMP_CACHE_DIR};
 
 use core::{f64, fmt, panic};
+use std::io::{Seek, SeekFrom};
+use std::time::Instant;
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 #[allow(unused_imports)]
@@ -33,7 +35,6 @@ use std::{
 use zerocopy::*;
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
-static BYTES_U64: u64 = std::mem::size_of::<u64>() as u64;
 
 
 pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -363,6 +364,210 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(cache)
     }
 
+    #[inline(always)]
+    fn process_ggcat_entry(id_line: String, label_line: Vec<u8>, in_fst: fn(usize) -> bool) -> Result<Option<(Vec<u8>, u64)>, Box<dyn std::error::Error>> {
+        let node = id_line.split_whitespace().collect::<Vec<&str>>();
+        let id: usize = node.first().unwrap().parse()?;
+
+        if in_fst(id) {
+            Ok(Some((label_line.clone(), id as u64)))
+        } else {
+            Ok(None)
+        }
+
+    }
+
+    fn process_chunk_with_reader<R: BufRead>(
+        &mut self,
+        reader: &mut R,
+        end: usize,
+        batch_num: Arc<AtomicUsize>,
+        batch_size: usize,
+        in_fst: fn(usize) -> bool,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut current_batch: Vec<(Vec<u8>, u64)> = Vec::with_capacity(batch_size);
+    let mut batches = Vec::new();
+
+    let mut id_line: String = String::new();
+    let mut label_line: Vec<u8> = Vec::new();
+
+    reader.read_until(b'>', &mut label_line)?;
+    label_line.clear();
+
+    // first iteration
+    let r_i = reader.read_line(&mut id_line)?;
+    label_line.clear();
+    let r_l = reader.read_until(b'\n', &mut label_line)?;
+    if r_i == 0 || r_l == 0 {
+        return Err(Box::new(Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("error empty label for node {id_line}"),
+                    ))
+            );
+    }
+    let mut read = r_i + r_l;
+
+    let mut node_str = &id_line.clone()[..];
+    // continue until end of strem or read >= end
+    loop {
+
+        // convert each line to str temporarily && cut off ">" char
+        let _ = label_line.pop(); // pop '\n'
+
+        if let Some(entry) = Self::process_ggcat_entry(node_str.to_string(), label_line.clone(), in_fst)? {
+            current_batch.push(entry);
+            if current_batch.len() >= batch_size {
+                println!("wrote {}", batch_num.load(Ordering::Relaxed));
+                let tmp_fst = self.build_batch_fst_vec(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
+                batches.push(tmp_fst);
+                current_batch.clear();
+            }
+        }
+
+
+        id_line.clear();
+        let r_i = reader.read_line(&mut id_line)?;
+        node_str = &id_line[1..];
+        label_line.clear();
+        let r_l = reader.read_until(b'\n', &mut label_line)?;
+        if r_i == 0 || r_l == 0 {
+            return Err(Box::new(Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("error empty label for node {id_line}"),
+                        ))
+                );
+        }
+
+        read += r_i;
+        read += r_l;
+
+        if read >= end {
+            break;
+        }
+    }
+
+    // Process the last batch if not empty
+    if !current_batch.is_empty() {
+        let tmp_fst = self.build_batch_fst_vec(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
+        batches.push(tmp_fst);
+    }
+
+    Ok(batches)
+}
+
+fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
+    &mut self,
+    file_path: P,
+    batch_size: usize,
+    in_fst: fn(usize) -> bool,
+    threads: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !self.readonly {
+        return Err(Box::new(Error::new(
+            std::io::ErrorKind::InvalidData,
+            "error cache must be readonly to build fst in parallel",
+        )));
+    }
+    let file = File::open(file_path.clone())?;
+    let file_len = file.metadata()?.len(); // Get the size of the file
+    let ext = file_path.as_ref().extension();
+    if ext.is_none() {
+        return Err(Box::new(Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "error file extension was None",
+                        ))
+                );
+    }
+    let ext = ext.unwrap().to_str();
+
+    let chunk_size = file_len / threads as u64;
+    let batch_num = Arc::new(AtomicUsize::new(0));
+
+    let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let mut batch_handles = Vec::new();
+
+        for i in 0..threads {
+            let mut cache = self.clone();
+            let batch_num = Arc::clone(&batch_num);
+
+            let path = file_path.as_ref();
+            let r = match ext {
+                Some(Self::EXT_COMPRESSED_LZ4) => 1,
+                Some(Self::EXT_PLAINTEXT) => 2,
+                _ => 0,
+            };
+
+            let start = i as u64 * chunk_size;
+            let end = std::cmp::min(start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE as u64, file_len);
+
+            let handle = s.spawn(move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+                let mut file = File::open(path)?; // Open the file separately in each thread
+                let mut reader = BufReader::new(&mut file);
+                reader.seek(SeekFrom::Start(start))?;
+                let mut input_chunk = reader.take(end - start);
+
+                    let res  = match r {
+                        1 => {
+                            let decoder = lz4::Decoder::new(input_chunk)?;
+                            let mut reader = BufReader::new(decoder);
+                            cache.process_chunk_with_reader(&mut reader, end as usize, batch_num, batch_size, in_fst)
+                        }
+                        2 => {
+                            cache.process_chunk_with_reader(&mut input_chunk, end as usize, batch_num, batch_size, in_fst)
+                        },
+                        _ => {
+                            return Err(Box::new(Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("error unknown file extension {:?}", ext),
+                                        ))
+                                );
+                        }
+                    };
+
+                    match res {
+                        Ok(i) => Ok(i),
+                        Err(e)  => Err(Box::new(Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        format!("error occured for thread {i}: {e}"),
+                                        ))
+                            )
+                    }
+            });
+
+            batch_handles.push(handle);
+        }
+
+        let mut all_batches = Vec::new();
+        for handle in batch_handles {
+            match handle.join() {
+                Ok(Ok(batches)) => {
+                    all_batches.extend(batches);
+                }
+                Ok(Err(e)) => {
+                    return Err(e);
+                }
+                Err(e) => {
+                    return Err(Box::new(Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Error in thread: {:?}", e),
+                    )));
+                }
+            }
+        }
+        Ok(all_batches)
+    }).unwrap()?;
+
+    // Now merge all batch FSTs into one option 
+    self.merge_fsts(&batches)?;
+
+    // Clean up temporary batch files
+    for batch_file in batches {
+        let _ = std::fs::remove_file(batch_file);
+    }
+
+    Ok(())
+}
+
     fn process_chunk(&mut self, input: &[u8], end: usize, batch_num: Arc<AtomicUsize>, batch_size: usize, in_fst: fn(usize) -> bool) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         let mut begin_pos = 0;
         let mut end_pos = 0;
@@ -663,7 +868,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             None => {|_id: usize| -> bool { true }}
         };
 
- 
+        // self.parallel_fst_from_ggcat_with_reader(path, batching, in_fst, get_physical())?;
         let input = Self::read_input_file(path)?;
         // FIXME: Out Of Memory
         self.parallel_fst_from_ggcat_bytes(input.as_slice(), batching, in_fst, num_cpus::get_physical())?;
@@ -933,6 +1138,34 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         Ok(())
+    }
+
+    /// Builds an FST for a single sorted batch and writes it to a temp file.
+    fn build_batch_fst_vec(
+        &self,
+        batch: &mut [(Vec<u8>, u64)],
+        batch_num: usize,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        // Sort lexicographically by key (label)
+        batch.sort_by(|a, b| a.0.cmp(&b.0));
+        let tempfst_fn = cache_file_name(
+            self.kmer_filename.clone(),
+            FileType::KmerSortedTmp,
+            Some(batch_num),
+        )?;
+
+        let mut wtr = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tempfst_fn)?;
+        let mut builder = MapBuilder::new(&mut wtr)?;
+
+        for (k, v) in batch.iter() {
+            builder.insert(k, *v)?;
+        }
+        builder.finish()?;
+        Ok(PathBuf::from(tempfst_fn))
     }
 
     /// Builds an FST for a single sorted batch and writes it to a temp file.
@@ -3817,13 +4050,14 @@ where
         &self,
         cycle_offsets: Vec<(usize, usize, usize)>,
     ) -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
-        let mut trail_heads: HashMap<u64, Vec<(usize, usize, usize)>> = HashMap::new();
+        let time = Instant::now();
+        let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
         let mmap_fn = cache_file_name(
             self.graph.graph_cache.graph_filename.clone(),
             FileType::EulerTmp,
             None,
         )?;
-        let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<u64>(mmap_fn)?;
+        let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<usize>(mmap_fn)?;
 
         cycle_offsets.iter().for_each(|(idx, begin, _)| {
             trail_heads
@@ -3832,6 +4066,7 @@ where
                 .push((*idx, *idx, 0));
         });
 
+        let euler_time = Instant::now();
         // generate writing sets
         let chunk = 4096; // read 8 pages of 4KB at a time
         for (t_idx, t_begin, t_end) in cycle_offsets.iter() {
@@ -3839,7 +4074,7 @@ where
                 Some(i) => i.as_ptr(),
                 None => panic!("error getting memmapped slice of trail {}", t_idx),
             };
-            let trail_slice = SharedSlice::<u64>::new(trail_ptr, *t_end - *t_begin);
+            let trail_slice = SharedSlice::<usize>::new(trail_ptr, *t_end - *t_begin);
             let mut pos = 0; // pos in u64 terms
             while let Some(next_slice) = trail_slice.slice(pos, pos + chunk) {
                 for (pos_idx, node) in next_slice.iter().enumerate() {
@@ -3856,6 +4091,7 @@ where
                 pos += next_slice.len();
             }
         }
+        println!("euler writing set {:?}", euler_time.elapsed());
 
         // break cycles
         let mut v: Vec<_> = trail_heads
@@ -3863,6 +4099,7 @@ where
             .flat_map(|vec| vec.drain(..))
             .collect();
 
+        let euler_time = Instant::now();
         let mut euler_trail_sets = FindDisjointSetsEulerTrails::new(v.as_mut());
         euler_trail_sets.cycle_check();
 
@@ -3875,6 +4112,7 @@ where
                 .or_default()
                 .push((trail, parent_trail, pos));
         }
+        println!("euler union {:?}", euler_time.elapsed());
 
         let mut output_len: HashMap<usize, (usize, usize)> = HashMap::new();
         // in nodes usize
@@ -3886,6 +4124,7 @@ where
             }
         }
 
+        let euler_time = Instant::now();
         let mut keys_by_trail_size: Vec<(usize, usize)> =
             output_len.values().map(|&(a, b)| (a, b)).collect();
         keys_by_trail_size.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(*s));
@@ -3905,6 +4144,7 @@ where
             pos_map
                 .values_mut()
                 .for_each(|v| v.sort_unstable_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
+
             let mut stack: Vec<(usize, usize, usize)> = vec![];
             let mut remaining: Vec<(usize, usize)> = vec![];
             let mut expand = Some((*head_trail, 0));
@@ -3926,23 +4166,14 @@ where
                 expand = remaining.pop()
             }
 
-            let output_len_bytes = *output_len as u64 * BYTES_U64;
             let output_filename = cache_file_name(
                 self.graph.graph_cache.graph_filename.clone(),
                 FileType::EulerPath,
                 Some(idx),
             )?;
-            let output_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .read(true)
-                .open(&output_filename)?;
-            output_file.set_len(output_len_bytes)?;
+            let out = SharedSliceMut::<usize>::abst_mem_mut(output_filename.clone(), *output_len, true)?;
 
-            let mut output_mmap = unsafe { MmapOptions::new().map_mut(&output_file)? };
-            // in bytes
-            let mut write_offset_bytes = 0;
+            let mut idx = 0;
 
             for (cycle, from, to) in stack.iter() {
                 if *to <= *from {
@@ -3952,176 +4183,18 @@ where
                 let begin = t_begin + *from;
                 let end = t_begin + *to;
 
-                let write_ptr = match cycles.slice(begin, end) {
-                    Some(i) => i.as_ptr(),
-                    None => panic!(
-                        "error getting write slice for trail {} (from {}, to {})",
-                        cycle, begin, end
-                    ),
-                };
-                let write = SharedSlice::<u64>::new(write_ptr, end - begin);
-                // in u64 nodes
-                let mut pos = 0;
-                while let Some(next_slice) = write.slice(pos, pos + 4096) {
-                    let byte_len = next_slice.as_bytes().len();
-                    unsafe {
-                        let dest_ptr = output_mmap.as_mut_ptr().add(write_offset_bytes);
-                        let src_ptr = next_slice.as_ptr() as *const u8;
-                        std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, byte_len);
-                    }
-                    write_offset_bytes += byte_len;
-                    // Prepare to read next slice
-                    pos += next_slice.len();
-                }
-
-                output_mmap.flush()?;
+                out.shared_slice().write_shared_slice(cycles, idx, begin, end - begin);
+                idx += end - begin;
             }
+
+            out.flush_async()?;
         }
+        println!("euler write {:?}", euler_time.elapsed());
+        println!("euler trails merge {:?}", time.elapsed());
         Ok(keys_by_trail_size
             .iter()
             .enumerate()
             .map(|(idx, (_, size))| (idx as u64, *size as u64))
-            .collect())
-    }
-
-    fn _merge_euler_trails_no_mmap(
-        &self,
-        cycles: Mutex<Vec<Vec<usize>>>,
-    ) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
-        let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-        let cycles = cycles.into_inner().unwrap();
-        cycles.iter().enumerate().for_each(|(idx, trail)| {
-            if let Some(first) = trail.first() {
-                trail_heads.entry(*first).or_default().push((idx, idx, 0));
-            }
-        });
-
-        // generate writing sets
-        for (cycle_idx, cycle) in cycles.iter().enumerate() {
-            for (trail_idx, node) in cycle.iter().enumerate().skip(1) {
-                if let Some(head_v) = trail_heads.get_mut(node) {
-                    for (vec_idx, (in_cyc, _, _)) in head_v.clone().iter().enumerate() {
-                        if *in_cyc == cycle_idx {
-                            continue;
-                        }
-                        head_v[vec_idx] = (*in_cyc, cycle_idx, trail_idx + 1);
-                    }
-                }
-            }
-        }
-
-        // break cycles
-        let mut v: Vec<_> = trail_heads
-            .values_mut()
-            .flat_map(|vec| vec.drain(..))
-            .collect();
-        let mut euler_trail_sets = FindDisjointSetsEulerTrails::new(v.as_mut());
-        euler_trail_sets.cycle_check();
-
-        // Union find and write
-        let mut trail_sets: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-
-        for ((trail, parent_trail, pos), grand_parent) in euler_trail_sets.trails {
-            trail_sets
-                .entry(grand_parent)
-                .or_default()
-                .push((trail, parent_trail, pos));
-        }
-
-        // Get trail sizes for each soon to be merged trails to establish order
-        let mut output_len: HashMap<usize, (usize, usize)> = HashMap::new();
-        let cycles_length: Vec<usize> = cycles.iter().map(|x| x.len()).collect();
-        for head_trail in trail_sets.keys() {
-            output_len.insert(*head_trail, (*head_trail, 1));
-            for (trail, _, _) in trail_sets.get(head_trail).unwrap() {
-                output_len.get_mut(head_trail).unwrap().1 += cycles_length[*trail] - 1;
-            }
-            // Adjust output length to size in bytes
-            output_len.get_mut(head_trail).unwrap().1 *= std::mem::size_of::<u64>();
-        }
-
-        let mut keys_by_trail_size: Vec<(usize, usize)> =
-            output_len.values().map(|&(a, b)| (a, b)).collect();
-        keys_by_trail_size.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(*s));
-
-        // Write
-        for (idx, (head_trail, output_len)) in keys_by_trail_size.iter().enumerate() {
-            let trail_guide = trail_sets.get(head_trail).unwrap();
-            let mut pos_map: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
-            let cycles_length: Vec<usize> = cycles.iter().map(|x| x.len()).collect();
-            for (trail, parent_trail, pos) in trail_guide {
-                pos_map
-                    .entry(*parent_trail)
-                    .or_default()
-                    .push((*pos, *trail));
-            }
-            pos_map
-                .values_mut()
-                .for_each(|v| v.sort_unstable_by_key(|(pos, _)| std::cmp::Reverse(*pos)));
-
-            let mut stack: Vec<(usize, usize, usize)> = vec![];
-            let mut remaining: Vec<(usize, usize)> = vec![];
-            let mut expand = Some((*head_trail, 0));
-            while let Some((current_trail, pos)) = expand {
-                if let Some(nested_trails) = pos_map.get_mut(&current_trail) {
-                    if let Some((insert_pos, trail)) = nested_trails.pop() {
-                        if trail == current_trail {
-                            continue;
-                        }
-                        if cycles_length[trail] == 0 {
-                            continue;
-                        }
-                        if insert_pos < pos {
-                            continue;
-                        }
-                        stack.push((current_trail, pos, insert_pos));
-                        remaining.push((current_trail, insert_pos));
-                        remaining.push((trail, 1)); // elipse repeated node
-                    } else {
-                        stack.push((current_trail, pos, cycles_length[current_trail]));
-                    }
-                } else {
-                    stack.push((current_trail, pos, cycles_length[current_trail]));
-                }
-                expand = remaining.pop()
-            }
-
-            let output_filename = cache_file_name(
-                self.graph.graph_cache.graph_filename.clone(),
-                FileType::EulerPath,
-                Some(idx),
-            )?;
-            let output_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .read(true)
-                .open(&output_filename)?;
-            output_file.set_len(*output_len as u64)?;
-
-            let mut output_mmap = unsafe { MmapOptions::new().map_mut(&output_file)? };
-            let mut write_offset = 0;
-
-            for (cycle, from, to) in stack.iter() {
-                if *to <= *from {
-                    continue;
-                }
-                let slice = &cycles[*cycle][*from..*to];
-                let byte_len = slice.as_bytes().len();
-                unsafe {
-                    let dest_ptr = output_mmap.as_mut_ptr().add(write_offset);
-                    let src_ptr = slice.as_ptr() as *const u8;
-                    std::ptr::copy_nonoverlapping(src_ptr, dest_ptr, byte_len);
-                }
-                write_offset += byte_len;
-            }
-            output_mmap.flush()?;
-        }
-
-        Ok(keys_by_trail_size
-            .iter()
-            .enumerate()
-            .map(|(idx, (_, size))| (idx, *size))
             .collect())
     }
 
@@ -4136,10 +4209,14 @@ where
         Box<dyn std::error::Error>,
     > {
         let node_count = self.graph.size() - 1;
+        let threads = self.graph.thread_count as usize;
+        let thread_load = node_count.div_ceil(threads);
+
         let index_ptr = Arc::new(SharedSlice::<usize>::new(
             self.graph.index.as_ptr() as *const usize,
             self.graph.size(),
         ));
+
         let template_fn = self.graph.graph_cache.graph_filename.clone();
         let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
         let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
@@ -4148,17 +4225,13 @@ where
         let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, node_count, mmap > 1)?;
 
         thread::scope(|scope| {
-            let threads = self.graph.thread_count as usize;
             for i in 0..threads {
                 let index = Arc::clone(&index_ptr);
                 let edges = &edges;
                 let count = &count;
-                let begin = node_count / threads * i;
-                let end = if i == threads - 1 {
-                    node_count
-                } else {
-                    node_count / threads * (i + 1)
-                };
+                let begin = std::cmp::min(thread_load * i, node_count);
+                let end = std::cmp::min(begin + thread_load, node_count);
+ 
                 scope.spawn(move |_| {
                     for k in begin..end {
                         edges.get(k).store(*index.get(k), Ordering::Relaxed);
@@ -4179,6 +4252,7 @@ where
     /// num_threads controls parallelism level (defaults to 1, single-threaded).
     /// returns vec of (euler path file sequence number, file size(vytes)).
     pub fn find_eulerian_cycle(&self, mmap: u8) -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
+        let time = Instant::now();
         let node_count = match self.graph.size() - 1 {
             0 => panic!("Graph has no vertices"),
             i => i,
@@ -4304,127 +4378,8 @@ where
         mmap.flush()?;
         let disjoint_cycles = cycle_offsets.into_inner().unwrap();
         // Euler trails are in the mem_mapped file
+        println!("euler trails hierholzer's {:?}", time.elapsed());
         self.merge_euler_trails(disjoint_cycles)
-    }
-
-    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
-    /// num_threads controls parallelism level (defaults to 1, single-threaded).
-    /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn _find_eulerian_cycle_no_mmap(&self) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
-        let node_count = match self.graph.size() - 1 {
-            0 => panic!("Graph has no vertices"),
-            i => i,
-        };
-
-        let index_ptr =
-            SharedSlice::<usize>::new(self.graph.index.as_ptr() as *const usize, self.graph.size());
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
-            self.graph.graph.as_ptr() as *const Edge,
-            self.graph.width(),
-        ));
-
-        // atomic array for next unused edge index for each node and unread edge count
-        let mut next_edge_vec: Vec<AtomicUsize> = Vec::with_capacity(node_count);
-        next_edge_vec.resize_with(node_count, || AtomicUsize::new(0));
-
-        let mut edge_count: Vec<AtomicU8> = Vec::with_capacity(node_count);
-        edge_count.resize_with(node_count, || AtomicU8::new(0));
-
-        for i in 0..node_count {
-            next_edge_vec[i].store(*index_ptr.get(i), Ordering::Relaxed);
-            edge_count[i].store(
-                (*index_ptr.get(i + 1) - *index_ptr.get(i)) as u8,
-                Ordering::Relaxed,
-            );
-        }
-        let next_edge = Arc::new(next_edge_vec);
-        // mutex is needed to make sure a read isn't made between a successful check and a decrease
-        let edge_count = Arc::new(edge_count);
-
-        // Atomic counter to pick next starting vertex for a new cycle
-        let start_vertex_counter = Arc::new(AtomicUsize::new(0));
-        let cycles_mutex = std::sync::Mutex::new(Vec::new());
-
-        thread::scope(|scope| {
-            for _ in 0..self.graph.thread_count {
-                let graph_ptr = Arc::clone(&graph_ptr);
-                let next_edge = Arc::clone(&next_edge);
-
-                let edge_count = Arc::clone(&edge_count);
-                let start_vertex_counter = Arc::clone(&start_vertex_counter);
-                let cycles_mutex = &cycles_mutex;
-
-                // Spawn a thread
-                scope.spawn(move |_| {
-                    let mut local_cycles: Vec<Vec<usize>> = Vec::new();
-                    // find cycles until no unused edges remain
-                    loop {
-                        let start_v = loop {
-                            let idx = start_vertex_counter
-                                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                                    if x >= node_count {
-                                        Some(0)
-                                    } else {
-                                        Some(x + 1)
-                                    }
-                                })
-                                .unwrap_or(0);
-                            if idx >= node_count {
-                                break None;
-                            }
-                            if edge_count[idx].load(Ordering::Relaxed) > 0 {
-                                break Some(idx);
-                            }
-                        };
-                        let start_v = match start_v {
-                            Some(v) => v,
-                            None => {
-                                // all edges used
-                                break;
-                            }
-                        };
-
-                        // Hierholzer's DFS
-                        let mut stack: Vec<usize> = Vec::new();
-                        let mut cycle: Vec<usize> = Vec::new();
-                        stack.push(start_v);
-                        while let Some(&v) = stack.last() {
-                            // get next unused edge from v
-                            if edge_count[v]
-                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                                    if x > 0 {
-                                        Some(x - 1)
-                                    } else {
-                                        None // don't update
-                                    }
-                                })
-                                .is_ok()
-                            {
-                                let edge_idx = next_edge[v].fetch_add(1, Ordering::Relaxed);
-                                stack.push(graph_ptr.get(edge_idx).dest());
-                            } else {
-                                stack.pop();
-                                if cycle.is_empty() {
-                                    // check if error of atomic
-                                    if stack.is_empty() {
-                                        continue;
-                                    }
-                                }
-                                cycle.push(v);
-                            }
-                        }
-                        if !cycle.is_empty() {
-                            cycle.reverse();
-                            local_cycles.push(cycle.clone());
-                        }
-                    }
-                    let mut global_cycles = cycles_mutex.lock().unwrap();
-                    global_cycles.extend(local_cycles);
-                });
-            }
-        })
-        .unwrap();
-        self._merge_euler_trails_no_mmap(cycles_mutex)
     }
 }
 
