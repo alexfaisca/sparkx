@@ -82,7 +82,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // initialize degree and bins count vecs
         let mut bins: Vec<usize> = match thread::scope(
             |scope| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
-                let mut bins = vec![0usize; 20];
+                let mut bins = vec![0usize; 128];
                 let mut max_vecs = vec![];
 
                 for tid in 0..threads {
@@ -95,13 +95,16 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
                     max_vecs.push(scope.spawn(
                         move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
-                            let mut bins: Vec<usize> = vec![0; 20];
+                            let mut bins: Vec<usize> = vec![0; u8::MAX as usize];
                             for v in start..end {
                                 let deg = index_ptr.get(v + 1) - index_ptr.get(v);
                                 if deg > u8::MAX as usize {
                                     return Err(Box::new(Error::new(
                                         std::io::ErrorKind::InvalidData,
-                                        "error degree({v}) == {deg} but theoretical max is 16",
+                                        format!(
+                                            "error degree[{v}] == {deg} but max suported is {}",
+                                            u8::MAX
+                                        ),
                                     )));
                                 }
                                 bins[deg] += 1;

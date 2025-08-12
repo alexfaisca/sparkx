@@ -1,1 +1,1 @@
-pub mod euler_trail;
+pub mod hierholzer;

@@ -167,10 +167,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let er = edge_reciprocal.shared_slice();
         let tris = triangle_count.shared_slice();
         let mut stack = stack.clone();
-        let mut test = vec![0u64; 16];
+        let mut test = vec![0usize; u8::MAX as usize];
 
         // max node degree is 16
-        for k in 1..16 {
+        for k in 1..u8::MAX {
             if edge_count == 0 {
                 break;
             }

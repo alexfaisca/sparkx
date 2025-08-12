@@ -308,8 +308,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                 let start = thread_load * tid;
                 let end = std::cmp::min(start + thread_load, node_count);
                 let mut edge_coreness = out;
-                res.push(scope.spawn(move |_| -> Vec<u64> {
-                    let mut res = vec![0u64; 20];
+                res.push(scope.spawn(move |_| -> Vec<usize> {
+                    let mut res = vec![0usize; u8::MAX as usize];
                     for u in start..end {
                         let core_u = *coreness.get(u);
                         for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
@@ -327,17 +327,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                     res
                 }));
             }
-            let joined_res: Vec<Vec<u64>> = res
+            let joined_res: Vec<Vec<usize>> = res
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked"))
                 .collect();
-            let mut r = vec![0u64; 16];
+            let mut r = vec![0usize; u8::MAX as usize];
             for i in 0..16 {
                 for v in joined_res.clone() {
                     r[i] += v[i];
                 }
             }
-            r[0] += total_dead_nodes as u64;
+            r[0] += total_dead_nodes as usize;
             println!("k-cores {:?}", r);
         })
         .unwrap();

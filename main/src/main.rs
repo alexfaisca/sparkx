@@ -14,7 +14,7 @@ use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
 use tool::k_truss::{burkhardt_et_al::*, pkt::*};
 #[allow(unused_imports)]
-use tool::trails::euler_trail::*;
+use tool::trails::hierholzer::*;
 
 use clap::Parser;
 use core::panic;
@@ -213,7 +213,7 @@ fn parse_bytes_mmaped<
     /* ********************************************************************************* */
     //
     let time = Instant::now();
-    let _euler_trail = EulerTrail::new(&graph_mmaped)?;
+    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
     println!("found {} euler trails", _euler_trail.trail_number());
     println!("euler trail built {:?}", time.elapsed());
     // let time = Instant::now();

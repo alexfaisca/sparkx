@@ -16,74 +16,15 @@ use std::{
     time::Instant,
 };
 
-#[derive(Clone)]
-struct FindDisjointSetsEulerTrails {
-    trails: Vec<((usize, usize, usize), usize)>,
-    cycle_check: bool,
-}
-
-impl FindDisjointSetsEulerTrails {
-    pub fn new(trails: &mut [(usize, usize, usize)]) -> Self {
-        trails.sort_unstable_by_key(|(trail_id, _, _)| *trail_id);
-        FindDisjointSetsEulerTrails {
-            trails: trails
-                .iter()
-                .map(|(trail, parent_trail, pos)| ((*trail, *parent_trail, *pos), *parent_trail))
-                .collect::<Vec<((usize, usize, usize), usize)>>(),
-            cycle_check: false,
-        }
-    }
-
-    fn cycle_b(t: &mut [((usize, usize, usize), usize)], visited: &mut [bool], i: usize) -> usize {
-        if t[i].0.0 == t[i].1 {
-            return t[i].1;
-        }
-
-        if visited[t[i].0.0] {
-            t[i].1 = i;
-            t[i].0.1 = i;
-            t[i].0.2 = 0;
-            i
-        } else {
-            visited[t[i].0.0] = true;
-            t[i].1 = Self::cycle_b(t, visited, t[i].1);
-            t[i].1
-        }
-    }
-
-    fn cycle_break(&mut self, i: usize) -> usize {
-        let mut visited = vec![false; self.trails.len()];
-        let t = &mut self.trails;
-        Self::cycle_b(t.as_mut_slice(), visited.as_mut_slice(), i)
-    }
-
-    pub fn cycle_check(&mut self) {
-        if self.cycle_check {
-            return;
-        }
-
-        // build tree
-        for (id, _) in self.clone().trails.iter().enumerate() {
-            self.cycle_break(id);
-        }
-        // functions as an union find in tree
-        for (id, _) in self.clone().trails.iter().enumerate() {
-            self.cycle_break(id);
-        }
-
-        self.cycle_check = true;
-    }
-}
-
 #[allow(dead_code)]
-pub struct EulerTrail<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
     euler_trails: AbstractedProceduralMemoryMut<usize>,
     trail_index: Vec<usize>,
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType, Edge> EulerTrail<'a, EdgeType, Edge>
+impl<'a, EdgeType, Edge> AlgoHierholzer<'a, EdgeType, Edge>
 where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
@@ -92,7 +33,7 @@ where
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let output_fn = cache_file_name(graph.cache_index_filename(), FileType::EulerPath, None)?;
-        let mut euler = EulerTrail {
+        let mut euler = AlgoHierholzer {
             graph,
             euler_trails: SharedSliceMut::<usize>::abst_mem_mut(output_fn, graph.width(), true)?,
             trail_index: Vec::new(),
@@ -101,6 +42,167 @@ where
         Ok(euler)
     }
 
+    fn initialize_hierholzers_procedural_memory(
+        &self,
+        mmap: u8,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<AtomicUsize>,
+            AbstractedProceduralMemoryMut<AtomicU8>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let node_count = self.graph.size() - 1;
+        let threads = self.graph.thread_num();
+        let thread_load = node_count.div_ceil(threads);
+
+        let index_ptr = Arc::new(SharedSlice::<usize>::new(
+            self.graph.index_ptr(),
+            self.graph.size(),
+        ));
+
+        let template_fn = self.graph.cache_edges_filename();
+        let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
+
+        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, node_count, mmap > 0)?;
+        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, node_count, mmap > 1)?;
+
+        thread::scope(|scope| {
+            for i in 0..threads {
+                let index = Arc::clone(&index_ptr);
+                let edges = &edges;
+                let count = &count;
+                let begin = std::cmp::min(thread_load * i, node_count);
+                let end = std::cmp::min(begin + thread_load, node_count);
+
+                scope.spawn(move |_| {
+                    for k in begin..end {
+                        edges.get(k).store(*index.get(k), Ordering::Relaxed);
+                        count
+                            .get(k)
+                            .store((*index.get(k + 1) - *index.get(k)) as u8, Ordering::Relaxed);
+                    }
+                });
+            }
+        })
+        .unwrap();
+        edges.flush()?;
+        count.flush()?;
+        Ok((edges, count))
+    }
+
+    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
+    /// num_threads controls parallelism level (defaults to 1, single-threaded).
+    /// returns vec of (euler path file sequence number, file size(vytes)).
+    pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
+        let time = Instant::now();
+        let node_count = match self.graph.size() - 1 {
+            0 => return Ok(()),
+            i => i,
+        };
+        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
+            self.graph.edges_ptr(),
+            self.graph.width(),
+        ));
+
+        // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
+        let (edges, edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;
+
+        // Atomic counter to pick next starting vertex for a new cycle
+        let start_vertex_counter = Arc::new(AtomicUsize::new(0));
+
+        let mut cycles = self.euler_trails.shared_slice();
+        let mut write_idx = 0usize;
+        // find cycles until no unused edges remain
+        loop {
+            let start_v = loop {
+                let idx = start_vertex_counter
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
+                        if x >= node_count {
+                            Some(0)
+                        } else {
+                            Some(x + 1)
+                        }
+                    })
+                    .unwrap_or(0);
+                if idx >= node_count {
+                    break None;
+                }
+                if edge_count.get(idx).load(Ordering::Relaxed) > 0 {
+                    break Some(idx);
+                }
+            };
+            let start_v = match start_v {
+                Some(v) => v,
+                None => {
+                    break;
+                }
+            };
+
+            // Hierholzer's DFS
+            let mut stack: Vec<usize> = Vec::new();
+            let mut cycle: Vec<usize> = Vec::new();
+            stack.push(start_v);
+            while let Some(&v) = stack.last() {
+                if edge_count
+                    .get(v)
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
+                        if x > 0 {
+                            Some(x - 1)
+                        } else {
+                            None // don't update
+                        }
+                    })
+                    .is_ok()
+                {
+                    let edge_idx = edges.get(v).fetch_add(1, Ordering::Relaxed);
+                    stack.push(graph_ptr.get(edge_idx).dest());
+                } else {
+                    stack.pop();
+                    if cycle.is_empty() {
+                        // check if error of atomic
+                        if stack.is_empty() {
+                            continue;
+                        }
+                    }
+                    cycle.push(v);
+                }
+            }
+            if !cycle.is_empty() {
+                cycle.reverse();
+                let cycle_slice = cycle.as_slice();
+                let end = cycle_slice.len() - 1;
+                write_idx = match cycles.write_slice(write_idx, &cycle_slice[..end]) {
+                    Some(b) => b,
+                    None => {
+                        panic!("error couldn't slice mmap to write cycle")
+                    }
+                };
+                self.trail_index.push(write_idx);
+                cycle.clear();
+            }
+        }
+
+        self.euler_trails.flush_async()?;
+
+        println!("euler trails hierholzer's {:?}", time.elapsed());
+        Ok(())
+    }
+
+    pub fn trail_number(&self) -> usize {
+        self.trail_index.len()
+    }
+
+    pub fn get_trail(&self, idx: usize) -> Option<SharedSliceMut<usize>> {
+        if idx < self.trail_index.len() {
+            Some(self.euler_trails.shared_slice())
+        } else {
+            None
+        }
+    }
+
+    #[deprecated]
     fn create_memmapped_mut_slice_from_tmp_file<V>(
         filename: String,
         len: usize,
@@ -115,6 +217,7 @@ where
         SharedSliceMut::<V>::from_file(&file)
     }
 
+    #[deprecated]
     fn create_memmapped_slice_from_tmp_file<V>(
         filename: String,
     ) -> Result<(SharedSlice<V>, Mmap), Error> {
@@ -122,6 +225,8 @@ where
         SharedSlice::<V>::from_file(&file)
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     fn merge_euler_trails(
         &mut self,
         cycle_offsets: Vec<(usize, usize, usize)>,
@@ -287,176 +392,63 @@ where
 
         Ok(())
     }
+}
 
-    fn initialize_hierholzers_procedural_memory(
-        &self,
-        mmap: u8,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<AtomicUsize>,
-            AbstractedProceduralMemoryMut<AtomicU8>,
-        ),
-        Box<dyn std::error::Error>,
-    > {
-        let node_count = self.graph.size() - 1;
-        let threads = self.graph.thread_num();
-        let thread_load = node_count.div_ceil(threads);
+#[derive(Clone)]
+struct FindDisjointSetsEulerTrails {
+    trails: Vec<((usize, usize, usize), usize)>,
+    cycle_check: bool,
+}
 
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.graph.index_ptr(),
-            self.graph.size(),
-        ));
-
-        let template_fn = self.graph.cache_edges_filename();
-        let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
-
-        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, node_count, mmap > 0)?;
-        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, node_count, mmap > 1)?;
-
-        thread::scope(|scope| {
-            for i in 0..threads {
-                let index = Arc::clone(&index_ptr);
-                let edges = &edges;
-                let count = &count;
-                let begin = std::cmp::min(thread_load * i, node_count);
-                let end = std::cmp::min(begin + thread_load, node_count);
-
-                scope.spawn(move |_| {
-                    for k in begin..end {
-                        edges.get(k).store(*index.get(k), Ordering::Relaxed);
-                        count
-                            .get(k)
-                            .store((*index.get(k + 1) - *index.get(k)) as u8, Ordering::Relaxed);
-                    }
-                });
-            }
-        })
-        .unwrap();
-        edges.flush()?;
-        count.flush()?;
-        Ok((edges, count))
+impl FindDisjointSetsEulerTrails {
+    pub fn new(trails: &mut [(usize, usize, usize)]) -> Self {
+        trails.sort_unstable_by_key(|(trail_id, _, _)| *trail_id);
+        FindDisjointSetsEulerTrails {
+            trails: trails
+                .iter()
+                .map(|(trail, parent_trail, pos)| ((*trail, *parent_trail, *pos), *parent_trail))
+                .collect::<Vec<((usize, usize, usize), usize)>>(),
+            cycle_check: false,
+        }
     }
 
-    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
-    /// num_threads controls parallelism level (defaults to 1, single-threaded).
-    /// returns vec of (euler path file sequence number, file size(vytes)).
-    pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let time = Instant::now();
-        let node_count = match self.graph.size() - 1 {
-            0 => return Ok(()),
-            i => i,
-        };
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
-            self.graph.edges_ptr(),
-            self.graph.width(),
-        ));
-
-        // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
-        let (edges, edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;
-
-        // Atomic counter to pick next starting vertex for a new cycle
-        let start_vertex_counter = Arc::new(AtomicUsize::new(0));
-        // decide safety margin
-        let size: usize = if self.graph.width() > self.graph.size() * 8 {
-            (self.graph.width() as f64 * 1.5) as usize
-        } else if self.graph.width() > self.graph.size() * 4 {
-            (self.graph.width() as f64 * 1.75) as usize
-        } else {
-            self.graph.width() * 2
-        };
-        // mmap to store disjoined trails for subsequent merging
-        let filename = cache_file_name(self.graph.cache_fst_filename(), FileType::EulerTmp, None)?;
-        let cycles = SharedSliceMut::<usize>::abst_mem_mut(filename.clone(), size, true)?;
-        let mut cycles_queue = SharedQueueMut::from_shared_slice(cycles.shared_slice());
-
-        let mut disjoint_cycles: Vec<(usize, usize, usize)> = vec![];
-        // find cycles until no unused edges remain
-        loop {
-            let start_v = loop {
-                let idx = start_vertex_counter
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                        if x >= node_count {
-                            Some(0)
-                        } else {
-                            Some(x + 1)
-                        }
-                    })
-                    .unwrap_or(0);
-                if idx >= node_count {
-                    break None;
-                }
-                if edge_count.get(idx).load(Ordering::Relaxed) > 0 {
-                    break Some(idx);
-                }
-            };
-            let start_v = match start_v {
-                Some(v) => v,
-                None => {
-                    break;
-                }
-            };
-
-            // Hierholzer's DFS
-            let mut stack: Vec<usize> = Vec::new();
-            let mut cycle: Vec<usize> = Vec::new();
-            stack.push(start_v);
-            while let Some(&v) = stack.last() {
-                if edge_count
-                    .get(v)
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                        if x > 0 {
-                            Some(x - 1)
-                        } else {
-                            None // don't update
-                        }
-                    })
-                    .is_ok()
-                {
-                    let edge_idx = edges.get(v).fetch_add(1, Ordering::Relaxed);
-                    stack.push(graph_ptr.get(edge_idx).dest());
-                } else {
-                    stack.pop();
-                    if cycle.is_empty() {
-                        // check if error of atomic
-                        if stack.is_empty() {
-                            continue;
-                        }
-                    }
-                    cycle.push(v);
-                }
-            }
-            if !cycle.is_empty() {
-                cycle.reverse();
-                let cycle_slice = cycle.as_slice();
-                let begin = match cycles_queue.push_slice(cycle_slice) {
-                    Some(b) => b,
-                    None => {
-                        panic!("error couldn't slice mmap to write cycle")
-                    }
-                };
-                let end = begin + cycle_slice.len();
-                let cycle_id = disjoint_cycles.len();
-                disjoint_cycles.push((cycle_id, begin, end));
-                cycle.clear();
-            }
+    fn cycle_b(t: &mut [((usize, usize, usize), usize)], visited: &mut [bool], i: usize) -> usize {
+        if t[i].0.0 == t[i].1 {
+            return t[i].1;
         }
 
-        // mmap.flush()?;
-        // Euler trails are in the mem_mapped file
-        println!("euler trails hierholzer's {:?}", time.elapsed());
-        self.merge_euler_trails(disjoint_cycles)
-    }
-
-    pub fn trail_number(&self) -> usize {
-        self.trail_index.len()
-    }
-
-    pub fn get_trail(&self, idx: usize) -> Option<SharedSliceMut<usize>> {
-        if idx < self.trail_index.len() {
-            Some(self.euler_trails.shared_slice())
+        if visited[t[i].0.0] {
+            t[i].1 = i;
+            t[i].0.1 = i;
+            t[i].0.2 = 0;
+            i
         } else {
-            None
+            visited[t[i].0.0] = true;
+            t[i].1 = Self::cycle_b(t, visited, t[i].1);
+            t[i].1
         }
+    }
+
+    fn cycle_break(&mut self, i: usize) -> usize {
+        let mut visited = vec![false; self.trails.len()];
+        let t = &mut self.trails;
+        Self::cycle_b(t.as_mut_slice(), visited.as_mut_slice(), i)
+    }
+
+    pub fn cycle_check(&mut self) {
+        if self.cycle_check {
+            return;
+        }
+
+        // build tree
+        for (id, _) in self.clone().trails.iter().enumerate() {
+            self.cycle_break(id);
+        }
+        // functions as an union find in tree
+        for (id, _) in self.clone().trails.iter().enumerate() {
+            self.cycle_break(id);
+        }
+
+        self.cycle_check = true;
     }
 }

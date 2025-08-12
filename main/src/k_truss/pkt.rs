@@ -205,8 +205,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 let begin = std::cmp::min(tid * edge_load, edge_count);
                 let end = std::cmp::min(begin + edge_load, edge_count);
 
-                res.push(scope.spawn(move |_| -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
-                    let mut res = vec![0_u64; 20];
+                res.push(scope.spawn(move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
+                    let mut res = vec![0usize; u8::MAX as usize];
                     let mut buff = vec![0; buff_size];
                     let mut i = 0;
 
@@ -419,11 +419,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                     Ok(res)
                 }));
             }
-            let joined_res: Vec<Vec<u64>> = res
+            let joined_res: Vec<Vec<usize>> = res
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked").expect("error ??1"))
                 .collect();
-            let mut r = vec![0u64; 16];
+            let mut r = vec![0usize; u8::MAX as usize];
             for i in 0..16 {
                 for v in joined_res.clone() {
                     r[i] += v[i];
