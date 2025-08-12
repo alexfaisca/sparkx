@@ -8,7 +8,6 @@ use memmap2::{Mmap, MmapMut};
 use std::{
     collections::HashMap,
     fs::OpenOptions,
-    io::Error,
     sync::{
         Arc,
         atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -170,7 +169,7 @@ where
                 write_idx = match cycles.write_slice(write_idx, &cycle_slice[..end]) {
                     Some(b) => b,
                     None => {
-                        panic!("error couldn't slice mmap to write cycle")
+                        return Err("error couldn't slice mmap to write cycle".into());
                     }
                 };
                 self.trail_index.push(write_idx);
@@ -200,7 +199,7 @@ where
     fn create_memmapped_mut_slice_from_tmp_file<V>(
         filename: String,
         len: usize,
-    ) -> Result<(SharedSliceMut<V>, MmapMut), Error> {
+    ) -> Result<(SharedSliceMut<V>, MmapMut), Box<dyn std::error::Error>> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -208,15 +207,15 @@ where
             .read(true)
             .open(&filename)?;
         file.set_len((len * std::mem::size_of::<V>()) as u64)?;
-        SharedSliceMut::<V>::from_file(&file)
+        Ok(SharedSliceMut::<V>::from_file(&file)?)
     }
 
     #[deprecated]
     fn create_memmapped_slice_from_tmp_file<V>(
         filename: String,
-    ) -> Result<(SharedSlice<V>, Mmap), Error> {
+    ) -> Result<(SharedSlice<V>, Mmap), Box<dyn std::error::Error>> {
         let file = OpenOptions::new().read(true).open(filename)?;
-        SharedSlice::<V>::from_file(&file)
+        Ok(SharedSlice::<V>::from_file(&file)?)
     }
 
     #[deprecated]

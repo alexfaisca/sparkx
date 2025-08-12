@@ -117,6 +117,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok((k, sigma, gdi, gde, gddi, gdde, alive, coms, new_coms))
     }
 
+    #[deprecated]
     fn scan_communities(
         map: &mut HashMap<u16, usize>,
         edges: SharedSliceMut<Edge>,
