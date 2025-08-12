@@ -5,7 +5,6 @@ use crate::utils::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
-use std::{io::Error, sync::Arc};
 
 type ProceduralMemoryBZ = (
     AbstractedProceduralMemoryMut<u8>,
@@ -62,10 +61,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let edge_count = self.graph.width();
 
         if node_count == 0 {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "Graph has no vertices",
-            )));
+            return Ok(());
         }
 
         let threads = self.graph.thread_num().max(get_physical());
@@ -73,11 +69,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
         let (degree, mut node, mut core, mut pos) = self.init_procedural_memory_bz(mmap)?;
         // compute out-degrees in parallel
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.graph.index_ptr(),
-            node_count + 1,
-        ));
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count));
+        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
+        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
 
         // initialize degree and bins count vecs
         let mut bins: Vec<usize> = match thread::scope(
@@ -86,8 +79,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 let mut max_vecs = vec![];
 
                 for tid in 0..threads {
-                    let index_ptr = Arc::clone(&index_ptr);
-
                     let mut deg_arr = degree.shared_slice();
 
                     let start = std::cmp::min(tid * thread_load, node_count);
@@ -99,13 +90,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                             for v in start..end {
                                 let deg = index_ptr.get(v + 1) - index_ptr.get(v);
                                 if deg > u8::MAX as usize {
-                                    return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!(
-                                            "error degree[{v}] == {deg} but max suported is {}",
-                                            u8::MAX
-                                        ),
-                                    )));
+                                    return Err(format!(
+                                        "error degree[{v}] == {deg} but max suported is {}",
+                                        u8::MAX
+                                    )
+                                    .into());
                                 }
                                 bins[deg] += 1;
                                 *deg_arr.get_mut(v) = deg as u8;
@@ -119,10 +108,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     let joined_bins = match b.join() {
                         Ok(b) => b,
                         Err(_) => {
-                            return Err(Box::new(Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "error joining degree bins",
-                            )));
+                            return Err("error joining degree bins".into());
                         }
                     };
                     for bin in joined_bins.into_iter() {
@@ -139,14 +125,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 match i {
                     Ok(i) => i,
                     Err(_e) => {
-                        return Err(Box::new(Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            stringify!(_e),
-                        )));
+                        return Err(stringify!(_e).into());
                     }
                 }
             }
-            _ => panic!("error calculating max degree"),
+            _ => {
+                return Err("error calculating max degree".into());
+            }
         };
 
         let max_degree = match bins
@@ -159,10 +144,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 deg
             }
             None => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "error couldn't get max degree",
-                )));
+                return Err("error couldn't get max degree".into());
             }
         };
 
@@ -230,9 +212,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         thread::scope(|scope| {
             let mut res = vec![];
             for tid in 0..threads {
-                let index_ptr = Arc::clone(&index_ptr);
-                let graph_ptr = Arc::clone(&graph_ptr);
-
                 let mut out_ptr = out_slice;
                 let core = core.shared_slice();
 

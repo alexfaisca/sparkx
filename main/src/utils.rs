@@ -2,7 +2,6 @@ use glob::glob;
 use regex::Regex;
 use std::{
     any::type_name,
-    io::Error,
     path::{Path, PathBuf},
 };
 
@@ -23,17 +22,11 @@ pub fn graph_id_from_cache_file_name(
         Some(i) => match i.to_str() {
             Some(i) => i,
             None => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    "error invalid file path --- empty path",
-                )));
+                return Err("error invalid file path --- empty path".into());
             }
         },
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error invalid file path --- path not found",
-            )));
+            return Err("error invalid file path --- path not found".into());
         }
     };
 
@@ -41,28 +34,19 @@ pub fn graph_id_from_cache_file_name(
     let re = match Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).ok() {
         Some(i) => i,
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error analyzing file name (regex failed)",
-            )));
+            return Err("error analyzing file name (regex failed)".into());
         }
     };
     let caps = match re.captures(file_name) {
         Some(i) => i,
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error capturing filnr name (regex captures failed: fail point 1)",
-            )));
+            return Err("error capturing filnr name (regex captures failed: fail point 1)".into());
         }
     };
     let id = match caps.get(1) {
         Some(i) => i.as_str(),
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error capturing filne name (regex capture failed: fail point 2)",
-            )));
+            return Err("error capturing filne name (regex capture failed: fail point 2)".into());
         }
     };
 
@@ -79,17 +63,11 @@ fn graph_id_and_dir_from_cache_file_name(
         Some(i) => match i.to_str() {
             Some(i) => i,
             None => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    "error invalid file path --- empty path",
-                )));
+                return Err("error invalid file path --- empty path".into());
             }
         },
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error invalid file path --- path not found",
-            )));
+            return Err("error invalid file path --- path not found".into());
         }
     };
 
@@ -99,28 +77,19 @@ fn graph_id_and_dir_from_cache_file_name(
     let re = match Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).ok() {
         Some(i) => i,
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error analyzing file name (regex failed)",
-            )));
+            return Err("error analyzing file name (regex failed)".into());
         }
     };
     let caps = match re.captures(file_name) {
         Some(i) => i,
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error capturing filnr name (regex captures failed: fail point 1)",
-            )));
+            return Err("error capturing filnr name (regex captures failed: fail point 1)".into());
         }
     };
     let id = match caps.get(1) {
         Some(i) => i.as_str(),
         None => {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error capturing filne name (regex capture failed: fail point 2)",
-            )));
+            return Err("error capturing filne name (regex capture failed: fail point 2)".into());
         }
     };
 
@@ -150,7 +119,7 @@ pub fn id_for_subgraph_export(
 }
 
 #[allow(dead_code)]
-pub fn cleanup_cache() -> Result<(), Error> {
+pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
     match glob((CACHE_DIR.to_string() + "/*.tmp").as_str()) {
         Ok(entries) => {
             for entry in entries {
@@ -161,10 +130,7 @@ pub fn cleanup_cache() -> Result<(), Error> {
             }
             Ok(())
         }
-        Err(e) => Err(Error::new(
-            std::io::ErrorKind::Other,
-            format!("error cleaning up cache: {e}"),
-        )),
+        Err(e) => Err(format!("error cleaning up cache: {e}").into()),
     }
 }
 
@@ -188,6 +154,7 @@ pub enum FileType {
     HyperBallClosenessCentrality,
     HyperBallHarmonicCentrality,
     HyperBallLinCentrality,
+    GVELouvain,
 }
 
 pub fn file_name_from_id_and_sequence_for_type(
@@ -239,6 +206,10 @@ pub fn file_name_from_id_and_sequence_for_type(
         FileType::HyperBallLinCentrality => {
             format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
         }
+        FileType::GVELouvain => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "louvaintmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "louvain", id, "mmap"),
+        },
     }
 }
 
@@ -262,6 +233,7 @@ impl std::fmt::Display for FileType {
             FileType::HyperBallClosenessCentrality => "HyperBallClosenessCentrality",
             FileType::HyperBallHarmonicCentrality => "HyperBallHarmonicCentrality",
             FileType::HyperBallLinCentrality => "HyperBallLinCentrality",
+            FileType::GVELouvain => "Louvain",
         };
         write!(f, "{}", s)
     }

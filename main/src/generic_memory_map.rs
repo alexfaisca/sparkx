@@ -1,22 +1,24 @@
 use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
-    AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice,
-    SharedSliceMut,
+    AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
 };
-use crate::utils::{cache_file_name, cleanup_cache, graph_id_from_cache_file_name, id_for_subgraph_export, FileType, CACHE_DIR, TEMP_CACHE_DIR};
+use crate::utils::{
+    CACHE_DIR, FileType, TEMP_CACHE_DIR, cache_file_name, cleanup_cache,
+    graph_id_from_cache_file_name, id_for_subgraph_export,
+};
 
-use std::io::{Seek, SeekFrom};
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
 use ordered_float::OrderedFloat;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
+use std::io::{Seek, SeekFrom};
 use std::{
     collections::HashSet,
     fmt::Debug,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Error, Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
     process::Command,
@@ -29,7 +31,6 @@ use std::{
 use zerocopy::*;
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
-
 
 pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub graph_file: Arc<File>,
@@ -59,7 +60,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     pub(self) fn init_cache_file_from_id_or_random(
         graph_id: Option<String>,
         target_type: FileType,
-    ) -> Result<(String, String), Error> {
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
         let id = match graph_id {
             Some(i) => i,
             None => rand::random::<u64>().to_string(),
@@ -73,13 +74,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 FileType::KmerSortedTmp => {
                     format!("{}{}_{}.{}", CACHE_DIR, "kmersortedtmpfile", id, "tmp")
                 }
-                _ => panic!("error unsupported file type for GraphCache: {target_type}"),
+                _ => {
+                    return Err(format!(
+                        "error unsupported file type for GraphCache: {target_type}"
+                    )
+                    .into());
+                }
             },
             id,
         ))
     }
 
-    fn read_input_file<P: AsRef<Path> + Clone>(path: P) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    fn read_input_file<P: AsRef<Path> + Clone>(
+        path: P,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut reader = BufReader::new(File::open(path.clone())?);
         let ext = path.as_ref().extension();
         let mut contents = Vec::new();
@@ -88,7 +96,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         if let Some(ext) = ext {
             match ext.to_str() {
                 Some(Self::EXT_COMPRESSED_LZ4) => {
-                    // Decompress .lz4 using lz4 extern crate 
+                    // Decompress .lz4 using lz4 extern crate
                     let mut decoder = lz4::Decoder::new(reader)?;
                     decoder.read_to_end(&mut contents)?;
                 }
@@ -96,23 +104,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                     reader.read_to_end(&mut contents)?;
                 }
                 _ => {
-                    return Err(Box::new(Error::new(
-                                std::io::ErrorKind::Unsupported,
-                                format!(
-                                    "error ubknown extension {:?}: must be of type .{} or .{}", ext, Self::EXT_PLAINTEXT, Self::EXT_COMPRESSED_LZ4
-                                    ),))
-                        );
+                    return Err(format!(
+                        "error ubknown extension {:?}: must be of type .{} or .{}",
+                        ext,
+                        Self::EXT_PLAINTEXT,
+                        Self::EXT_COMPRESSED_LZ4
+                    )
+                    .into());
                 }
             };
             Ok(contents)
         } else {
-            Err(Box::new(Error::new(
-                std::io::ErrorKind::Unsupported,
-                "error input files must have an extension"
-            )))
+            Err("error input files must have an extension".into())
         }
     }
-
 
     /// Parses a ggcat output edge direction
     ///
@@ -159,12 +164,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             ("+", "-") => Ok(1u64),
             ("-", "+") => Ok(2u64),
             ("-", "-") => Ok(3u64),
-            _ => Err(Box::new(Error::new(
-                        std::io::ErrorKind::Unsupported,
-                        format!(
-                            "error ubknown edge direction annotations (supported are '+' && '-'): (orig: {orig}, dest: {dest})"
-                            ),))
-                ),
+            _ => Err(format!("error ubknown edge direction annotations (supported are '+' && '-'): (orig: {orig}, dest: {dest})").into()),
         }
     }
 
@@ -202,7 +202,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// // for every node record at most 8 edges and add its label to the grapph's finite state
     /// // transducer if the node id is 123432 or 912383 or it its id is divisible by 7
     /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(
-    ///     input_bytes, 
+    ///     input_bytes,
     ///     Some(8),
     ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
     /// )?;
@@ -211,8 +211,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn parse_ggcat_bytes_mmap(
         &mut self,
         input: &[u8],
-        in_fst: fn(usize) -> bool
-        ) -> Result<(), Box<dyn std::error::Error>> {
+        in_fst: fn(usize) -> bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // this assumes UTF-8 but avoids full conversion
         let mut lines = input.split(|&b| b == b'\n');
         let mut edges = vec![];
@@ -224,16 +224,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             let line_str = std::str::from_utf8(&line[1..])?;
 
             let sequence_line = match lines.next() {
-                None => { 
-                    return Err(Box::new(Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                format!("error no k-mer sequence for node {line_str}"),
-                                ))
-                        );
-                },
+                None => {
+                    return Err(format!("error no k-mer sequence for node {line_str}").into());
+                }
                 Some(i) => i,
             };
-            // convert each line to str temporarily -> cut off ">" char 
+            // convert each line to str temporarily -> cut off ">" char
             let line_str = std::str::from_utf8(&line[1..line.len()])?;
             let node = line_str.split_whitespace().collect::<Vec<&str>>();
             let mut node = node.iter().peekable();
@@ -243,12 +239,19 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             let _node_color = node.next(); // color value
             for link in node {
                 let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
-                edges.push(Edge::new(link_slice[1].parse()?, Self::parse_ggcat_direction(link_slice[0], link_slice[2])?));
+                edges.push(Edge::new(
+                    link_slice[1].parse()?,
+                    Self::parse_ggcat_direction(link_slice[0], link_slice[2])?,
+                ));
             }
             edges.sort_unstable_by_key(|e| e.dest());
 
             if in_fst(id) {
-                self.write_node(id, edges.as_slice(), std::str::from_utf8(&sequence_line[0..])?)?;
+                self.write_node(
+                    id,
+                    edges.as_slice(),
+                    std::str::from_utf8(&sequence_line[0..])?,
+                )?;
             } else {
                 self.write_unlabeled_node(id, edges.as_slice())?;
             }
@@ -266,10 +269,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             fs::create_dir_all(CACHE_DIR)?;
         }
         if id.is_empty() {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "error invalid cache id: id was `None`",
-            )));
+            return Err("error invalid cache id: id was `None`".into());
         }
 
         let (graph_filename, id) =
@@ -279,26 +279,32 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let (kmer_filename, _) =
             Self::init_cache_file_from_id_or_random(Some(id), FileType::KmerTmp)?;
 
-        let graph_file = Arc::new(OpenOptions::new()
-            .read(true)
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(graph_filename.as_str())?);
+        let graph_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(true)
+                .create(true)
+                .open(graph_filename.as_str())?,
+        );
 
-        let index_file = Arc::new(OpenOptions::new()
-            .read(true)
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(index_filename.as_str())?);
+        let index_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(true)
+                .create(true)
+                .open(index_filename.as_str())?,
+        );
 
-        let kmer_file = Arc::new(OpenOptions::new()
-            .read(true)
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(kmer_filename.as_str())?);
+        let kmer_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(true)
+                .create(true)
+                .open(kmer_filename.as_str())?,
+        );
 
         Ok(GraphCache::<EdgeType, Edge> {
             graph_file,
@@ -325,7 +331,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         path: P,
         id: Option<String>,
         batch: Option<usize>,
-        in_fst: Option<fn(usize) -> bool>
+        in_fst: Option<fn(usize) -> bool>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         // make sure cache directory exists, if not attempt to create it
         if !Path::new(CACHE_DIR).exists() {
@@ -338,11 +344,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // parse optional inputs && fallback to defaults for the Nones found
-        let id = id.map_or(rand::random::<u64>().to_string(), |id| {id});
-        let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| {b}));
+        let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
+        let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
         let in_fst = match in_fst {
             Some(f) => f,
-            None => {|_id: usize| -> bool { false }}
+            None => |_id: usize| -> bool { false },
         };
         let input = Self::read_input_file(path)?;
 
@@ -359,7 +365,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     }
 
     #[inline(always)]
-    fn process_ggcat_entry(id_line: String, label_line: Vec<u8>, in_fst: fn(usize) -> bool) -> Result<ProcessGGCATEntry, Box<dyn std::error::Error>> {
+    fn process_ggcat_entry(
+        id_line: String,
+        label_line: Vec<u8>,
+        in_fst: fn(usize) -> bool,
+    ) -> Result<ProcessGGCATEntry, Box<dyn std::error::Error>> {
         let node = id_line.split_whitespace().collect::<Vec<&str>>();
         let id: usize = node.first().unwrap().parse()?;
 
@@ -368,7 +378,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         } else {
             Ok(None)
         }
-
     }
 
     fn process_chunk_with_reader<R: BufRead>(
@@ -379,190 +388,195 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch_size: usize,
         in_fst: fn(usize) -> bool,
     ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let mut current_batch: Vec<(Vec<u8>, u64)> = Vec::with_capacity(batch_size);
-    let mut batches = Vec::new();
+        let mut current_batch: Vec<(Vec<u8>, u64)> = Vec::with_capacity(batch_size);
+        let mut batches = Vec::new();
 
-    let mut id_line: String = String::new();
-    let mut label_line: Vec<u8> = Vec::new();
+        let mut id_line: String = String::new();
+        let mut label_line: Vec<u8> = Vec::new();
 
-    reader.read_until(b'>', &mut label_line)?;
-    label_line.clear();
+        reader.read_until(b'>', &mut label_line)?;
+        label_line.clear();
 
-    // first iteration
-    let r_i = reader.read_line(&mut id_line)?;
-    label_line.clear();
-    let r_l = reader.read_until(b'\n', &mut label_line)?;
-    if r_i == 0 || r_l == 0 {
-        return Err(Box::new(Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("error empty label for node {id_line}"),
-                    ))
-            );
-    }
-    let mut read = r_i + r_l;
-
-    let mut node_str = &id_line.clone()[..];
-    // continue until end of strem or read >= end
-    loop {
-
-        // convert each line to str temporarily && cut off ">" char
-        let _ = label_line.pop(); // pop '\n'
-
-        if let Some(entry) = Self::process_ggcat_entry(node_str.to_string(), label_line.clone(), in_fst)? {
-            current_batch.push(entry);
-            if current_batch.len() >= batch_size {
-                println!("wrote {}", batch_num.load(Ordering::Relaxed));
-                let tmp_fst = self.build_batch_fst_vec(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
-                batches.push(tmp_fst);
-                current_batch.clear();
-            }
-        }
-
-
-        id_line.clear();
+        // first iteration
         let r_i = reader.read_line(&mut id_line)?;
-        node_str = &id_line[1..];
         label_line.clear();
         let r_l = reader.read_until(b'\n', &mut label_line)?;
         if r_i == 0 || r_l == 0 {
-            return Err(Box::new(Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("error empty label for node {id_line}"),
-                        ))
-                );
+            return Err(format!("error empty label for node {id_line}").into());
         }
+        let mut read = r_i + r_l;
 
-        read += r_i;
-        read += r_l;
+        let mut node_str = &id_line.clone()[..];
+        // continue until end of strem or read >= end
+        loop {
+            // convert each line to str temporarily && cut off ">" char
+            let _ = label_line.pop(); // pop '\n'
 
-        if read >= end {
-            break;
-        }
-    }
-
-    // Process the last batch if not empty
-    if !current_batch.is_empty() {
-        let tmp_fst = self.build_batch_fst_vec(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
-        batches.push(tmp_fst);
-    }
-
-    Ok(batches)
-}
-
-fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
-    &mut self,
-    file_path: P,
-    batch_size: usize,
-    in_fst: fn(usize) -> bool,
-    threads: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if !self.readonly {
-        return Err(Box::new(Error::new(
-            std::io::ErrorKind::InvalidData,
-            "error cache must be readonly to build fst in parallel",
-        )));
-    }
-    let file = File::open(file_path.clone())?;
-    let file_len = file.metadata()?.len(); // Get the size of the file
-    let ext = file_path.as_ref().extension();
-    if ext.is_none() {
-        return Err(Box::new(Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "error file extension was None",
-                        ))
-                );
-    }
-    let ext = ext.unwrap().to_str();
-
-    let chunk_size = file_len / threads as u64;
-    let batch_num = Arc::new(AtomicUsize::new(0));
-
-    let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-        let mut batch_handles = Vec::new();
-
-        for i in 0..threads {
-            let mut cache = self.clone();
-            let batch_num = Arc::clone(&batch_num);
-
-            let path = file_path.as_ref();
-            let r = match ext {
-                Some(Self::EXT_COMPRESSED_LZ4) => 1,
-                Some(Self::EXT_PLAINTEXT) => 2,
-                _ => 0,
-            };
-
-            let start = i as u64 * chunk_size;
-            let end = std::cmp::min(start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE as u64, file_len);
-
-            let handle = s.spawn(move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
-                let mut file = File::open(path)?; // Open the file separately in each thread
-                let mut reader = BufReader::new(&mut file);
-                reader.seek(SeekFrom::Start(start))?;
-                let mut input_chunk = reader.take(end - start);
-
-                    let res  = match r {
-                        1 => {
-                            let decoder = lz4::Decoder::new(input_chunk)?;
-                            let mut reader = BufReader::new(decoder);
-                            cache.process_chunk_with_reader(&mut reader, end as usize, batch_num, batch_size, in_fst)
-                        }
-                        2 => {
-                            cache.process_chunk_with_reader(&mut input_chunk, end as usize, batch_num, batch_size, in_fst)
-                        },
-                        _ => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("error unknown file extension {:?}", ext),
-                                        ))
-                                );
-                        }
-                    };
-
-                    match res {
-                        Ok(i) => Ok(i),
-                        Err(e)  => Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("error occured for thread {i}: {e}"),
-                                        ))
-                            )
-                    }
-            });
-
-            batch_handles.push(handle);
-        }
-
-        let mut all_batches = Vec::new();
-        for handle in batch_handles {
-            match handle.join() {
-                Ok(Ok(batches)) => {
-                    all_batches.extend(batches);
-                }
-                Ok(Err(e)) => {
-                    return Err(e);
-                }
-                Err(e) => {
-                    return Err(Box::new(Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("Error in thread: {:?}", e),
-                    )));
+            if let Some(entry) =
+                Self::process_ggcat_entry(node_str.to_string(), label_line.clone(), in_fst)?
+            {
+                current_batch.push(entry);
+                if current_batch.len() >= batch_size {
+                    println!("wrote {}", batch_num.load(Ordering::Relaxed));
+                    let tmp_fst = self.build_batch_fst_vec(
+                        &mut current_batch,
+                        batch_num.fetch_add(1, Ordering::Relaxed),
+                    )?;
+                    batches.push(tmp_fst);
+                    current_batch.clear();
                 }
             }
+
+            id_line.clear();
+            let r_i = reader.read_line(&mut id_line)?;
+            node_str = &id_line[1..];
+            label_line.clear();
+            let r_l = reader.read_until(b'\n', &mut label_line)?;
+            if r_i == 0 || r_l == 0 {
+                return Err(format!("error empty label for node {id_line}").into());
+            }
+
+            read += r_i;
+            read += r_l;
+
+            if read >= end {
+                break;
+            }
         }
-        Ok(all_batches)
-    }).unwrap()?;
 
-    // Now merge all batch FSTs into one option 
-    self.merge_fsts(&batches)?;
+        // Process the last batch if not empty
+        if !current_batch.is_empty() {
+            let tmp_fst = self.build_batch_fst_vec(
+                &mut current_batch,
+                batch_num.fetch_add(1, Ordering::Relaxed),
+            )?;
+            batches.push(tmp_fst);
+        }
 
-    // Clean up temporary batch files
-    for batch_file in batches {
-        let _ = std::fs::remove_file(batch_file);
+        Ok(batches)
     }
 
-    Ok(())
-}
+    fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
+        &mut self,
+        file_path: P,
+        batch_size: usize,
+        in_fst: fn(usize) -> bool,
+        threads: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.readonly {
+            return Err("error cache must be readonly to build fst in parallel".into());
+        }
+        let file = File::open(file_path.clone())?;
+        let file_len = file.metadata()?.len(); // Get the size of the file
+        let ext = file_path.as_ref().extension();
+        if ext.is_none() {
+            return Err("error file extension was None".into());
+        }
+        let ext = ext.unwrap().to_str();
 
-    fn process_chunk(&mut self, input: &[u8], end: usize, batch_num: Arc<AtomicUsize>, batch_size: usize, in_fst: fn(usize) -> bool) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let chunk_size = file_len / threads as u64;
+        let batch_num = Arc::new(AtomicUsize::new(0));
+
+        let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+            let mut batch_handles = Vec::new();
+
+            for i in 0..threads {
+                let mut cache = self.clone();
+                let batch_num = Arc::clone(&batch_num);
+
+                let path = file_path.as_ref();
+                let r = match ext {
+                    Some(Self::EXT_COMPRESSED_LZ4) => 1,
+                    Some(Self::EXT_PLAINTEXT) => 2,
+                    _ => 0,
+                };
+
+                let start = i as u64 * chunk_size;
+                let end = std::cmp::min(
+                    start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE as u64,
+                    file_len,
+                );
+
+                let handle = s.spawn(
+                    move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+                        let mut file = File::open(path)?; // Open the file separately in each thread
+                        let mut reader = BufReader::new(&mut file);
+                        reader.seek(SeekFrom::Start(start))?;
+                        let mut input_chunk = reader.take(end - start);
+
+                        let res = match r {
+                            1 => {
+                                let decoder = lz4::Decoder::new(input_chunk)?;
+                                let mut reader = BufReader::new(decoder);
+                                cache.process_chunk_with_reader(
+                                    &mut reader,
+                                    end as usize,
+                                    batch_num,
+                                    batch_size,
+                                    in_fst,
+                                )
+                            }
+                            2 => cache.process_chunk_with_reader(
+                                &mut input_chunk,
+                                end as usize,
+                                batch_num,
+                                batch_size,
+                                in_fst,
+                            ),
+                            _ => {
+                                return Err(
+                                    format!("error unknown file extension {:?}", ext).into()
+                                );
+                            }
+                        };
+
+                        match res {
+                            Ok(i) => Ok(i),
+                            Err(e) => Err(format!("error occured for thread {i}: {e}").into()),
+                        }
+                    },
+                );
+
+                batch_handles.push(handle);
+            }
+
+            let mut all_batches = Vec::new();
+            for handle in batch_handles {
+                match handle.join() {
+                    Ok(Ok(batches)) => {
+                        all_batches.extend(batches);
+                    }
+                    Ok(Err(e)) => {
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        return Err(format!("Error in thread: {:?}", e).into());
+                    }
+                }
+            }
+            Ok(all_batches)
+        })
+        .unwrap()?;
+
+        // Now merge all batch FSTs into one option
+        self.merge_fsts(&batches)?;
+
+        // Clean up temporary batch files
+        for batch_file in batches {
+            let _ = std::fs::remove_file(batch_file);
+        }
+
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        input: &[u8],
+        end: usize,
+        batch_num: Arc<AtomicUsize>,
+        batch_size: usize,
+        in_fst: fn(usize) -> bool,
+    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
         let mut begin_pos = 0;
         let mut end_pos = 0;
 
@@ -585,7 +599,6 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         let mut lines = input.split(|&b| b == b'\n');
 
         while let Some(line) = lines.next() {
-
             if line.is_empty() {
                 continue;
             }
@@ -594,12 +607,8 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
             let line_str = std::str::from_utf8(&line[1..])?;
             let label_line = match lines.next() {
                 None => {
-                    return Err(Box::new(Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                format!("error no label for node {line_str}"),
-                                ))
-                        );
-                },
+                    return Err(format!("error no label for node {line_str}").into());
+                }
                 Some(i) => i,
             };
 
@@ -608,27 +617,31 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
             let id: usize = node.first().unwrap().parse()?;
 
             if in_fst(id) {
-
                 current_batch.push((label_line, id as u64));
 
                 if current_batch.len() >= batch_size {
                     println!("wrote {}", batch_num.load(Ordering::Relaxed));
-                    let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
+                    let tmp_fst = self.build_batch_fst(
+                        &mut current_batch,
+                        batch_num.fetch_add(1, Ordering::Relaxed),
+                    )?;
                     batches.push(tmp_fst);
                     current_batch.clear();
                 }
-
             }
         }
 
         // Process the last batch if not empty
         if !current_batch.is_empty() {
-            let tmp_fst = self.build_batch_fst(&mut current_batch, batch_num.fetch_add(1, Ordering::Relaxed))?;
+            let tmp_fst = self.build_batch_fst(
+                &mut current_batch,
+                batch_num.fetch_add(1, Ordering::Relaxed),
+            )?;
             batches.push(tmp_fst);
         }
 
         Ok(batches)
-}
+    }
 
     fn parallel_fst_from_ggcat_bytes(
         &mut self,
@@ -636,13 +649,9 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         batch_size: usize,
         in_fst: fn(usize) -> bool,
         threads: usize,
-        ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if !self.readonly {
-            return Err(Box::new(Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "error cache must be readonly to build fst in parallel"
-                        ))
-                );
+            return Err("error cache must be readonly to build fst in parallel".into());
         }
 
         let input_size = input.len();
@@ -651,7 +660,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
 
         let shared_slice = SharedSlice::from_slice(input);
 
-        let batches = thread::scope(|s| -> Result<Vec<PathBuf>,  Box<dyn std::error::Error>> {
+        let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
             let mut batches = Vec::new();
             for i in 0..threads {
                 let mut cache = self.clone();
@@ -659,78 +668,61 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                 let batch_num = Arc::clone(&batch_num);
 
                 let start = std::cmp::min(i * chunk_size, input_size);
-                let end = std::cmp::min(start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE, input_size);
+                let end = std::cmp::min(
+                    start + chunk_size + Self::DEFAULT_CORRECTION_BUFFER_SIZE,
+                    input_size,
+                );
 
+                batches.push(s.spawn(
+                    move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+                        let input = match shared_slice.slice(start, end) {
+                            Some(slice) => slice,
+                            None => {
+                                return Err("error occured while chunking input in slices".into());
+                            }
+                        };
 
-                let thread_handle = s.spawn(move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
-
-                    let input = match shared_slice.slice(start, end) {
-                        Some(slice) => slice,
-                        None => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        "error occured while chunking input in slices"
-                                        ))
-                            );
-                        }
-                    };
-
-                    match cache.process_chunk(input, chunk_size, batch_num, batch_size, in_fst) {
-                        Ok(b) => Ok(b),
-                        Err(e) => {
-                            Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("error occured while batching fst build in parallel: {e}")
-                                        ))
+                        match cache.process_chunk(input, chunk_size, batch_num, batch_size, in_fst)
+                        {
+                            Ok(b) => Ok(b),
+                            Err(e) => Err(format!(
+                                "error occured while batching fst build in parallel: {e}"
                             )
+                            .into()),
                         }
-                    }
-
-                });
-
-                batches.push(thread_handle);
+                    },
+                ));
             }
 
             let mut b = Vec::new();
             for batch in batches {
                 match batch.join() {
-                    Ok(i) => {
-                        match i {
-                            Ok(paths) => {
-                                for path in paths {
-                                    b.push(path);
-                                }
+                    Ok(i) => match i {
+                        Ok(paths) => {
+                            for path in paths {
+                                b.push(path);
                             }
-                            Err(e) => {
-                                return Err(Box::new(Error::new(
-                                            std::io::ErrorKind::InvalidData,
-                                            format!("error is thread {:?}", e)
-                                            ))
-                                    );
-                            }}
+                        }
+                        Err(e) => return Err(format!("error is thread {e}").into()),
                     },
                     Err(e) => {
-                        return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidData,
-                                        format!("error is thread {:?}", e)
-                                        ))
-                            );
+                        return Err(format!("error is thread {:?}", e).into());
                     }
-
                 }
             }
             Ok(b)
-        }).unwrap()?;
+        })
+        .unwrap()?;
 
-        // if graph cache was used to build a graph then the graph's fst 
-        //  holds kmer_filename open, hence, it must be removed so that the new fst may 
-        //  be built 
+        // if graph cache was used to build a graph then the graph's fst
+        //  holds kmer_filename open, hence, it must be removed so that the new fst may
+        //  be built
         std::fs::remove_file(self.kmer_filename.clone())?;
 
-        // Now merge all batch FSTs into option 
+        // Now merge all batch FSTs into option
         self.merge_fsts(&batches)?;
 
-        // Cleanup temp batch files 
+        // Cleanup temp batch files
         for batch_file in batches {
             let _ = std::fs::remove_file(batch_file);
         }
@@ -772,7 +764,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
     /// // for every node record at most 8 edges and add its label to the grapph's finite state
     /// // transducer if the node id is 123432 or 912383 or it its id is divisible by 7
     /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(
-    ///     input_bytes, 
+    ///     input_bytes,
     ///     Some(8),
     ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
     /// )?;
@@ -783,8 +775,8 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         &mut self,
         input: &[u8],
         batch_size: usize,
-        in_fst: fn(usize) -> bool
-        ) -> Result<(), Box<dyn std::error::Error>> {
+        in_fst: fn(usize) -> bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // this assumes UTF-8 but avoids full conversion
 
         let mut batch_num: usize = 0usize;
@@ -802,13 +794,9 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
             let line_str = std::str::from_utf8(&line[1..])?;
 
             let sequence_line = match lines.next() {
-                None => { 
-                    return Err(Box::new(Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                format!("error no k-mer sequence for node {line_str}"),
-                                ))
-                        );
-                },
+                None => {
+                    return Err(format!("error no k-mer sequence for node {line_str}").into());
+                }
                 Some(i) => i,
             };
 
@@ -833,9 +821,8 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
             batches.push(tmp_fst);
         }
 
-
         // if graph cache was used to build a graph then the graph's fst
-        // holds kmer_filename open, hence, it must be removed so that the new fst may 
+        // holds kmer_filename open, hence, it must be removed so that the new fst may
         // be built
         std::fs::remove_file(self.kmer_filename.clone())?;
         // Now merge all batch FSTs into one
@@ -854,18 +841,23 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         &mut self,
         path: P,
         batch: Option<usize>,
-        in_fst: Option<fn(usize) -> bool>
+        in_fst: Option<fn(usize) -> bool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let batching = batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| {b});
+        let batching = batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b);
         let in_fst = match in_fst {
             Some(f) => f,
-            None => {|_id: usize| -> bool { true }}
+            None => |_id: usize| -> bool { true },
         };
 
         // self.parallel_fst_from_ggcat_with_reader(path, batching, in_fst, get_physical())?;
         let input = Self::read_input_file(path)?;
         // FIXME: Out Of Memory
-        self.parallel_fst_from_ggcat_bytes(input.as_slice(), batching, in_fst, num_cpus::get_physical())?;
+        self.parallel_fst_from_ggcat_bytes(
+            input.as_slice(),
+            batching,
+            in_fst,
+            num_cpus::get_physical(),
+        )?;
         // self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
         //
         Ok(())
@@ -873,20 +865,34 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
 
     pub fn open(
         filename: String,
-        batch: Option<usize>
+        batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| {b}));
+        let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
         let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
         let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
         let kmer_filename = cache_file_name(filename.clone(), FileType::Fst, None)?;
 
-        let graph_file = Arc::new(OpenOptions::new().read(true).open(graph_filename.as_str())?);
-        let index_file = Arc::new(OpenOptions::new().read(true).open(index_filename.as_str())?);
+        let graph_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .open(graph_filename.as_str())?,
+        );
+        let index_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .open(index_filename.as_str())?,
+        );
         let kmer_file = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
             Ok(file) => Arc::new(file),
             Err(_) => {
                 // if graph has no fst in cache no problem, build empty one and proceed
-                let empty_fst = Arc::new(OpenOptions::new().create(true).truncate(true).write(true).open(&kmer_filename)?);
+                let empty_fst = Arc::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .write(true)
+                        .open(&kmer_filename)?,
+                );
                 let builder = MapBuilder::new(empty_fst.clone())?;
                 builder.finish()?;
                 // make it readonly :)
@@ -931,10 +937,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                 match self.index_file.write_all(self.graph_bytes.as_bytes()) {
                     Ok(_) => self.index_bytes += 1,
                     Err(e) => {
-                        return Err(Box::new(Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("error writing index for {node_id}: {e}"),
-                        )));
+                        return Err(format!("error writing index for {node_id}: {e}").into());
                     }
                 };
 
@@ -943,18 +946,12 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                         self.graph_bytes += data.len();
                         Ok(())
                     }
-                    Err(e) => Err(Box::new(Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("error writing edges for {node_id}: {e}"),
-                    ))),
+                    Err(e) => Err(format!("error writing edges for {node_id}: {e}").into()),
                 }
             }
-            false => Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
-                ),
-            ))),
+            false => Err(
+                format!("error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
+                ).into()),
         }
     }
 
@@ -969,10 +966,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                 match self.index_file.write_all(self.graph_bytes.as_bytes()) {
                     Ok(_) => self.index_bytes += 1,
                     Err(e) => {
-                        return Err(Box::new(Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("error writing index for {node_id}: {e}"),
-                        )));
+                        return Err(format!("error writing index for {node_id}: {e}").into());
                     }
                 };
 
@@ -981,18 +975,12 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                         self.graph_bytes += data.len();
                         Ok(())
                     }
-                    Err(e) => Err(Box::new(Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("error writing edges for {node_id}: {e}"),
-                    ))),
+                    Err(e) => Err(format!("error writing edges for {node_id}: {e}").into()),
                 }
             }
-            false => Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                format!(
+            false => Err(format!(
                     "error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
-                ),
-            ))),
+                ).into()),
         }
     }
 
@@ -1018,10 +1006,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                 Arc::new(i)
             }
             Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldn't create mer .fst file: {e}"),
-                )));
+                return Err(format!("error couldn't create mer .fst file: {e}").into());
             }
         };
 
@@ -1033,10 +1018,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         let mut build = match MapBuilder::new(&*self.kmer_file) {
             Ok(i) => i,
             Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldn't initialize builder: {e}"),
-                )));
+                return Err(format!("error couldn't initialize builder: {e}").into());
             }
         };
 
@@ -1051,10 +1033,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                     }
                 }
                 Err(e) => {
-                    return Err(Box::new(Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("error reading file: {e}"),
-                    )));
+                    return Err(format!("error reading file: {e}").into());
                 }
             };
             if let Ok(text) = std::str::from_utf8(&line) {
@@ -1064,12 +1043,9 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                     match build.insert(kmer, id) {
                         Ok(i) => i,
                         Err(e) => {
-                            return Err(Box::new(Error::new(
-                                std::io::ErrorKind::Other,
-                                format!(
+                            return Err(format!(
                                     "error couldn't insert kmer for node (id: {id_value} label: {kmer}): {e}"
-                                ),
-                            )));
+                                ).into());
                         }
                     };
                 }
@@ -1079,10 +1055,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
 
         match build.finish() {
             Ok(_) => Ok(()),
-            Err(e) => Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                format!("error couldn't finish fst build: {e}"),
-            ))),
+            Err(e) => Err(format!("error couldn't finish fst build: {e}").into()),
         }
     }
 
@@ -1210,7 +1183,8 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
                 .iter()
                 .map(|p| {
                     let mmap = unsafe {
-                        MmapOptions::new().map(&OpenOptions::new().read(true).create(false).open(p)?)?
+                        MmapOptions::new()
+                            .map(&OpenOptions::new().read(true).create(false).open(p)?)?
                     };
                     Map::new(mmap)
                 })
@@ -1252,10 +1226,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         match self.index_file.write_all(self.graph_bytes.as_bytes()) {
             Ok(_) => self.index_bytes += 1,
             Err(e) => {
-                return Err(Box::new(Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("error couldn't finish index: {e}"),
-                )));
+                return Err(format!("error couldn't finish index: {e}").into());
             }
         };
 
@@ -1263,12 +1234,10 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
             match self.build_fst_from_unsorted_file(batch_size) {
                 Ok(_) => {}
                 Err(e) => {
-                    return Err(Box::new(Error::new(
-                        std::io::ErrorKind::Other,
-                        format!(
-                            "error couldn't build fst from unsorted file in bacthes of 10'000: {e}"
-                        ),
-                    )));
+                    return Err(format!(
+                        "error couldn't build fst from unsorted file in bacthes of 10'000: {e}"
+                    )
+                    .into());
                 }
             };
         } else {
@@ -1305,7 +1274,7 @@ fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
         graph_id_from_cache_file_name(self.graph_filename.clone())
     }
 
-    pub fn cleanup_cache(&self) -> Result<(), Error> {
+    pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
         cleanup_cache()
     }
 }
@@ -1345,10 +1314,7 @@ where
             });
         }
 
-        Err(Box::new(Error::new(
-            std::io::ErrorKind::InvalidData,
-            "error graph cache must be readonly to be memmapped",
-        )))
+        Err("error graph cache must be readonly to be memmapped".into())
     }
 
     #[inline(always)]
@@ -1400,10 +1366,7 @@ where
         if let Some(val) = self.kmers.get(kmer) {
             Ok(val)
         } else {
-            Err(Box::new(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("error k-mer {kmer} not found"),
-            )))
+            Err(format!("error k-mer {kmer} not found").into())
         }
     }
 
@@ -1415,12 +1378,16 @@ where
         }
     }
 
-    pub fn neighbours(&self, node_id: usize) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    pub fn neighbours(
+        &self,
+        node_id: usize,
+    ) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if node_id >= self.size() {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("error {node_id} must be smaller than |V| = {}", self.size() - 1),
-            )));
+            return Err(format!(
+                "error {node_id} must be smaller than |V| = {}",
+                self.size() - 1
+            )
+            .into());
         }
 
         Ok(NeighbourIter::<EdgeType, Edge>::new(
@@ -1445,10 +1412,10 @@ where
         end_node: usize,
     ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if start_node > end_node {
-            panic!("error invalid range, beginning after end");
+            return Err("error invalid range, beginning after end".into());
         }
         if start_node > self.size() || end_node > self.size() {
-            panic!("error invalid range");
+            return Err("error invalid range".into());
         }
 
         Ok(EdgeIter::<EdgeType, Edge>::new(
@@ -1463,7 +1430,7 @@ where
         &self,
         diffusion: &mut [(usize, f64)],
         target_size: Option<usize>,
-        target_volume: Option<usize>
+        target_volume: Option<usize>,
     ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
         // debug
@@ -1486,39 +1453,35 @@ where
                     vol_s = match vol_s.overflowing_add(u_n.remaining_neighbours()) {
                         (r, false) => r,
                         (_, true) => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidInput,
-                                        format!("error sweep cut overflow_add in vol_s at node {u}"),
-                                        ))
-                                );
+                            return Err(format!(
+                                "error sweep cut overflow_add in vol_s at node {u}"
+                            )
+                            .into());
                         }
                     };
                     vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.remaining_neighbours())
                     {
                         (r, false) => r,
                         (_, true) => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidInput,
-                                        format!("error sweep cut overflow_add in vol_v_minus_s at node {u}"),
-                                        ))
-                                );
+                            return Err(format!(
+                                "error sweep cut overflow_add in vol_v_minus_s at node {u}"
+                            )
+                            .into());
                         }
                     };
                     u_n
                 }
                 Err(e) => {
-                    return Err(Box::new(Error::new(
-                                std::io::ErrorKind::InvalidInput,
-                                format!("error sweep cut couldn't get {u} neighbours: {e}"),
-                                ))
-                        );
+                    return Err(format!("error sweep cut couldn't get {u} neighbours: {e}").into());
                 }
             };
             match community.get(u) {
-                Some(_) => { return Err(Box::new(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("error sweepcut diffusion vector: {u} is present multiple times"),
-            )));}
+                Some(_) => {
+                    return Err(format!(
+                        "error sweepcut diffusion vector: {u} is present multiple times"
+                    )
+                    .into());
+                }
                 None => community.insert(*u),
             };
             for v in u_n {
@@ -1530,22 +1493,22 @@ where
                     cut_s = match cut_s.overflowing_sub(1) {
                         (r, false) => r,
                         (_, true) => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidInput,
-                                        format!("error sweepcut overflow_sub at node {u} in neighbour {}", v.dest()),
-                                        ))
-                                );
+                            return Err(format!(
+                                "error sweepcut overflow_sub at node {u} in neighbour {}",
+                                v.dest()
+                            )
+                            .into());
                         }
                     };
                 } else {
                     cut_s = match cut_s.overflowing_add(1) {
                         (r, false) => r,
                         (_, true) => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::InvalidInput,
-                                        format!("error sweepcut overflow_add at node {u} in neighbour {}", v.dest()),
-                                        ))
-                                );
+                            return Err(format!(
+                                "error sweepcut overflow_add at node {u} in neighbour {}",
+                                v.dest()
+                            )
+                            .into());
                         }
                     };
                 }
@@ -1561,7 +1524,11 @@ where
 
             // truncate sweep if vol or size go over double the target value
             if community.len() > target_size * 2 || vol_s > target_volume * 2 {
-                println!("Sweep cut truncated with size: {} and volume {}\n\tTarget size: {target_size}\n\tTarget volume: {target_volume}", community.len(), vol_s);
+                println!(
+                    "Sweep cut truncated with size: {} and volume {}\n\tTarget size: {target_size}\n\tTarget volume: {target_volume}",
+                    community.len(),
+                    vol_s
+                );
                 break;
             }
         }
@@ -1586,7 +1553,7 @@ where
                 return None;
             }
             let m = floor + (ceil - floor).div_floor(2);
-            let dest = unsafe {(self.graph.as_ptr() as *const Edge).add(m).read().dest()};
+            let dest = unsafe { (self.graph.as_ptr() as *const Edge).add(m).read().dest() };
             match dest.cmp(&v) {
                 std::cmp::Ordering::Greater => ceil = m - 1,
                 std::cmp::Ordering::Less => floor = m + 1,
@@ -1678,9 +1645,9 @@ where
             (r, false) => r,
             (_, true) => {
                 self.exports = u8::MAX;
-                panic!(
-                    "error overflowed export count var in graph struct, please provide an identifier for your export"
-                )
+                return Err(
+                    "error overflowed export count var in graph struct, please provide an identifier for your export".into()
+                );
             }
         };
         Ok((self.exports - 1) as usize)
@@ -1698,10 +1665,7 @@ where
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         let node_count = self.size();
         if node_count < 2 {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::InvalidData,
-                "error can't mask empty graph",
-            )));
+            return Err("error can't mask empty graph".into());
         }
         let c_fn = CACHE_DIR.to_string() + "edge_count.tmp";
         let i_fn = CACHE_DIR.to_string() + "node_index.tmp";
@@ -1777,12 +1741,7 @@ where
                             .collect::<Vec<Edge>>()
                             .as_slice(),
                     )
-                    .ok_or_else(|| {
-                        Error::new(
-                            std::io::ErrorKind::Other,
-                            "error writing edges for node {id}",
-                        )
-                    })?;
+                    .ok_or("error writing edges for node {id}")?;
                 // write fst for node
                 build.insert(kmer, new_id as u64)?;
             }
@@ -1792,7 +1751,9 @@ where
         GraphMemoryMap::init(cache, self.thread_count)
     }
 
-    pub fn export_petgraph(&self) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
+    pub fn export_petgraph(
+        &self,
+    ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
         let node_count = self.size() - 1;
 
@@ -1800,11 +1761,12 @@ where
             graph.add_node(NodeIndex::new(u));
         });
         (0..node_count)
-            .map(|u| match self.neighbours(u) {
-                Ok(neighbours_of_u) => (u, neighbours_of_u),
-                Err(e) => panic!(
-                    "while exporting petgraph `DiGraphMap`, error getting neighbours of {u}: {e}",
-                ),
+            .filter_map(|u| match self.neighbours(u) {
+                Ok(neighbours_of_u) => Some((u, neighbours_of_u)),
+                Err(e) => {
+                    eprint!("error getting neihghbours of {u} (proceeding anyways): {e}");
+                    None
+                }
             })
             .for_each(|(u, u_n)| {
                 u_n.for_each(|v| {
@@ -1823,11 +1785,12 @@ where
             graph.add_node(());
         });
         (0..node_count)
-            .map(|u| match self.neighbours(u) {
-                Ok(neighbours_of_u) => (u, neighbours_of_u),
-                Err(e) => panic!(
-                    "while exporting petgraph `DiGraphMap`, error getting neighbours of {u}: {e}",
-                ),
+            .filter_map(|u| match self.neighbours(u) {
+                Ok(neighbours_of_u) => Some((u, neighbours_of_u)),
+                Err(e) => {
+                    eprint!("error getting neihghbours of {u} (proceeding anyways): {e}");
+                    None
+                }
             })
             .for_each(|(u, u_n)| {
                 u_n.for_each(|v| {
@@ -1837,7 +1800,6 @@ where
 
         Ok(graph)
     }
-
 
     fn init_procedural_memory_build_reciprocal(
         &self,
@@ -1931,10 +1893,7 @@ where
                             // binary search on neighbours w, where w < v
                             let reciprocal = loop {
                                 if floor > ceil {
-                                    return Err(Box::new(Error::new(
-                                                std::io::ErrorKind::InvalidData, 
-                                                format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})")))
-                                        );
+                                    return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})").into());
                                 }
                                 let m = floor + (ceil - floor).div_floor(2);
                                 let dest = graph_ptr.get(m).dest();
@@ -1959,7 +1918,9 @@ where
         Ok((er, eo))
     }
 
-    pub(crate) fn get_edge_reciprocal(&self) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
+    pub(crate) fn get_edge_reciprocal(
+        &self,
+    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let fn_template = self.graph_cache.graph_filename.clone();
         let er_fn = cache_file_name(fn_template.clone(), FileType::EdgeReciprocal, None)?;
         let dud = Vec::new();
@@ -1980,10 +1941,10 @@ where
                         true,
                     ),
                     Err(e) => {
-                        return Err(Box::new(Error::new(
-                                    std::io::ErrorKind::InvalidData, 
-                                    format!("error creating abstractmemory for edge_reciprocal {e}")))
-                            );
+                        return Err(format!(
+                            "error creating abstractmemory for edge_reciprocal {e}"
+                        )
+                        .into());
                     }
                 }
             }
@@ -1991,7 +1952,9 @@ where
         Ok(er?)
     }
 
-    pub(crate) fn get_edge_dest_id_over_source(&self) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
+    pub(crate) fn get_edge_dest_id_over_source(
+        &self,
+    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let fn_template = self.graph_cache.graph_filename.clone();
         let eo_fn = cache_file_name(fn_template.clone(), FileType::EdgeOver, None)?;
         let dud = Vec::new();
@@ -2011,14 +1974,18 @@ where
                         i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
                         true,
                     ),
-                    Err(e) => panic!("error creating abstractmemory for edge_over {}", e),
+                    Err(e) => {
+                        return Err(
+                            format!("error creating abstractmemory for edge_over {e}").into()
+                        );
+                    }
                 }
             }
         };
         Ok(eo?)
     }
 
-    pub fn cleanup_cache(&self) -> Result<(), Error> {
+    pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.graph_cache.cleanup_cache()
     }
 }

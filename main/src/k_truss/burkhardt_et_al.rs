@@ -7,7 +7,6 @@ use crossbeam::thread;
 use num_cpus::get_physical;
 use std::{
     collections::HashMap,
-    io::Error,
     sync::{
         Arc, Barrier,
         atomic::{AtomicU8, Ordering},
@@ -70,11 +69,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let threads = self.graph.thread_num().max(get_physical());
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.graph.index_ptr(),
-            node_count + 1,
-        ));
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count));
+        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
+        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
 
         // Shared atomic & simple arrays for counts and trussness
         let (triangle_count, edges, edge_index, edge_stack) =
@@ -90,9 +86,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // Algorithm 1 - adjusted for directed scheme
         thread::scope(|scope| {
             for tid in 0..threads {
-                let index_ptr = Arc::clone(&index_ptr);
-                let graph_ptr = Arc::clone(&graph_ptr);
-
                 let eo = edge_out.shared_slice();
                 let er = edge_reciprocal.shared_slice();
 
@@ -184,20 +177,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     idx = match idx.overflowing_add(1) {
                         (r, false) => r,
                         _ => {
-                            return Err(Box::new(Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("error overflow add to idx ({idx} + 1)",),
-                            )));
+                            return Err(format!("error overflow add to idx ({idx} + 1)",).into());
                         }
                     };
                 } else if t_count == 0 {
                     edge_count = match edge_count.overflowing_sub(1) {
                         (r, false) => r,
                         _ => {
-                            return Err(Box::new(Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("error overflow add to edge_count ({edge_count} + 1)",),
-                            )));
+                            return Err(format!(
+                                "error overflow add to edge_count ({edge_count} + 1)",
+                            )
+                            .into());
                         }
                     };
                     let e_index = *edge_index.get(edge_count);
@@ -214,10 +204,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     idx = match idx.overflowing_add(1) {
                         (r, false) => r,
                         _ => {
-                            return Err(Box::new(Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("error overflow add to idx ({idx} + 1)",),
-                            )));
+                            return Err(format!("error overflow add to idx ({idx} + 1)",).into());
                         }
                     };
                 }

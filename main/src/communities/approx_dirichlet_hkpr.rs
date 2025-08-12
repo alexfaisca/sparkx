@@ -4,7 +4,7 @@ use crate::generic_memory_map::*;
 use ordered_float::OrderedFloat;
 use rand::{Rng, rng};
 use rand_distr::{Distribution, Poisson};
-use std::{collections::HashMap, io::Error};
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 #[derive(Clone)]
@@ -34,11 +34,10 @@ pub enum ApproxDirichletHeatKernelK {
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'a, EdgeType, Edge> {
     #[inline(always)]
-    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
+    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Box<dyn std::error::Error>> {
         if !val.is_normal() {
-            panic!(
-                "error hk-relax abnormal value at {} = {}",
-                op_description, val
+            return Err(
+                format!("error hk-relax abnormal value at {op_description} = {val}",).into(),
             );
         }
         Ok(val)
@@ -59,41 +58,45 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         _target_size: usize,
         _target_vol: usize,
         target_conductance: f64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = match graph.size().overflowing_sub(1) {
             (_, true) => {
-                panic!("error hk-relax invalid parameters: |V| == 0, the graph is empty");
+                return Err(
+                    "error hk-relax invalid parameters: |V| == 0, the graph is empty".into(),
+                );
             }
             (i, _) => {
                 if i == 0 {
-                    panic!(
+                    return Err(
                         "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
+                            .into(),
                     );
                 }
                 i
             }
         };
         if !eps.is_normal() || eps <= 0f64 || eps >= 1f64 {
-            panic!(
-                "error hk-relax invalid parameters: ε == {} doesn't satisfy 0.0 < ε 1.0",
-                eps
-            );
+            return Err(format!(
+                "error hk-relax invalid parameters: ε == {eps} doesn't satisfy 0.0 < ε 1.0",
+            )
+            .into());
         }
         if !target_conductance.is_normal()
             || target_conductance <= 0f64
             || target_conductance >= 1f64
         {
-            panic!(
+            return Err(format!(
                 "error hk-relax invalid parameters: target_conductance == {} doesn't satisfy 0.0 < target_conductance < 1.0",
                 target_conductance
-            );
+            ).into());
         }
         if seed_node > node_count - 1 {
-            panic!(
+            return Err(format!(
                 "error hk-relax invalid parameters: id(seed_nodes) == {} but max_id(v in V) == {}",
                 seed_node,
                 node_count - 1
-            );
+            )
+            .into());
         }
         Ok(())
     }
@@ -105,7 +108,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         target_size: usize,
         target_vol: usize,
         target_conductance: f64,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let () = Self::evaluate_params(
             graph.clone(),
             seed,
@@ -134,14 +137,19 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         })
     }
 
-    fn random_sample_poisson(lambda: f64, n: usize) -> Result<Vec<OrderedFloat<f64>>, Error> {
+    fn random_sample_poisson(
+        lambda: f64,
+        n: usize,
+    ) -> Result<Vec<OrderedFloat<f64>>, Box<dyn std::error::Error>> {
         let mut rng = rng();
         let poisson = match Poisson::new(lambda) {
             Ok(dist) => dist,
-            Err(e) => panic!(
-                "error approx-dirchlet-hk couldn't sample poission distribution: {}",
-                e
-            ),
+            Err(e) => {
+                return Err(format!(
+                    "error approx-dirchlet-hk couldn't sample poission distribution: {e}",
+                )
+                .into());
+            }
         };
         Ok(poisson
             .sample_iter(&mut rng)
@@ -151,36 +159,46 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     }
 
     #[inline(always)]
-    fn random_neighbour(&self, deg_u: usize, u_n: NeighbourIter<EdgeType, Edge>) -> usize {
+    fn random_neighbour(
+        &self,
+        deg_u: usize,
+        u_n: NeighbourIter<EdgeType, Edge>,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         let inv_deg_u = 1. / deg_u as f64;
         let random: f64 = rand::rng().random();
         let mut idx_plus_one = 1f64;
         for v in u_n {
             if idx_plus_one * inv_deg_u > random {
-                return v.dest();
+                return Ok(v.dest());
             }
             idx_plus_one += idx_plus_one;
         }
-        panic!("error approx-dirchlet-hk didn't find random neighbour");
+        Err("error approx-dirchlet-hk didn't find random neighbour".into())
     }
 
-    fn random_walk_seed(&self, k: usize, seed_node: usize) -> usize {
+    fn random_walk_seed(
+        &self,
+        k: usize,
+        seed_node: usize,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         let mut curr_node = seed_node;
         for _ in 0..k {
             let (deg_u, u_n) = match self.graph.neighbours(curr_node) {
                 Ok(u_n) => (u_n.remaining_neighbours(), u_n),
-                Err(e) => panic!(
-                    "error approx-dirchlet-hk couldn't get neighbours for {}: {}",
-                    curr_node, e
-                ),
+                Err(e) => {
+                    return Err(format!(
+                        "error approx-dirchlet-hk couldn't get neighbours for {curr_node}: {e}"
+                    )
+                    .into());
+                }
             };
             if deg_u > 0 {
-                curr_node = self.random_neighbour(deg_u, u_n);
+                curr_node = self.random_neighbour(deg_u, u_n)?;
             } else {
-                return curr_node;
+                return Ok(curr_node);
             }
         }
-        curr_node
+        Ok(curr_node)
     }
 
     #[allow(clippy::unreachable)]
@@ -188,10 +206,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     pub fn compute_specify_k(
         &self,
         big_k: ApproxDirichletHeatKernelK,
-    ) -> Result<Community<usize>, Error> {
+    ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let node_count = match self.graph.size().overflowing_sub(1) {
-            (_, true) => panic!("error approx-dirchlet-hk |V| + 1 == 0"),
-            (0, _) => panic!("error approx-dirchlet-hk |V| == 0"),
+            (_, true) => return Err("error approx-dirchlet-hk |V| + 1 == 0".into()),
+            (0, _) => return Err("error approx-dirchlet-hk |V| == 0".into()),
             (i, _) => i as f64,
         };
 
@@ -210,17 +228,20 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             ApproxDirichletHeatKernelK::Mean => Self::f64_is_nomal(2. * self.t, "2. * t")?,
             ApproxDirichletHeatKernelK::Unlim => f64::INFINITY,
             #[expect(unreachable_patterns)]
-            _ => panic!("error approx-dirchlet-hk unknown K {:?}", big_k),
+            _ => {
+                return Err(format!("error approx-dirchlet-hk unknown K {:?}", big_k).into());
+            }
         };
         let k = OrderedFloat(k);
         println!(
-            "k (ceil on sample value) computed to be {}\nr (number of samples) computed to be {}",
-            k, r
+            "k (ceil on sample value) computed to be {k}\nr (number of samples) computed to be {r}",
         );
 
         let num_samples: usize = match Self::f64_to_usize_safe(r) {
             Some(s) => s,
-            None => panic!("error approx-dirchlet-hk couldn't cast {} to usize", r),
+            None => {
+                return Err(format!("error approx-dirchlet-hk couldn't cast {r} to usize").into());
+            }
         };
         let steps: Vec<OrderedFloat<f64>> = Self::random_sample_poisson(self.t, num_samples)?;
         let mut aprox_hkpr_samples: HashMap<usize, f64> = HashMap::new();
@@ -229,12 +250,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             let OrderedFloat(little_k) = std::cmp::min(little_k, k);
             let little_k_usize = match Self::f64_to_usize_safe(little_k) {
                 Some(val) => val,
-                None => panic!(
-                    "error approx-dirchlet-hk couldn't cast {} to usize",
-                    little_k
-                ),
+                None => {
+                    return Err(format!(
+                        "error approx-dirchlet-hk couldn't cast {little_k} to usize"
+                    )
+                    .into());
+                }
             };
-            let v = self.random_walk_seed(little_k_usize, self.seed);
+            let v = self.random_walk_seed(little_k_usize, self.seed)?;
             match aprox_hkpr_samples.get_mut(&v) {
                 Some(v) => *v += one_over_r,
                 None => {
@@ -266,14 +289,16 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
                 );
                 Ok(c)
             }
-            Err(e) => panic!("error: {}", e),
+            Err(e) => Err(format!("error performing sweepcut: {e}").into()),
         }
     }
 
-    pub fn compute(&self) -> Result<Community<usize>, Error> {
+    pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let node_count = match self.graph.size().overflowing_sub(1) {
-            (_, true) => panic!("error approx-dirchlet-hk |V| + 1 == 0"),
-            (0, _) => panic!("error approx-dirchlet-hk |V| == 0"),
+            (_, true) => {
+                return Err("error approx-dirchlet-hk |V| + 1 == 0".into());
+            }
+            (0, _) => return Err("error approx-dirchlet-hk |V| == 0".into()),
             (i, _) => i as f64,
         };
 
@@ -292,7 +317,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
 
         let num_samples: usize = match Self::f64_to_usize_safe(r) {
             Some(s) => s,
-            None => panic!("error approx-dirchlet-hk couldn't cast {} to usize", r),
+            None => {
+                return Err(format!("error approx-dirchlet-hk couldn't cast {r} to usize").into());
+            }
         };
         let steps: Vec<OrderedFloat<f64>> = Self::random_sample_poisson(self.t, num_samples)?;
         let mut aprox_hkpr_samples: HashMap<usize, f64> = HashMap::new();
@@ -301,12 +328,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             let OrderedFloat(little_k) = std::cmp::min(little_k, k);
             let little_k_usize = match Self::f64_to_usize_safe(little_k) {
                 Some(val) => val,
-                None => panic!(
-                    "error approx-dirchlet-hk couldn't cast {} to usize",
-                    little_k
-                ),
+                None => {
+                    return Err(format!(
+                        "error approx-dirchlet-hk couldn't cast {little_k} to usize"
+                    )
+                    .into());
+                }
             };
-            let v = self.random_walk_seed(little_k_usize, self.seed);
+            let v = self.random_walk_seed(little_k_usize, self.seed)?;
             match aprox_hkpr_samples.get_mut(&v) {
                 Some(v) => *v += one_over_r,
                 None => {
@@ -338,7 +367,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
                 );
                 Ok(c)
             }
-            Err(e) => panic!("error: {}", e),
+            Err(e) => Err(format!("error performing sweep cut: {e}").into()),
         }
     }
 }

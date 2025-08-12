@@ -56,10 +56,7 @@ where
         let threads = self.graph.thread_num();
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.graph.index_ptr(),
-            self.graph.size(),
-        ));
+        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), self.graph.size());
 
         let template_fn = self.graph.cache_edges_filename();
         let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
@@ -70,18 +67,18 @@ where
 
         thread::scope(|scope| {
             for i in 0..threads {
-                let index = Arc::clone(&index_ptr);
-                let edges = &edges;
-                let count = &count;
+                let edges = edges.shared_slice();
+                let count = count.shared_slice();
                 let begin = std::cmp::min(thread_load * i, node_count);
                 let end = std::cmp::min(begin + thread_load, node_count);
 
                 scope.spawn(move |_| {
                     for k in begin..end {
-                        edges.get(k).store(*index.get(k), Ordering::Relaxed);
-                        count
-                            .get(k)
-                            .store((*index.get(k + 1) - *index.get(k)) as u8, Ordering::Relaxed);
+                        edges.get(k).store(*index_ptr.get(k), Ordering::Relaxed);
+                        count.get(k).store(
+                            (*index_ptr.get(k + 1) - *index_ptr.get(k)) as u8,
+                            Ordering::Relaxed,
+                        );
                     }
                 });
             }
@@ -101,10 +98,7 @@ where
             0 => return Ok(()),
             i => i,
         };
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
-            self.graph.edges_ptr(),
-            self.graph.width(),
-        ));
+        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), self.graph.width());
 
         // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
         let (edges, edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;

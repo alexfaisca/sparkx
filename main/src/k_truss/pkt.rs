@@ -5,12 +5,9 @@ use crate::utils::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
-use std::{
-    io::Error,
-    sync::{
-        Arc, Barrier,
-        atomic::{AtomicU8, AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Barrier,
+    atomic::{AtomicU8, AtomicUsize, Ordering},
 };
 
 type ProceduralMemoryPKT = (
@@ -74,11 +71,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let edge_load = edge_count.div_ceil(threads);
         let node_load = node_count.div_ceil(threads);
 
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.graph.index_ptr(),
-            node_count + 1,
-        ));
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count));
+        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
+        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
 
         // Shared arrays
         let (curr, next, processed, in_curr, in_next, s) = self.init_procedural_memory_pkt(mmap)?;
@@ -105,8 +99,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         thread::scope(|scope| {
             for tid in 0..threads {
                 // eid is unnecessary as graph + index alwready do the job
-                let graph_ptr = Arc::clone(&graph_ptr);
-                let index_ptr = Arc::clone(&index_ptr);
                 let mut x = x[tid].shared_slice();
                 let eo = edge_out.shared_slice();
                 let mut s = s.shared_slice();
@@ -185,9 +177,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         thread::scope(|scope| {
             let mut res = Vec::new();
             for tid in 0..threads {
-                let graph_ptr = Arc::clone(&graph_ptr);
-                let index_ptr = Arc::clone(&index_ptr);
-
                 let mut todo = edge_count;
                 let mut x = x[tid].shared_slice();
 
@@ -205,219 +194,223 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 let begin = std::cmp::min(tid * edge_load, edge_count);
                 let end = std::cmp::min(begin + edge_load, edge_count);
 
-                res.push(scope.spawn(move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
-                    let mut res = vec![0usize; u8::MAX as usize];
-                    let mut buff = vec![0; buff_size];
-                    let mut i = 0;
+                res.push(scope.spawn(
+                    move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
+                        let mut res = vec![0usize; u8::MAX as usize];
+                        let mut buff = vec![0; buff_size];
+                        let mut i = 0;
 
-                    // Remove 0-triangle edges
-                    for e in begin..end {
-                        if s.get(e).load(Ordering::Relaxed) == 0 {
-                            *processed.get_mut(e) = true;
-                            res[0] += 1;
-                            i += 1;
-                        }
-                    }
-                    total_duds.fetch_add(i, Ordering::SeqCst);
-                    i = 0;
-
-                    synchronize.wait();
-
-                    todo = match todo.overflowing_sub(total_duds.load(Ordering::Relaxed)) {
-                        (r, false) => r,
-                        _ => {
-                            return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::Other,
-                                        format!("error overflow when decrementing todo ({todo} - {})", total_duds.load(Ordering::Relaxed))))
-                                );
-                        }
-                    };
-
-                    // println!("triangles removed");
-                    while todo > 0 {
+                        // Remove 0-triangle edges
                         for e in begin..end {
-                            if s.get(e).load(Ordering::Relaxed) == l {
-                                buff[i] = e;
-                                *in_curr.get_mut(e) = true;
+                            if s.get(e).load(Ordering::Relaxed) == 0 {
+                                *processed.get_mut(e) = true;
+                                res[0] += 1;
                                 i += 1;
                             }
-                            if i == buff_size {
-                                curr.push_slice(buff.as_slice());
-                                i = 0;
-                            }
                         }
-                        if i > 0 {
-                            curr.push_slice(&buff[0..i]);
-                            i = 0;
-                        }
+                        total_duds.fetch_add(i, Ordering::SeqCst);
+                        i = 0;
+
                         synchronize.wait();
 
-                        let mut to_process = match curr.slice(0, curr.len()) {
-                            Some(i) => i,
-                            None => {
-                                return Err(Box::new(Error::new(
-                                            std::io::ErrorKind::Other,
-                                            "error reading curr in pkt"
-                                            )));
+                        todo = match todo.overflowing_sub(total_duds.load(Ordering::Relaxed)) {
+                            (r, false) => r,
+                            _ => {
+                                return Err(format!(
+                                    "error overflow when decrementing todo ({todo} - {})",
+                                    total_duds.load(Ordering::Relaxed)
+                                )
+                                .into());
                             }
                         };
-                        // println!("new cicle initialized {} {:?}", todo, curr.ptr);
-                        while !to_process.is_empty() {
-                            todo = match todo.overflowing_sub(to_process.len()) {
-                                (r, false) => r,
-                                _ => {
-                                    return Err(Box::new(Error::new(
-                                                std::io::ErrorKind::Other,
-                                                format!("error overflow when decrementing todo ({todo} - {})", to_process.len())))
-                                        );
+
+                        // println!("triangles removed");
+                        while todo > 0 {
+                            for e in begin..end {
+                                if s.get(e).load(Ordering::Relaxed) == l {
+                                    buff[i] = e;
+                                    *in_curr.get_mut(e) = true;
+                                    i += 1;
                                 }
-                            };
-                            synchronize.wait();
-
-                            // ProcessSubLevel
-                            let thread_load = curr.len().div_ceil(threads);
-                            let begin = tid * thread_load;
-                            let end = std::cmp::min(begin + thread_load, curr.len());
-
-                            for e_idx in begin..end {
-                                let u_v = *to_process.get(e_idx);
-
-                                let u = graph_ptr.get(*er.get(u_v)).dest();
-                                let v = graph_ptr.get(u_v).dest();
-
-                                let edges_start = *index_ptr.get(u);
-                                let edges_stop = *index_ptr.get(u + 1);
-
-                                // mark u neighbours
-                                for u_w in edges_start..edges_stop {
-                                    let w = graph_ptr.get(u_w).dest();
-                                    if w != u {
-                                        *x.get_mut(w) = *er.get(u_w) + 1;
-                                    }
-                                }
-
-                                for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
-                                    let w = graph_ptr.get(v_w).dest();
-                                    if *x.get(w) == 0 {
-                                        continue;
-                                    }
-                                    let w_u = *x.get(w) - 1;
-                                    if *processed.get(v_w) || *processed.get(w_u) {
-                                        continue;
-                                    }
-
-                                    if s.get(v_w).load(Ordering::Relaxed) > l
-                                        && s.get(w_u).load(Ordering::Relaxed) > l
-                                    {
-                                        let prev_l_v_w = s.get(v_w).fetch_sub(1, Ordering::SeqCst);
-                                        if prev_l_v_w == l + 1 {
-                                            *in_next.get_mut(v_w) = true;
-                                            buff[i] = v_w;
-                                            i += 1;
-                                            if i == buff_size {
-                                                next.push_slice(&buff[..]);
-                                                i = 0;
-                                            }
-                                        }
-                                        if prev_l_v_w <= l {
-                                            s.get(v_w).fetch_add(1, Ordering::SeqCst);
-                                        }
-                                        let prev_l_w_u = s.get(w_u).fetch_sub(1, Ordering::SeqCst);
-                                        if prev_l_w_u == l + 1 {
-                                            *in_next.get_mut(w_u) = true;
-                                            buff[i] = w_u;
-                                            i += 1;
-                                            if i == buff_size {
-                                                next.push_slice(&buff[..]);
-                                                i = 0;
-                                            }
-                                        }
-                                        if prev_l_w_u <= l {
-                                            s.get(w_u).fetch_add(1, Ordering::SeqCst);
-                                        }
-                                    } else if s.get(v_w).load(Ordering::Relaxed) > l
-                                        && ((u_v < w_u && *in_curr.get(w_u)) || !*in_curr.get(w_u))
-                                    {
-                                        let prev_l_v_w = s.get(v_w).fetch_sub(1, Ordering::SeqCst);
-                                        if prev_l_v_w == l + 1 {
-                                            *in_next.get_mut(v_w) = true;
-                                            buff[i] = v_w;
-                                            i += 1;
-                                            if i == buff_size {
-                                                next.push_slice(&buff[..]);
-                                                i = 0;
-                                            }
-                                        }
-                                        if prev_l_v_w <= l {
-                                            s.get(v_w).fetch_add(1, Ordering::SeqCst);
-                                        }
-                                    } else if s.get(w_u).load(Ordering::Relaxed) > l
-                                        && ((u_v < v_w && *in_curr.get(v_w)) || !*in_curr.get(v_w))
-                                    {
-                                        let prev_l_w_u = s.get(w_u).fetch_sub(1, Ordering::SeqCst);
-                                        if prev_l_w_u == l + 1 {
-                                            *in_next.get_mut(w_u) = true;
-                                            buff[i] = w_u;
-                                            i += 1;
-                                            if i == buff_size {
-                                                next.push_slice(&buff[..]);
-                                                i = 0;
-                                            }
-                                        }
-                                        if prev_l_w_u <= l {
-                                            s.get(w_u).fetch_add(1, Ordering::SeqCst);
-                                        }
-                                    }
-                                }
-
-                                // unmark u neighbours
-                                for u_w in edges_start..edges_stop {
-                                    *x.get_mut(graph_ptr.get(u_w).dest()) = 0;
+                                if i == buff_size {
+                                    curr.push_slice(buff.as_slice());
+                                    i = 0;
                                 }
                             }
                             if i > 0 {
-                                next.push_slice(&buff[0..i]);
+                                curr.push_slice(&buff[0..i]);
                                 i = 0;
                             }
-                            for e_idx in begin..end {
-                                let edge = *to_process.get(e_idx);
-                                *processed.get_mut(edge) = true;
-                                *in_curr.get_mut(edge) = false; // FIXME: this can be removed?
-                            }
-                            // println
-                            for _e in begin..end {
-                                res[l as usize] += 1;
-                            }
-
                             synchronize.wait();
-                            next = std::mem::replace(&mut curr, next).clear();
-                            in_next = std::mem::replace(&mut in_curr, in_next);
 
-                            synchronize.wait();
-                            to_process = match curr.slice(0, curr.len()) {
+                            let mut to_process = match curr.slice(0, curr.len()) {
                                 Some(i) => i,
                                 None => {
-                                    return Err(Box::new(Error::new(
-                                                std::io::ErrorKind::Other,
-                                                "error couldn't get new to_process vec"))
-                                        );
+                                    return Err("error reading curr in pkt".into());
+                                }
+                            };
+                            // println!("new cicle initialized {} {:?}", todo, curr.ptr);
+                            while !to_process.is_empty() {
+                                todo = match todo.overflowing_sub(to_process.len()) {
+                                    (r, false) => r,
+                                    _ => {
+                                        return Err(format!(
+                                            "error overflow when decrementing todo ({todo} - {})",
+                                            to_process.len()
+                                        )
+                                        .into());
+                                    }
+                                };
+                                synchronize.wait();
+
+                                // ProcessSubLevel
+                                let thread_load = curr.len().div_ceil(threads);
+                                let begin = tid * thread_load;
+                                let end = std::cmp::min(begin + thread_load, curr.len());
+
+                                for e_idx in begin..end {
+                                    let u_v = *to_process.get(e_idx);
+
+                                    let u = graph_ptr.get(*er.get(u_v)).dest();
+                                    let v = graph_ptr.get(u_v).dest();
+
+                                    let edges_start = *index_ptr.get(u);
+                                    let edges_stop = *index_ptr.get(u + 1);
+
+                                    // mark u neighbours
+                                    for u_w in edges_start..edges_stop {
+                                        let w = graph_ptr.get(u_w).dest();
+                                        if w != u {
+                                            *x.get_mut(w) = *er.get(u_w) + 1;
+                                        }
+                                    }
+
+                                    for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
+                                        let w = graph_ptr.get(v_w).dest();
+                                        if *x.get(w) == 0 {
+                                            continue;
+                                        }
+                                        let w_u = *x.get(w) - 1;
+                                        if *processed.get(v_w) || *processed.get(w_u) {
+                                            continue;
+                                        }
+
+                                        if s.get(v_w).load(Ordering::Relaxed) > l
+                                            && s.get(w_u).load(Ordering::Relaxed) > l
+                                        {
+                                            let prev_l_v_w =
+                                                s.get(v_w).fetch_sub(1, Ordering::SeqCst);
+                                            if prev_l_v_w == l + 1 {
+                                                *in_next.get_mut(v_w) = true;
+                                                buff[i] = v_w;
+                                                i += 1;
+                                                if i == buff_size {
+                                                    next.push_slice(&buff[..]);
+                                                    i = 0;
+                                                }
+                                            }
+                                            if prev_l_v_w <= l {
+                                                s.get(v_w).fetch_add(1, Ordering::SeqCst);
+                                            }
+                                            let prev_l_w_u =
+                                                s.get(w_u).fetch_sub(1, Ordering::SeqCst);
+                                            if prev_l_w_u == l + 1 {
+                                                *in_next.get_mut(w_u) = true;
+                                                buff[i] = w_u;
+                                                i += 1;
+                                                if i == buff_size {
+                                                    next.push_slice(&buff[..]);
+                                                    i = 0;
+                                                }
+                                            }
+                                            if prev_l_w_u <= l {
+                                                s.get(w_u).fetch_add(1, Ordering::SeqCst);
+                                            }
+                                        } else if s.get(v_w).load(Ordering::Relaxed) > l
+                                            && ((u_v < w_u && *in_curr.get(w_u))
+                                                || !*in_curr.get(w_u))
+                                        {
+                                            let prev_l_v_w =
+                                                s.get(v_w).fetch_sub(1, Ordering::SeqCst);
+                                            if prev_l_v_w == l + 1 {
+                                                *in_next.get_mut(v_w) = true;
+                                                buff[i] = v_w;
+                                                i += 1;
+                                                if i == buff_size {
+                                                    next.push_slice(&buff[..]);
+                                                    i = 0;
+                                                }
+                                            }
+                                            if prev_l_v_w <= l {
+                                                s.get(v_w).fetch_add(1, Ordering::SeqCst);
+                                            }
+                                        } else if s.get(w_u).load(Ordering::Relaxed) > l
+                                            && ((u_v < v_w && *in_curr.get(v_w))
+                                                || !*in_curr.get(v_w))
+                                        {
+                                            let prev_l_w_u =
+                                                s.get(w_u).fetch_sub(1, Ordering::SeqCst);
+                                            if prev_l_w_u == l + 1 {
+                                                *in_next.get_mut(w_u) = true;
+                                                buff[i] = w_u;
+                                                i += 1;
+                                                if i == buff_size {
+                                                    next.push_slice(&buff[..]);
+                                                    i = 0;
+                                                }
+                                            }
+                                            if prev_l_w_u <= l {
+                                                s.get(w_u).fetch_add(1, Ordering::SeqCst);
+                                            }
+                                        }
+                                    }
+
+                                    // unmark u neighbours
+                                    for u_w in edges_start..edges_stop {
+                                        *x.get_mut(graph_ptr.get(u_w).dest()) = 0;
+                                    }
+                                }
+                                if i > 0 {
+                                    next.push_slice(&buff[0..i]);
+                                    i = 0;
+                                }
+                                for e_idx in begin..end {
+                                    let edge = *to_process.get(e_idx);
+                                    *processed.get_mut(edge) = true;
+                                    *in_curr.get_mut(edge) = false; // FIXME: this can be removed?
+                                }
+                                // println
+                                for _e in begin..end {
+                                    res[l as usize] += 1;
+                                }
+
+                                synchronize.wait();
+                                next = std::mem::replace(&mut curr, next).clear();
+                                in_next = std::mem::replace(&mut in_curr, in_next);
+
+                                synchronize.wait();
+                                to_process = match curr.slice(0, curr.len()) {
+                                    Some(i) => i,
+                                    None => {
+                                        return Err("error couldn't get new to_process vec".into());
+                                    }
+                                };
+                                synchronize.wait();
+                            }
+                            l = match l.overflowing_add(1) {
+                                (r, false) => r,
+                                _ => {
+                                    return Err(format!(
+                                        "error overflow when adding to l ({l} - 1)"
+                                    )
+                                    .into());
                                 }
                             };
                             synchronize.wait();
                         }
-                        l = match l.overflowing_add(1) {
-                            (r, false) => r,
-                            _ => {
-                                return Err(Box::new(Error::new(
-                                        std::io::ErrorKind::Other,
-                                        format!("error overflow when adding to l ({l} - 1)")))
-                                    );
-                            }
-                        };
-                        synchronize.wait();
-                    }
-                    Ok(res)
-                }));
+                        Ok(res)
+                    },
+                ));
             }
             let joined_res: Vec<Vec<usize>> = res
                 .into_iter()

@@ -76,11 +76,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         let threads = self.graph.thread_num().max(get_physical());
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.graph.index_ptr(),
-            node_count + 1,
-        ));
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count));
+        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
+        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
 
         let (degree, _node_index, alive, coreness, frontier, swap) =
             self.init_procedural_memory_liu_et_al(mmap)?;
@@ -89,8 +86,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         let total_dead_nodes = thread::scope(|s| -> usize {
             let mut dead_nodes = vec![];
             for tid in 0..threads {
-                let index_ptr = &index_ptr;
-
                 let mut degree = degree.shared_slice();
                 let mut alive = alive.shared_slice();
 
@@ -146,11 +141,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         let swap = SharedQueueMut::<usize>::from_shared_slice(swap.shared_slice());
         let synchronize = Arc::new(Barrier::new(threads));
 
-        thread::scope(|s| {
+        thread::scope(|s| -> Result<(), Box<dyn std::error::Error>> {
             for tid in 0..threads {
-                let index_ptr = &index_ptr;
-                let graph_ptr = &graph_ptr;
-
                 let degree = &degree;
                 let alive = alive.shared_slice();
                 let mut coreness = coreness.shared_slice();
@@ -163,86 +155,55 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
 
-                s.spawn(move |_| {
-                    let mut local_stack: Vec<usize> = vec![];
-                    let max_len = 256;
+                s.spawn(
+                    move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        let mut local_stack: Vec<usize> = vec![];
+                        let max_len = 256;
 
-                    while remaining_global.load(Ordering::Relaxed) > 0 {
-                        synchronize.wait();
-                        // build initial frontier = all vertices with degree <= k that are still active.
-                        for u in start..end {
-                            if alive.get(u).load(Ordering::Relaxed)
-                                && degree.get(u).load(Ordering::Relaxed) <= k
-                            {
-                                alive.get(u).store(false, Ordering::Relaxed);
-                                let _ = frontier.push(u);
-                            }
-                        }
-
-                        synchronize.wait();
-
-                        if frontier.is_empty() {
-                            k = match k.overflowing_add(1) {
-                                (r, false) => r,
-                                _ => panic!("error overflow when adding to k ({} + {})", k, 1),
-                            };
-                            continue;
-                        }
-
-                        // process subrounds for current k: peel all vertices with degree k.
-                        while !frontier.is_empty() {
-                            if tid == 0 {
-                                remaining_global.fetch_sub(frontier.len(), Ordering::Relaxed);
+                        while remaining_global.load(Ordering::Relaxed) > 0 {
+                            synchronize.wait();
+                            // build initial frontier = all vertices with degree <= k that are still active.
+                            for u in start..end {
+                                if alive.get(u).load(Ordering::Relaxed)
+                                    && degree.get(u).load(Ordering::Relaxed) <= k
+                                {
+                                    alive.get(u).store(false, Ordering::Relaxed);
+                                    let _ = frontier.push(u);
+                                }
                             }
 
-                            let chunk_size = frontier.len().div_ceil(threads);
-                            let start = std::cmp::min(tid * chunk_size, frontier.len());
-                            let end = std::cmp::min(start + chunk_size, frontier.len());
+                            synchronize.wait();
 
-                            if let Some(chunk) = frontier.slice(start, end) {
-                                for i in 0..end - start {
-                                    // set coreness and decrement neighbour degrees
-                                    let u = *chunk.get(i);
-                                    *coreness.get_mut(u) = k;
-
-                                    // for each neighbor v of u:
-                                    for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                                        let v = graph_ptr.get(idx).dest();
-                                        if let Ok(old) = degree.get(v).fetch_update(
-                                            Ordering::Relaxed,
-                                            Ordering::Relaxed,
-                                            |x| {
-                                                if x > k {
-                                                    match x.overflowing_sub(1) {
-                                                        (r, false) => Some(r),
-                                                        _ => None,
-                                                    }
-                                                } else {
-                                                    None
-                                                }
-                                            },
-                                        ) {
-                                            if old == k + 1 {
-                                                let life =
-                                                    alive.get(v).swap(false, Ordering::Relaxed);
-                                                if life {
-                                                    if local_stack.len() < max_len {
-                                                        local_stack.push(v);
-                                                    } else {
-                                                        let _ = swap.push(v);
-                                                    }
-                                                }
-                                            }
-                                        }
+                            if frontier.is_empty() {
+                                k = match k.overflowing_add(1) {
+                                    (r, false) => r,
+                                    _ => {
+                                        return Err(format!(
+                                            "error overflow when adding to k ({k} + 1)"
+                                        )
+                                        .into());
                                     }
+                                };
+                                continue;
+                            }
 
-                                    // process local stack
-                                    let mut read_in_stack: usize = 0;
-                                    while let Some(u) = local_stack.pop() {
+                            // process subrounds for current k: peel all vertices with degree k.
+                            while !frontier.is_empty() {
+                                if tid == 0 {
+                                    remaining_global.fetch_sub(frontier.len(), Ordering::Relaxed);
+                                }
+
+                                let chunk_size = frontier.len().div_ceil(threads);
+                                let start = std::cmp::min(tid * chunk_size, frontier.len());
+                                let end = std::cmp::min(start + chunk_size, frontier.len());
+
+                                if let Some(chunk) = frontier.slice(start, end) {
+                                    for i in 0..end - start {
                                         // set coreness and decrement neighbour degrees
-                                        read_in_stack += 1;
+                                        let u = *chunk.get(i);
                                         *coreness.get_mut(u) = k;
 
+                                        // for each neighbor v of u:
                                         for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
                                             let v = graph_ptr.get(idx).dest();
                                             if let Ok(old) = degree.get(v).fetch_update(
@@ -272,26 +233,73 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                                                 }
                                             }
                                         }
+
+                                        // process local stack
+                                        let mut read_in_stack: usize = 0;
+                                        while let Some(u) = local_stack.pop() {
+                                            // set coreness and decrement neighbour degrees
+                                            read_in_stack += 1;
+                                            *coreness.get_mut(u) = k;
+
+                                            for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                                                let v = graph_ptr.get(idx).dest();
+                                                if let Ok(old) = degree.get(v).fetch_update(
+                                                    Ordering::Relaxed,
+                                                    Ordering::Relaxed,
+                                                    |x| {
+                                                        if x > k {
+                                                            match x.overflowing_sub(1) {
+                                                                (r, false) => Some(r),
+                                                                _ => None,
+                                                            }
+                                                        } else {
+                                                            None
+                                                        }
+                                                    },
+                                                ) {
+                                                    if old == k + 1 {
+                                                        let life = alive
+                                                            .get(v)
+                                                            .swap(false, Ordering::Relaxed);
+                                                        if life {
+                                                            if local_stack.len() < max_len {
+                                                                local_stack.push(v);
+                                                            } else {
+                                                                let _ = swap.push(v);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        remaining_global
+                                            .fetch_sub(read_in_stack, Ordering::Relaxed);
                                     }
-                                    remaining_global.fetch_sub(read_in_stack, Ordering::Relaxed);
                                 }
+
+                                synchronize.wait();
+
+                                swap = std::mem::replace(&mut frontier, swap).clear();
+
+                                synchronize.wait();
                             }
-
-                            synchronize.wait();
-
-                            swap = std::mem::replace(&mut frontier, swap).clear();
-
-                            synchronize.wait();
+                            k = match k.overflowing_add(1) {
+                                (r, false) => r,
+                                _ => {
+                                    return Err(format!(
+                                        "error overflow when adding to k ({k} + 1)"
+                                    )
+                                    .into());
+                                }
+                            };
                         }
-                        k = match k.overflowing_add(1) {
-                            (r, false) => r,
-                            _ => panic!("error overflow when adding to k ({} + {})", k, 1),
-                        };
-                    }
-                });
+                        Ok(())
+                    },
+                );
             }
+            Ok(())
         })
-        .unwrap();
+        .unwrap()?;
         coreness.flush()?;
 
         // --- Compute per-edge core labels and write output ---
@@ -302,8 +310,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         thread::scope(|scope| {
             let mut res = vec![];
             for tid in 0..threads {
-                let index_ptr = &index_ptr;
-                let graph_ptr = &graph_ptr;
                 let coreness = coreness.shared_slice();
                 let start = thread_load * tid;
                 let end = std::cmp::min(start + thread_load, node_count);

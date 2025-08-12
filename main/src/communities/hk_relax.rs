@@ -1,10 +1,7 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 
-use std::{
-    collections::{HashMap, VecDeque},
-    io::Error,
-};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone)]
 pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -24,11 +21,10 @@ where
     Edge: GenericEdge<EdgeType>,
 {
     #[inline(always)]
-    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Error> {
+    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Box<dyn std::error::Error>> {
         if !val.is_normal() {
-            panic!(
-                "error hk-relax abnormal value at {} = {}",
-                op_description, val
+            return Err(
+                format!("error hk-relax abnormal value at {op_description} = {val}",).into(),
             );
         }
         Ok(val)
@@ -47,51 +43,52 @@ where
         t: f64,
         eps: f64,
         seed: Vec<usize>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = match graph.size().overflowing_sub(1) {
             (_, true) => {
-                panic!("error hk-relax invalid parameters: |V| == 0, the graph is empty");
+                return Err(
+                    "error hk-relax invalid parameters: |V| == 0, the graph is empty".into(),
+                );
             }
             (i, _) => {
                 if i == 0 {
-                    panic!(
+                    return Err(
                         "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
+                            .into(),
                     );
                 }
                 i
             }
         };
         if !t.is_normal() || t <= 0f64 {
-            panic!(
-                "error hk-relax invalid parameters: t == {} doesn't satisfy t > 0.0",
-                t
-            );
+            return Err(format!(
+                "error hk-relax invalid parameters: t == {t} doesn't satisfy t > 0.0",
+            )
+            .into());
         }
         if !eps.is_normal() || eps <= 0f64 || eps >= 1f64 {
-            panic!(
-                "error hk-relax invalid parameters: ε == {} doesn't satisfy 0.0 < ε 1.0",
-                eps
-            );
+            return Err(format!(
+                "error hk-relax invalid parameters: ε == {eps} doesn't satisfy 0.0 < ε 1.0",
+            )
+            .into());
         }
         if seed.is_empty() {
-            panic!(
-                "error hk-relax invalid parameters: seed_nodes.len() == 0, please provide at least one seed node"
+            return Err(
+                "error hk-relax invalid parameters: seed_nodes.len() == 0, please provide at least one seed node".into()
             );
         }
         for (idx, seed_node) in seed.iter().enumerate() {
             if *seed_node > node_count - 1 {
-                panic!(
-                    "error hk-relax invalid parameters: id(seed_nodes[{}]) == {} but max_id(v in V) == {}",
-                    idx,
-                    seed_node,
+                return Err(format!(
+                    "error hk-relax invalid parameters: id(seed_nodes[{idx}]) == {seed_node} but max_id(v in V) == {}",
                     node_count - 1
-                );
+                ).into());
             }
         }
         Ok(())
     }
 
-    fn compute_psis(n: usize, t: f64) -> Result<Vec<f64>, Error> {
+    fn compute_psis(n: usize, t: f64) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
         let mut psis = vec![0f64; n + 1];
         psis[n] = 1f64;
         for i in (0..n).rev() {
@@ -107,24 +104,23 @@ where
         Ok(psis)
     }
 
-    fn compute_n(t: f64, eps: f64) -> Result<usize, Error> {
+    fn compute_n(t: f64, eps: f64) -> Result<usize, Box<dyn std::error::Error>> {
         let bound = Self::f64_is_nomal(eps / 2f64, "ε/2")?;
 
         let n_plus_two_i32 = match i32::try_from(t.floor() as i64) {
             Ok(n) => match n.overflowing_add(1) {
                 (r, false) => r,
                 (_, true) => {
-                    return Err(Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("error computing n + 2 for hk-relax {n} + 1 overflowed",),
-                    ));
+                    return Err(
+                        format!("error computing n + 2 for hk-relax {n} + 1 overflowed",).into(),
+                    );
                 }
             },
             Err(e) => {
-                return Err(Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("error computing n for hk-relax couldn't cast t: {t} to i32: {e}",),
-                ));
+                return Err(format!(
+                    "error computing n for hk-relax couldn't cast t: {t} to i32: {e}",
+                )
+                .into());
             }
         };
 
@@ -136,13 +132,11 @@ where
         }) {
             Some(fac) => Self::f64_is_nomal(fac, "(n + 1)!")?,
             None => {
-                return Err(Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "error computing n for hk-relax overflowed trying to compute ({})!",
-                        n_plus_two_i32 - 1
-                    ),
-                ));
+                return Err(format!(
+                    "error computing n for hk-relax overflowed trying to compute ({})!",
+                    n_plus_two_i32 - 1
+                )
+                .into());
             }
         };
 
@@ -159,17 +153,13 @@ where
         match Self::f64_to_usize_safe(n_plus_two) {
             Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
                 (n, false) => Ok(n),
-                (_, true) => Err(Error::new(
-                    std::io::ErrorKind::InvalidInput,
+                (_, true) =>
+                    Err(
                     format!(
                         "error computing n for hk-relax overflowed trying to compute {n_plus_two_usize} - 2",
-                    ),
-                )),
+                    ).into())
             },
-            None => Err(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("error computing n for hk-relax can't convert {n_plus_two} to usize",),
-            )),
+            None => Err(format!("error computing n for hk-relax can't convert {n_plus_two} to usize",).into()),
         }
     }
 
@@ -180,14 +170,11 @@ where
         seed: Vec<usize>,
         target_size: Option<usize>,
         target_volume: Option<usize>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let () = match Self::evaluate_params(graph.clone(), t, eps, seed.clone()) {
             Ok(_) => {}
             Err(e) => {
-                return Err(Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("error creating HKRelax instance: {e}"),
-                ));
+                return Err(format!("error creating HKRelax instance: {e}").into());
             }
         };
         let n = Self::compute_n(t, eps)?;
@@ -214,14 +201,11 @@ where
         seed: Vec<usize>,
         target_size: Option<usize>,
         target_volume: Option<usize>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let () = match Self::evaluate_params(self.graph.clone(), t, eps, seed.clone()) {
             Ok(_) => {}
             Err(e) => {
-                return Err(Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("error creating HKRelax instance: {e}"),
-                ));
+                return Err(format!("error creating HKRelax instance: {e}").into());
             }
         };
         let n = Self::compute_n(t, eps)?;
@@ -237,7 +221,7 @@ where
         })
     }
 
-    pub fn compute(&self) -> Result<Community<usize>, Error> {
+    pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let n = self.n as f64;
         let threshold_pre_u_pre_j = Self::f64_is_nomal(self.t.exp() * self.eps / n, "e^t * ε / n")?;
         let mut x: HashMap<usize, f64> = HashMap::new();
@@ -247,12 +231,10 @@ where
         let seed_len_f64 = self.seed.clone().len() as f64;
         for seed_node in self.seed.iter() {
             if r.contains_key(&(*seed_node, 0usize)) {
-                return Err(Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "error hk-relax seed node {seed_node} is present multiple times in seed array"
-                    ),
-                ));
+                return Err(format!(
+                    "error hk-relax seed node {seed_node} is present multiple times in seed array"
+                )
+                .into());
             }
             // r[(s, 0)] = 1. / len(seed)
             r.insert((*seed_node, 0usize), 1f64 / seed_len_f64);
@@ -263,10 +245,10 @@ where
             let rvj = match r.get(&(v, j)) {
                 Some(i) => *i,
                 None => {
-                    return Err(Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("error hk-relax ({v}, {j}) present in queue but not in residual",),
-                    ));
+                    return Err(format!(
+                        "error hk-relax ({v}, {j}) present in queue but not in residual",
+                    )
+                    .into());
                 }
             };
 
@@ -284,10 +266,7 @@ where
             match r.get_mut(&(v, j)) {
                 Some(rvj) => *rvj = 0f64,
                 None => {
-                    return Err(Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("error hk-relax r({v}, {j}) Some and None"),
-                    ));
+                    return Err(format!("error hk-relax r({v}, {j}) Some and None").into());
                 }
             };
 
@@ -295,10 +274,7 @@ where
             let (deg_v, v_n) = match self.graph.neighbours(v) {
                 Ok(v_n) => (v_n.remaining_neighbours() as f64, v_n),
                 Err(e) => {
-                    return Err(Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("error hk-relax getting neighbours of {v}: {e}"),
-                    ));
+                    return Err(format!("error hk-relax getting neighbours of {v}: {e}").into());
                 }
             };
             let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
@@ -328,15 +304,11 @@ where
                         r.insert(next, 0f64);
                         match r.get_mut(&next) {
                             Some(r_next) => r_next,
-                            None => {
-                                return Err(Error::new(
-                                    std::io::ErrorKind::InvalidInput,
-                                    format!(
-                                        "error hk-relax just inserted ({u}, {}) into residual and got None",
-                                        j + 1
-                                    ),
-                                ));
-                            }
+                            None => return Err(format!(
+                                "error hk-relax just inserted ({u}, {}) into residual and got None",
+                                j + 1
+                            )
+                            .into()),
                         }
                     }
                 };
@@ -373,10 +345,7 @@ where
                 );
                 Ok(c)
             }
-            Err(e) => Err(Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("error hk-relax: {e}"),
-            )),
+            Err(e) => Err(format!("error sweep cut: {e}").into()),
         }
     }
 }

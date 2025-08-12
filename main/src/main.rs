@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use tool::centralities::hyper_ball::*;
+use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
 #[allow(unused_imports)]
@@ -21,8 +22,8 @@ use core::panic;
 use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
+use std::path::Path;
 use std::time::Instant;
-use std::{io, path::Path};
 
 // Checout matchtigs
 // https://github.com/algbio/matchtigs
@@ -154,10 +155,10 @@ fn label_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
 ) {
     loop {
         print!("Enter something (press <ENTER> to quit): ");
-        io::stdout().flush().unwrap(); // Ensure prompt is shown
+        std::io::stdout().flush().unwrap(); // Ensure prompt is shown
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        std::io::stdin().read_line(&mut input).unwrap();
 
         let input = input.trim_end(); // remove newline characters
 
@@ -212,6 +213,11 @@ fn parse_bytes_mmaped<
     // End of lookup test
     /* ********************************************************************************* */
     //
+    let time = Instant::now();
+    let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    println!("found {} communities", _louvain.community_count());
+    println!("partition modularity {} ", _louvain.partition_modularity());
+    println!("louvain finished in {:?}", time.elapsed());
     let time = Instant::now();
     let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
     println!("found {} euler trails", _euler_trail.trail_number());
