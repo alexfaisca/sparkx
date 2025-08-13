@@ -248,7 +248,16 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 neighbours.clear();
             }
         }
-        println!("k-trussness {:?}", test);
+        {
+            let mut max = 0;
+            test.iter().enumerate().for_each(|(i, v)| {
+                if *v != 0 && i > max {
+                    max = i;
+                }
+            });
+            test.resize(max + 1, 0);
+            println!("k-trussness {:?}", test);
+        }
         self.k_trusses.flush_async()?;
 
         Ok(())

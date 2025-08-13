@@ -416,13 +416,24 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked").expect("error ??1"))
                 .collect();
-            let mut r = vec![0usize; u8::MAX as usize];
-            for i in 0..16 {
-                for v in joined_res.clone() {
-                    r[i] += v[i];
+
+            {
+                let mut r = vec![0usize; u8::MAX as usize];
+                for i in 0..u8::MAX as usize {
+                    for v in joined_res.clone() {
+                        r[i] += v[i];
+                    }
                 }
+
+                let mut max = 0;
+                r.iter().enumerate().for_each(|(i, v)| {
+                    if *v != 0 && i > max {
+                        max = i;
+                    }
+                });
+                r.resize(max + 1, 0);
+                println!("k-trussness {:?}", r);
             }
-            println!("k-trussness {:?}", r);
         })
         .unwrap();
 

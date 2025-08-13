@@ -50,6 +50,7 @@ pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 #[allow(dead_code)]
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
     const EXT_COMPRESSED_LZ4: &str = "lz4";
+    const EXT_MTX: &str = "mtx";
     const EXT_PLAINTEXT: &str = "txt";
     const DEFAULT_BATCHING_SIZE: usize = 50_000usize;
     /// in genetic graphs annotated with ff, fr, rf and rr directions maximum number of edges is 16
@@ -325,6 +326,46 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             _marker2: PhantomData::<EdgeType>,
         })
     }
+    /// Here by default no node's label is stored
+    pub fn from_file<P: AsRef<Path> + Clone>(
+        path: P,
+        id: Option<String>,
+        batch: Option<usize>,
+        in_fst: Option<fn(usize) -> bool>,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        // make sure cache directory exists, if not attempt to create it
+        if !Path::new(CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+
+        // make sure tmp directory exists, if not attempt to create it
+        if !Path::new(TEMP_CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+
+        // parse optional inputs && fallback to defaults for the Nones found
+        // parse extension to decide on decoding
+        let ext = path.as_ref().extension();
+        if let Some(ext) = ext {
+            match ext.to_str() {
+                Some(Self::EXT_COMPRESSED_LZ4) => {
+                    Ok(Self::from_ggcat_file(path, id, batch, in_fst)?)
+                }
+                Some(Self::EXT_PLAINTEXT) => Ok(Self::from_ggcat_file(path, id, batch, in_fst)?),
+                Some(Self::EXT_MTX) => Ok(Self::from_mtx_file(path, id, batch)?),
+                _ => Err(format!(
+                    "error ubknown extension {:?}: must be of type .{}, .{} .{}",
+                    ext,
+                    Self::EXT_PLAINTEXT,
+                    Self::EXT_MTX,
+                    Self::EXT_COMPRESSED_LZ4
+                )
+                .into()),
+            }
+        } else {
+            Err("error input files must have an extension".into())
+        }
+    }
 
     /// Here by default no node's label is stored
     pub fn from_ggcat_file<P: AsRef<Path> + Clone>(
@@ -362,6 +403,257 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         cache.make_readonly()?;
 
         Ok(cache)
+    }
+
+    pub fn from_mtx_file<P: AsRef<Path> + Clone>(
+        path: P,
+        id: Option<String>,
+        batch: Option<usize>,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        if std::mem::size_of::<Edge>() % std::mem::size_of::<usize>() != 0 {
+            return Err(format!("Error type `{}` has a  size of {}, which will lead to unaligned memory read/write for graph edges. Currently we don't support this type of memory access for graphs from .matx files. :(", std::any::type_name::<Edge>(), std::mem::size_of::<Edge>()).into());
+        }
+
+        // make sure cache directory exists, if not attempt to create it
+        if !Path::new(CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+
+        // make sure tmp directory exists, if not attempt to create it
+        if !Path::new(TEMP_CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+        let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
+
+        let (nr, nc, nnz_declared) = Self::parse_mtx_header(path.clone())?;
+
+        let (edge_fn, id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges)?;
+        let (index_fn, _id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Index)?;
+        let offset_fn = cache_file_name(edge_fn.clone(), FileType::EulerTmp, Some(20))?;
+        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edge_fn.clone(), nnz_declared, true)?;
+        let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, nr + 1, true)?;
+        let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(offset_fn, nr, true)?;
+
+        println!("degs rows {nr} cols {nc} edges {nnz_declared}");
+        // accumulate node degrees on index
+        {
+            Self::parse_mtx_with(path.clone(), |u, _v, _w| {
+                *index.get_mut(u) += 1;
+            })?;
+        }
+        // build offset vector from degrees
+        let mut sum = 0;
+        let mut max_degree = 0;
+        // this works beacause after aloc memmaped files are zeroed (so index[nr] = 0)
+        for u in 0..=nr {
+            let deg_u = *index.get(u);
+            if deg_u > max_degree {
+                max_degree = deg_u;
+            }
+            *index.get_mut(u) = sum;
+            sum += deg_u;
+        }
+
+        if max_degree >= u8::MAX as usize {
+            return Err(format!("Error graph has a max_degree of {max_degree} which, unforturnately, is bigger than {}, our current maximum supported size. If you feel a mistake has been made or really need this feature, please contact the developer team. We sincerely apologize.", u8::MAX).into());
+        }
+
+        // write edges
+        println!("edges (max degree is {max_degree})");
+        let mut wrote = 0;
+        {
+            Self::parse_mtx_with(path.clone(), |u, v, w| {
+                wrote += 1;
+                *edges.get_mut(*index.get(u) + *index_offset.get(u)) = Edge::new(v, w);
+                *index_offset.get_mut(u) += 1;
+            })?;
+        }
+        println!("wrote {wrote} edges {} {}", index.len(), edges.len());
+        edges.flush()?;
+        index.flush()?;
+        Self::open(edge_fn.clone(), batch)
+    }
+
+    pub fn parse_mtx_header<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<MTXHeader, Box<dyn std::error::Error>> {
+        let f = File::open(path)?;
+        let mut rdr = BufReader::new(f);
+
+        // read and parse the header line
+        let mut header = String::new();
+        rdr.read_line(&mut header)?;
+        if !header.starts_with("%%MatrixMarket") {
+            return Err("Invalid MatrixMarket header".into());
+        }
+        // tokens: 0=%%MatrixMarket, 1=matrix, 2=coordinate, 3=field, 4=symmetry
+        let toks: Vec<_> = header.split_whitespace().collect();
+        if toks.len() < 5 {
+            return Err("Malformed MatrixMarket header".into());
+        }
+        if !toks[1].eq_ignore_ascii_case("matrix")
+            || !toks[2].eq_ignore_ascii_case("coordinate")
+            || !(toks[3].eq_ignore_ascii_case("pattern") || toks[3].eq_ignore_ascii_case("integer"))
+            || !toks[4].eq_ignore_ascii_case("symmetric")
+        {
+            return Err(
+                "Only 'matrix coordinate pattern/integer symmetric' format is supported".into(),
+            );
+        }
+
+        // skip comment lines (%) to find the size line: "nrows ncols nnz"
+        let (nrows, ncols, nnz_declared) = {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let n = rdr.read_line(&mut line)?;
+                if n == 0 {
+                    return Err("Unexpected EOF before reading size line".into());
+                }
+                // ignore comment lines
+                let line_trim = line.trim();
+                if line_trim.is_empty() || line_trim.starts_with('%') {
+                    continue;
+                }
+                // parse sizes
+                let mut it = line_trim.split_whitespace();
+                let nr: usize = it.next().ok_or("Missing nrows")?.parse()?;
+                let nc: usize = it.next().ok_or("Missing ncols")?.parse()?;
+                let nnz: usize = it.next().ok_or("Missing nnz")?.parse()?;
+                if nr != nc {
+                    return Err(format!(
+                        "Only symmetric matrices are supported but {{nr = {nr}}} != {{nc = {nc}}}"
+                    )
+                    .into());
+                }
+                break (nr, nc, nnz);
+            }
+        };
+        Ok((nrows, ncols, nnz_declared))
+    }
+
+    pub fn parse_mtx_with<F, P: AsRef<Path>>(
+        path: P,
+        mut emit: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnMut(usize, u64, u64),
+    {
+        let f = File::open(path)?;
+        let mut rdr = BufReader::new(f);
+
+        // read and parse the header line
+        let mut header = String::new();
+        rdr.read_line(&mut header)?;
+        if !header.starts_with("%%MatrixMarket") {
+            return Err("Invalid MatrixMarket header".into());
+        }
+        // tokens: 0=%%MatrixMarket, 1=matrix, 2=coordinate, 3=field, 4=symmetry
+        let toks: Vec<_> = header.split_whitespace().collect();
+        if toks.len() < 5 {
+            return Err("Malformed MatrixMarket header".into());
+        }
+        if !toks[1].eq_ignore_ascii_case("matrix")
+            || !toks[2].eq_ignore_ascii_case("coordinate")
+            || !(toks[3].eq_ignore_ascii_case("pattern") || toks[3].eq_ignore_ascii_case("integer"))
+            || !toks[4].eq_ignore_ascii_case("symmetric")
+        {
+            return Err(
+                "Only 'matrix coordinate pattern/integer symmetric' format is supported".into(),
+            );
+        }
+        let pattern = toks[3].eq_ignore_ascii_case("pattern");
+
+        // skip comment lines (%) to find the size line: "nrows ncols nnz"
+        let (nrows, ncols, nnz_declared) = {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let n = rdr.read_line(&mut line)?;
+                if n == 0 {
+                    return Err("Unexpected EOF before reading size line".into());
+                }
+                // ignore comment lines
+                let line_trim = line.trim();
+                if line_trim.is_empty() || line_trim.starts_with('%') {
+                    continue;
+                }
+                // parse sizes
+                let mut it = line_trim.split_whitespace();
+                let nr: usize = it.next().ok_or("Missing nrows")?.parse()?;
+                let nc: usize = it.next().ok_or("Missing ncols")?.parse()?;
+                let nnz: usize = it.next().ok_or("Missing nnz")?.parse()?;
+                if nr != nc {
+                    return Err(format!(
+                        "Only symmetric matrices are supported but {{nr = {nr}}} != {{nc = {nc}}}"
+                    )
+                    .into());
+                }
+                break (nr, nc, nnz);
+            }
+        };
+
+        // stream the nnz entries
+        // For coordinate:
+        // - pattern:          i j
+        // - integer/real:     i j val
+        // - complex/hermitian i j real imag  (we’ll ignore values and just read i j)
+        //
+        // MatrixMarket is 1-based; convert to 0-based.
+        // We’ll be forgiving: we keep reading non-comment non-empty lines until we see nnz_declared entries.
+        let mut seen = 0usize;
+        let mut line = String::new();
+        while seen < nnz_declared {
+            line.clear();
+            let n = rdr.read_line(&mut line)?;
+            if n == 0 {
+                // Some files under-report nnz in the header; we stop if EOF reached
+                break;
+            }
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('%') {
+                continue;
+            }
+            let mut it = t.split_whitespace();
+
+            // 1st two tokens must be i j (1-based)
+            let i1: usize = match it.next() {
+                Some(s) => s.parse()?,
+                None => continue, // malformed line; skip
+            };
+            let j1: u64 = match it.next() {
+                Some(s) => s.parse()?,
+                None => continue, // malformed line; skip
+            };
+            // Convert to 0-based, also ensure in-bounds
+            if i1 == 0 || j1 == 0 {
+                return Err("MatrixMarket indices are 1-based; found 0".into());
+            }
+            let i = i1 - 1;
+            let j = j1 - 1;
+
+            let w: u64 = if pattern {
+                0
+            } else {
+                match it.next() {
+                    Some(s) => s.parse()?,
+                    None => 0, // malformed line; skip
+                }
+            };
+            if i >= nrows || j as usize >= ncols {
+                return Err(
+                    format!("Entry out of bounds: ({i},{j}) not in [{nrows}x{ncols}]").into(),
+                );
+            }
+
+            // Emit edges:
+            // one directed edge i --(w)--> j
+            emit(i, j, w);
+
+            seen += 1;
+        }
+
+        Ok(())
     }
 
     #[inline(always)]
@@ -903,8 +1195,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
         };
 
-        let graph_bytes = graph_file.metadata().unwrap().len() as usize;
-        let index_bytes = index_file.metadata().unwrap().len() as usize;
+        let edges = graph_file.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+        let nodes = index_file.metadata().unwrap().len() as usize / std::mem::size_of::<Edge>();
 
         Ok(GraphCache::<EdgeType, Edge> {
             graph_file,
@@ -913,8 +1205,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             graph_filename,
             index_filename,
             kmer_filename,
-            graph_bytes,
-            index_bytes,
+            graph_bytes: edges,
+            index_bytes: nodes,
             readonly: true,
             batch,
             _marker1: PhantomData::<Edge>,
@@ -2276,3 +2568,4 @@ pub struct Community<NodeId: Copy + Debug> {
 }
 
 type ProcessGGCATEntry = Option<(Vec<u8>, u64)>;
+type MTXHeader = (usize, usize, usize);

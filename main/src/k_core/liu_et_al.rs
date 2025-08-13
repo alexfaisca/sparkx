@@ -338,12 +338,19 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                 .map(|v| v.join().expect("error thread panicked"))
                 .collect();
             let mut r = vec![0usize; u8::MAX as usize];
-            for i in 0..16 {
+            for i in 0..u8::MAX as usize {
                 for v in joined_res.clone() {
                     r[i] += v[i];
                 }
             }
             r[0] += total_dead_nodes as usize;
+            let mut max = 0;
+            r.iter().enumerate().for_each(|(i, v)| {
+                if *v != 0 && i > max {
+                    max = i;
+                }
+            });
+            r.resize(max + 1, 0);
             println!("k-cores {:?}", r);
         })
         .unwrap();

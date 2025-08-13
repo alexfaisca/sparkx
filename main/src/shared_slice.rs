@@ -85,6 +85,9 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
         self.slice.write_slice(idx, slice)
     }
+    pub fn len(&self) -> usize {
+        self.shared_slice().len()
+    }
     pub fn flush(&self) -> Result<(), Error> {
         if self.mmapped {
             self.mmap.flush()
@@ -242,11 +245,11 @@ impl<T> SharedSliceMut<T> {
         })
     }
     pub fn get_mut(&mut self, idx: usize) -> &mut T {
-        assert!(idx < self.len);
+        assert!(idx < self.len, "index {} >= len {}", idx, self.len);
         unsafe { &mut *self.ptr.add(idx) }
     }
     pub fn get(&self, idx: usize) -> &T {
-        assert!(idx < self.len);
+        assert!(idx < self.len, "index {} >= len {}", idx, self.len);
         unsafe { &*self.ptr.add(idx) }
     }
     pub fn len(&self) -> usize {

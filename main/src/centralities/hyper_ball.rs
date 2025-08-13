@@ -287,7 +287,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
                     loop {
 
-                        println!("HyperBall tid {tid} iteration {t_f64}");
+                        {
+                        // println!("HyperBall tid {tid} iteration {t_f64}");
+                        }
 
                         for u in begin..end {
 

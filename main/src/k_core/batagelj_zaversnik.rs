@@ -75,7 +75,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // initialize degree and bins count vecs
         let mut bins: Vec<usize> = match thread::scope(
             |scope| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
-                let mut bins = vec![0usize; 128];
+                let mut bins = vec![0usize; u8::MAX as usize];
                 let mut max_vecs = vec![];
 
                 for tid in 0..threads {
@@ -218,8 +218,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);
 
-                res.push(scope.spawn(move |_| -> Vec<u64> {
-                    let mut res = vec![0u64; 20];
+                res.push(scope.spawn(move |_| -> Vec<usize> {
+                    let mut res = vec![0usize; u8::MAX as usize];
                     for u in start..end {
                         let core_u = *core.get(u);
                         for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
@@ -237,17 +237,25 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     res
                 }));
             }
-            let joined_res: Vec<Vec<u64>> = res
+            let joined_res: Vec<Vec<usize>> = res
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked"))
                 .collect();
-            let mut r = vec![0u64; 16];
-            for i in 0..16 {
+            let mut r = vec![0usize; u8::MAX as usize];
+            for i in 0..u8::MAX as usize {
                 for v in joined_res.clone() {
                     r[i] += v[i];
                 }
             }
-            r[0] += dead_nodes as u64;
+            // safe because max_degree is at least 0
+            r[0] += dead_nodes;
+            let mut max = 0;
+            r.iter().enumerate().for_each(|(i, v)| {
+                if *v != 0 && i > max {
+                    max = i;
+                }
+            });
+            r.resize(max + 1, 0);
             println!("k-cores {:?}", r);
         })
         .unwrap();

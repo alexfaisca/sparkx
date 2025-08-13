@@ -101,7 +101,20 @@ fn main() {
         (Some("lz4"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<SubStandardColoredEdgeType, Test, String>(
+                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                        args.file.clone(),
+                        args.threads,
+                        args.output_id,
+                    )
+                    .expect("error couldn't parse file"),
+                );
+            }
+        }
+        // .mtx input file
+        (Some("mtx"), _) => {
+            if args.mmap {
+                mmapped_suite(
+                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,
@@ -126,7 +139,10 @@ fn main() {
     };
 }
 
-fn mmapped_suite(_graph: GraphMemoryMap<SubStandardColoredEdgeType, Test>) {}
+fn mmapped_suite<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
+    _graph: GraphMemoryMap<EdgeType, Edge>,
+) {
+}
 
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
 #[expect(dead_code)]
@@ -183,7 +199,7 @@ fn parse_bytes_mmaped<
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
-    let graph_cache = GraphCache::<EdgeType, Edge>::from_ggcat_file(path.clone(), id, None, None)?;
+    let graph_cache = GraphCache::<EdgeType, Edge>::from_file(path.clone(), id, None, None)?;
     println!("cache no fst built {:?}", time.elapsed());
     let time = Instant::now();
     let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
@@ -213,15 +229,19 @@ fn parse_bytes_mmaped<
     // End of lookup test
     /* ********************************************************************************* */
     //
+
     let time = Instant::now();
     let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     println!("found {} communities", _louvain.community_count());
     println!("partition modularity {} ", _louvain.partition_modularity());
     println!("louvain finished in {:?}", time.elapsed());
+
+    let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
     let time = Instant::now();
-    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
+    let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    println!("k-truss burkhardt et al {:?}", time.elapsed());
+
     // let time = Instant::now();
     // let mut hyper = HyperBallInner::new(&graph_mmaped, Some(6), Some(70))?;
     // println!("hyperball {:?}", time.elapsed());
@@ -246,29 +266,28 @@ fn parse_bytes_mmaped<
     // let time = Instant::now();
     // hyper.compute_lins_centrality()?;
     // println!("centrality lin {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    // println!("k-core bz {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    // println!("k-core liu et al {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
-    // println!("k-truss decomposition {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    // println!("pkt {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let hk_relax = HKRelax::new(
-    //     &graph_mmaped,
-    //     20.,
-    //     0.0001,
-    //     vec![64256],
-    //     Some(10_000),
-    //     Some(50_000),
-    // )?;
-    // let _ = hk_relax.compute()?;
-    // println!("HKRelax {:?}", time.elapsed());
+    let time = Instant::now();
+    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    println!("k-core batagelj ziversnik {:?}", time.elapsed());
+    let time = Instant::now();
+    let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    println!("k-truss pkt {:?}", time.elapsed());
+    let time = Instant::now();
+    let hk_relax = HKRelax::new(
+        &graph_mmaped,
+        20.,
+        0.0001,
+        vec![64256],
+        Some(10_000),
+        Some(50_000),
+    )?;
+    let _ = hk_relax.compute()?;
+    println!("HKRelax {:?}", time.elapsed());
+    let time = Instant::now();
+    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
+
     // let time = Instant::now();
     // let _approx_dirichlet_hkpr =
     //     ApproxDirHKPR::new(&graph_mmaped, 0.008, 8, 100000, 4000000, 0.05)?;

@@ -158,7 +158,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
 
         // Initialize
-        thread::scope(|scope| {
+        thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            let mut threads_res = vec![];
             for tid in 0..threads {
                 // eid is unnecessary as graph + index alwready do the job
 
@@ -171,7 +172,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 let mut sigma = sigma.shared_slice();
                 let mut coms = coms.shared_slice();
 
-                scope.spawn(move |_| {
+                threads_res.push(scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     for u in begin..end {
                         // mark all nodes unprocessed
                         alive.get(u).swap(false, Ordering::Relaxed);
@@ -183,6 +184,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                         *gdi.get_mut(out_offset) = u_index_start;
                         *gdi.get_mut(out_offset + 1) = u_index_end;
                         // copy G onto G'
+                        let deg_u = match u_index_end.overflowing_sub(u_index_start) {
+                            (r, false) => r,
+                            (r, true) => {
+                                return Err(format!("overflow for {u} index ends at {u_index_end} but starts at {u_index_start} so sub is {r}").into());
+                            },
+                        };
                         gde.write_shared_slice(
                             graph_ptr,
                             u_index_start,
@@ -191,14 +198,21 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                         );
                         // sum of edge weights, unweighted edges (w = 1)
                         // Σ′ ← 𝐾′ ← 𝑣𝑒𝑟𝑡𝑒𝑥_w𝑒𝑖𝑔ℎ𝑡𝑠(𝐺′)
-                        let deg_u = u_index_end - u_index_start;
                         *k.get_mut(u) = AtomicUsize::new(deg_u);
                         *sigma.get_mut(u) = AtomicUsize::new(deg_u);
                     }
-                });
+                    Ok(())
+                }));
             }
+            for (tid, r) in threads_res.into_iter().enumerate() {
+                let t_res = r.join();
+                if t_res.is_err() {
+                    return Err(format!("error (thread {tid}): {:?}", t_res).into());
+                }
+            }
+            Ok(())
         })
-        .unwrap();
+        .unwrap()?;
 
         let mut tolerance = Self::INITIAL_TOLERANCE;
         let mut use_first_csr = true; // toggle between G' and G'' buffers for each pass
