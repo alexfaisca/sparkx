@@ -236,6 +236,7 @@ fn parse_bytes_mmaped<
     println!("partition modularity {} ", _louvain.partition_modularity());
     println!("louvain finished in {:?}", time.elapsed());
 
+    let time = Instant::now();
     let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
     println!("k-core liu et al {:?}", time.elapsed());
     let time = Instant::now();

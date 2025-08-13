@@ -430,17 +430,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let (edge_fn, id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges)?;
         let (index_fn, _id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Index)?;
         let offset_fn = cache_file_name(edge_fn.clone(), FileType::EulerTmp, Some(20))?;
-        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edge_fn.clone(), nnz_declared, true)?;
         let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, nr + 1, true)?;
         let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(offset_fn, nr, true)?;
 
         println!("degs rows {nr} cols {nc} edges {nnz_declared}");
         // accumulate node degrees on index
+        let mut edge_count = 0;
         {
             Self::parse_mtx_with(path.clone(), |u, _v, _w| {
+                edge_count += 1;
                 *index.get_mut(u) += 1;
             })?;
         }
+        println!("real edge number is actually {edge_count}");
+        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edge_fn.clone(), edge_count, true)?;
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
@@ -494,7 +497,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         if !toks[1].eq_ignore_ascii_case("matrix")
             || !toks[2].eq_ignore_ascii_case("coordinate")
             || !(toks[3].eq_ignore_ascii_case("pattern") || toks[3].eq_ignore_ascii_case("integer"))
-            || !toks[4].eq_ignore_ascii_case("symmetric")
+            || !(toks[4].eq_ignore_ascii_case("symmetric")
+                || toks[4].eq_ignore_ascii_case("skew-symmetric")
+                || toks[4].eq_ignore_ascii_case("general"))
         {
             return Err(
                 "Only 'matrix coordinate pattern/integer symmetric' format is supported".into(),
@@ -556,13 +561,16 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         if !toks[1].eq_ignore_ascii_case("matrix")
             || !toks[2].eq_ignore_ascii_case("coordinate")
             || !(toks[3].eq_ignore_ascii_case("pattern") || toks[3].eq_ignore_ascii_case("integer"))
-            || !toks[4].eq_ignore_ascii_case("symmetric")
+            || !(toks[4].eq_ignore_ascii_case("symmetric")
+                || toks[4].eq_ignore_ascii_case("skew-symmetric")
+                || toks[4].eq_ignore_ascii_case("general"))
         {
             return Err(
                 "Only 'matrix coordinate pattern/integer symmetric' format is supported".into(),
             );
         }
         let pattern = toks[3].eq_ignore_ascii_case("pattern");
+        let symmetric = !toks[4].eq_ignore_ascii_case("general");
 
         // skip comment lines (%) to find the size line: "nrows ncols nnz"
         let (nrows, ncols, nnz_declared) = {
@@ -649,6 +657,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             // Emit edges:
             // one directed edge i --(w)--> j
             emit(i, j, w);
+            if symmetric && i != j as usize {
+                emit(j as usize, i as u64, w);
+            }
 
             seen += 1;
         }
