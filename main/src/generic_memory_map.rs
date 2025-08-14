@@ -425,7 +425,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
         let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
 
-        let (nr, nc, nnz_declared) = Self::parse_mtx_header(path.clone())?;
+        let (nr, _nc, _nnz_declared) = Self::parse_mtx_header(path.clone())?;
 
         let (edge_fn, id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges)?;
         let (index_fn, _id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Index)?;
@@ -433,7 +433,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, nr + 1, true)?;
         let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(offset_fn, nr, true)?;
 
-        println!("degs rows {nr} cols {nc} edges {nnz_declared}");
         // accumulate node degrees on index
         let mut edge_count = 0;
         {
@@ -442,7 +441,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 *index.get_mut(u) += 1;
             })?;
         }
-        println!("real edge number is actually {edge_count}");
         let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edge_fn.clone(), edge_count, true)?;
         // build offset vector from degrees
         let mut sum = 0;
@@ -462,7 +460,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // write edges
-        println!("edges (max degree is {max_degree})");
         let mut wrote = 0;
         {
             Self::parse_mtx_with(path.clone(), |u, v, w| {
@@ -471,7 +468,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 *index_offset.get_mut(u) += 1;
             })?;
         }
-        println!("wrote {wrote} edges {} {}", index.len(), edges.len());
+
         edges.flush()?;
         index.flush()?;
         Self::open(edge_fn.clone(), batch)

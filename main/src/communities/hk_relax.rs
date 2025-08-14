@@ -149,7 +149,6 @@ where
         }
 
         // convert the f64 value to usize subtract 2 and output n
-        // FIXME: are there other methods to validate n?
         match Self::f64_to_usize_safe(n_plus_two) {
             Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
                 (n, false) => Ok(n),

@@ -377,7 +377,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                                 for e_idx in begin..end {
                                     let edge = *to_process.get(e_idx);
                                     *processed.get_mut(edge) = true;
-                                    *in_curr.get_mut(edge) = false; // FIXME: this can be removed?
                                 }
                                 // println
                                 for _e in begin..end {

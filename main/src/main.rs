@@ -231,48 +231,29 @@ fn parse_bytes_mmaped<
     //
 
     let time = Instant::now();
+    let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
+    println!();
+
+    let time = Instant::now();
+    let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    println!("k-truss burkhardt et al {:?}", time.elapsed());
+    println!();
+
+    let time = Instant::now();
+    let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    println!("k-truss pkt {:?}", time.elapsed());
+    println!();
+
+    let time = Instant::now();
     let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     println!("found {} communities", _louvain.community_count());
     println!("partition modularity {} ", _louvain.partition_modularity());
     println!("louvain finished in {:?}", time.elapsed());
-
-    let time = Instant::now();
-    let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    println!("k-core liu et al {:?}", time.elapsed());
-    let time = Instant::now();
-    let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
-    println!("k-truss burkhardt et al {:?}", time.elapsed());
-
-    // let time = Instant::now();
-    // let mut hyper = HyperBallInner::new(&graph_mmaped, Some(6), Some(70))?;
-    // println!("hyperball {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_harmonic_centrality(None)?;
-    // println!("centrality harmonic None {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_harmonic_centrality(Some(false))?;
-    // println!("centrality harmonic false {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_harmonic_centrality(Some(true))?;
-    // println!("centrality harmonic true {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_closeness_centrality(None)?;
-    // println!("centrality closeness None {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_closeness_centrality(Some(false))?;
-    // println!("centrality closeness false {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_closeness_centrality(Some(true))?;
-    // println!("centrality closeness true {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyper.compute_lins_centrality()?;
-    // println!("centrality lin {:?}", time.elapsed());
+    println!();
     let time = Instant::now();
     let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    println!("k-core batagelj ziversnik {:?}", time.elapsed());
-    let time = Instant::now();
-    let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    println!("k-truss pkt {:?}", time.elapsed());
+    println!("k-core batagelj zaversnik {:?}", time.elapsed());
     let time = Instant::now();
     let hk_relax = HKRelax::new(
         &graph_mmaped,
