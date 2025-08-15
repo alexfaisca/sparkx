@@ -162,7 +162,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let mut stack = stack.clone();
         let mut test = vec![0usize; u8::MAX as usize];
 
-        // max node degree is 16
         for k in 1..u8::MAX {
             if edge_count == 0 {
                 break;

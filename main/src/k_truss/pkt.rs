@@ -31,9 +31,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KTruss, None)?;
-        let k_trusses =
-            SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
+        let out_fn = cache_file_name(graph.cache_fst_filename(), FileType::KTruss, None)?;
+        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(out_fn.clone(), graph.width(), true)?;
         let pkt = Self { graph, k_trusses };
         pkt.compute(10)?;
         Ok(pkt)

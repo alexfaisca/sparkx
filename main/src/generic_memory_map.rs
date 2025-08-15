@@ -106,7 +106,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 }
                 _ => {
                     return Err(format!(
-                        "error ubknown extension {:?}: must be of type .{} or .{}",
+                        "error ubknown extension {:?} (must be of type .{} or .{})",
                         ext,
                         Self::EXT_PLAINTEXT,
                         Self::EXT_COMPRESSED_LZ4
