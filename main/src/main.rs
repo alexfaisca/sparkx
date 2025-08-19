@@ -231,45 +231,45 @@ fn parse_bytes_mmaped<
     //
 
     let time = Instant::now();
-    let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    println!("k-core liu et al {:?}", time.elapsed());
-    println!();
-
-    let time = Instant::now();
-    let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
-    println!("k-truss burkhardt et al {:?}", time.elapsed());
-    println!();
-
-    let time = Instant::now();
-    let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    println!("k-truss pkt {:?}", time.elapsed());
-    println!();
-
-    let time = Instant::now();
     let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     println!("found {} communities", _louvain.community_count());
     println!("partition modularity {} ", _louvain.partition_modularity());
     println!("louvain finished in {:?}", time.elapsed());
     println!();
-    let time = Instant::now();
-    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    println!("k-core batagelj zaversnik {:?}", time.elapsed());
-    let time = Instant::now();
-    let hk_relax = HKRelax::new(
-        &graph_mmaped,
-        20.,
-        0.0001,
-        vec![64256],
-        Some(10_000),
-        Some(50_000),
-    )?;
-    let _ = hk_relax.compute()?;
-    println!("HKRelax {:?}", time.elapsed());
-    let time = Instant::now();
-    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
-
+    //
+    // let time = Instant::now();
+    // let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    // println!("k-core liu et al {:?}", time.elapsed());
+    // println!();
+    //
+    // let time = Instant::now();
+    // let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    // println!("k-truss burkhardt et al {:?}", time.elapsed());
+    // println!();
+    //
+    // let time = Instant::now();
+    // let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    // println!("k-truss pkt {:?}", time.elapsed());
+    // println!();
+    // let time = Instant::now();
+    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    // println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let hk_relax = HKRelax::new(
+    //     &graph_mmaped,
+    //     20.,
+    //     0.0001,
+    //     vec![64256],
+    //     Some(10_000),
+    //     Some(50_000),
+    // )?;
+    // let _ = hk_relax.compute()?;
+    // println!("HKRelax {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    // println!("found {} euler trails", _euler_trail.trail_number());
+    // println!("euler trail built {:?}", time.elapsed());
+    //
     // let time = Instant::now();
     // let _approx_dirichlet_hkpr =
     //     ApproxDirHKPR::new(&graph_mmaped, 0.008, 8, 100000, 4000000, 0.05)?;
