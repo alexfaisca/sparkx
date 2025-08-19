@@ -6,7 +6,6 @@ use crate::utils::*;
 use atomic_float::AtomicF64;
 use crossbeam::thread;
 use num_cpus::get_physical;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Barrier;
 use std::{
@@ -40,10 +39,13 @@ type ProceduralMemoryGVELouvain = (
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// the graph for which the partition is computed
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    /// memmapped slice containing the coreness of each edge
+    /// memmapped array containing each node's community
     community: AbstractedProceduralMemoryMut<usize>,
+    /// cardinality of distinct communities in the final partition
     community_count: usize,
+    /// partition modularity
     modularity: f64,
 }
 #[allow(dead_code)]
@@ -60,9 +62,21 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     const INITIAL_TOLERANCE: f64 = 0.01;
     /// Described in 4.1.4 Adjusting aggregation tolerance
     const AGGREGATION_TOLERANCE: f64 = 0.8;
+    /// Maximum number of passes to be performed (a pass is an iteration of the Louvain() function described in "GVE-Louvain: Fast Louvain Algorithm for
+    /// Community Detection in Shared Memory Setting" p. 5).
+    const MAX_PASSES: usize = 30;
 
-    const MAX_PASSES: usize = 25;
-
+    /// Performs the Louvain() function as described in "GVE-Louvain: Fast Louvain Algorithm for
+    /// Community Detection in Shared Memory Setting" p. 5.
+    ///
+    /// The resulting graph partition and its corresponding modularity are stored in memory (in
+    /// the partition's case in a memmapped file).
+    ///
+    /// * Note: isolated nodes remain in their own isolated community, in the final partition.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the louvain partition is to be computed.
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -80,10 +94,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok(gve_louvain)
     }
 
+    /// Returns the number of communities in the Louvain partition.
     pub fn community_count(&self) -> usize {
         self.community_count
     }
 
+    /// Returns the modularity of the Louvain partition.
     pub fn partition_modularity(&self) -> f64 {
         self.modularity
     }
@@ -184,7 +200,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             }
             if *coms.get(e.0) > comm_count {
                 println!(
-                    "WARNING!! Found for node {u} (neighbour {}): {{{} > {comm_count}}} but c: {}",
+                    "WARNING!! Impossible neighbour commnity for node {u} (neighbour {}): {{{} > {comm_count}}} but c: {}",
                     e.0,
                     *coms.get(e.0),
                     *coms.get(*coms.get(e.0))
@@ -256,6 +272,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         (best_comm, best_gain)
     }
 
+    /// Performs the LouvainMove() function as described in "GVE-Louvain: Fast Louvain Algorithm for
+    /// Community Detection in Shared Memory Setting" p. 6.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn louvain_move(
@@ -310,6 +328,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                 }
                             }
 
+                            // wait for all threads to finish current pass initialization
                             synchronize.wait();
 
                             let mut local_delta_q_sum = 0.0;
@@ -392,6 +411,153 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok(l_iter)
     }
 
+    /// Performs the LouvainAggregate() function as described in "GVE-Louvain: Fast Louvain Algorithm for
+    /// Community Detection in Shared Memory Setting" p. 6.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn louvain_aggregate(
+        l_pass: usize,
+        comm_count: usize,
+        new_comm_count: usize,
+        k: SharedSliceMut<AtomicUsize>,
+        sigma: SharedSliceMut<AtomicUsize>,
+        processed: SharedSliceMut<AtomicBool>,
+        index: SharedSliceMut<usize>,
+        mut next_index: SharedSliceMut<usize>,
+        edges: SharedSliceMut<(usize, usize)>,
+        mut next_edges: SharedSliceMut<(usize, usize)>,
+        coms: SharedSliceMut<usize>,
+        mut helper: SharedSliceMut<usize>,
+        threads: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // recalculate comm load per thread
+        let prev_comm_load = comm_count.div_ceil(threads);
+        let new_comm_load = new_comm_count.div_ceil(threads);
+
+        let synchronize = Arc::new(Barrier::new(threads));
+
+        // exclusive scan
+        let mut sum = 0;
+        for u in 0..new_comm_count {
+            let degree = *next_index.get(u * 2);
+            *next_index.get_mut(u * 2) = sum;
+            k.get(u).store(sum, Ordering::SeqCst);
+            sum += degree;
+        }
+
+        thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            // use dynamic style scheduling by splitting range [0, cur_node_count) for threads
+            let mut thread_res = Vec::with_capacity(threads);
+            for tid in 0..threads {
+                // local accumulator variables
+                let mut total = 0;
+                let mut total_weight = 0;
+
+                // hashmap to store edges for each community
+                let mut nm: HashMap<usize, usize> = HashMap::new();
+
+                let k = k.clone();
+                let sigma = sigma.clone();
+                let processed = processed.clone();
+
+                let synchronize = synchronize.clone();
+
+                let prev_begin = std::cmp::min(tid * prev_comm_load, comm_count);
+                let prev_end = std::cmp::min(prev_begin + prev_comm_load, comm_count);
+                let new_begin = std::cmp::min(tid * new_comm_load, new_comm_count);
+                let new_end = std::cmp::min(new_begin + new_comm_load, new_comm_count);
+
+                thread_res.push(scope.spawn(
+                    move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        // add com - node edges atomically
+                        for u in prev_begin..prev_end {
+                            let degree = *index.get(u * 2 + 1) - *index.get(u * 2);
+                            // guard against isolated nodes to not go over community index boundary
+                            if degree > 0 {
+                                // add edge (C'[u], u)
+                                let idx = k.get(*coms.get(u)).fetch_add(1, Ordering::SeqCst);
+                                *helper.get_mut(idx) = u;
+                            }
+                        }
+
+                        // wait for every thread to finish adding com - node edges
+                        synchronize.wait();
+
+                        for c in new_begin..new_end {
+                            *next_index.get_mut(c * 2 + 1) = k.get(c).load(Ordering::Relaxed);
+                        }
+
+                        // wait for every thread to finish com - node CSR indexing
+                        synchronize.wait();
+
+                        for c in new_begin..new_end {
+                            // mark unprocessed
+                            processed.get(c).store(false, Ordering::Relaxed);
+
+                            // clear previous community's neighbour map
+                            nm.clear();
+
+                            // for every node in the community scan edges to accumulate supergraph
+                            // edge weights
+                            for e_idx in *next_index.get(c * 2)..k.get(c).load(Ordering::Relaxed) {
+                                Self::scan_communities(comm_count, &mut nm, edges, index, coms, *helper.get(e_idx), true);
+                            }
+
+                            // for every linked community store (dest, weight) in CSR
+                            for (&d, &w) in nm.iter() {
+                                // troubleshoot edge
+                                if d > new_comm_count {
+                                    return Err(
+                                        format!("error building supergraph: found edge to community {d} but max_id for communities is {comm_count} in the {l_pass}th pass"
+                                                ).into()
+                                        );
+                                }
+
+                                // store edge
+                                *next_edges.get_mut(*next_index.get(c * 2) + total) = (d, w);
+
+                                // increment counts
+                                total += 1;
+                                total_weight += w;
+                            }
+
+                            // set cmommunity index upper boundary
+                            *next_index.get_mut(c * 2 + 1) = *next_index.get(c * 2) + total;
+
+                            // check for indexing missalignment errors
+                            if c > 0 && *next_index.get(c * 2) < *next_index.get(c * 2 - 1) {
+                                println!("error {} {} {}", new_begin, *next_index.get(c * 2), *next_index.get(c * 2 - 1));
+                                return Err(
+                                    format!("error building supergraph: index missalignment, node {} ends at {} and node {c} starts at {}",
+                                            c - 1, *next_index.get(c * 2 - 1), *next_index.get(c * 2)
+                                            ).into()
+                                    );
+                            }
+                            // store node weight & community weight
+                            k.get(c).store(total_weight, Ordering::Relaxed);
+                            sigma.get(c).store(total_weight, Ordering::Relaxed);
+
+                            // reset for next comm
+                            total = 0;
+                            total_weight = 0;
+                        }
+                        Ok(())
+                    },
+                ));
+            }
+            for (i, r) in thread_res.into_iter().enumerate() {
+                let t_res = r.join();
+                if t_res.is_err() {
+                    return Err(format!("error joining {i} in aggregation: {:?}", t_res).into());
+                }
+            }
+            Ok(())
+        })
+        .unwrap()?;
+
+        Ok(())
+    }
+
     fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let edge_count = self.graph.width();
         let node_count = self.graph.size() - 1;
@@ -412,8 +578,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             let mut threads_res = vec![];
             for tid in 0..threads {
                 let processed = processed.shared_slice();
+
                 let mut gdi = gdi.shared_slice();
-                let mut gddi = gddi.shared_slice();
                 let mut gde = gde.shared_slice();
                 let mut k = k.shared_slice();
                 let mut sigma = sigma.shared_slice();
@@ -450,15 +616,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
                             // mark all nodes unprocessed
                             processed.get(u).swap(false, Ordering::Relaxed);
+
+                            // initilize helper, communities, coms and CSR vectors
                             *helper.get_mut(u) = usize::MAX;
                             *communities.get_mut(u) = u;
                             *coms.get_mut(u) = u;
                             *gdi.get_mut(out_offset) = u_start;
                             *gdi.get_mut(out_offset + 1) = u_end;
-                            *gddi.get_mut(out_offset) = 0;
+
                             // copy G onto G'
                             gde.write_slice(u_start, edges.as_slice());
-                            // sum of edge weights, unweighted edges (in pass 0, edge weight is 1)
+
                             // Σ′ ← 𝐾′ ← 𝑣𝑒𝑟𝑡𝑒𝑥_w𝑒𝑖𝑔ℎ𝑡𝑠(𝐺′)
                             *k.get_mut(u) = AtomicUsize::new(deg_u);
                             *sigma.get_mut(u) = AtomicUsize::new(deg_u);
@@ -467,12 +635,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     },
                 ));
             }
+
+            // check for errors
             for (tid, r) in threads_res.into_iter().enumerate() {
                 let t_res = r.join();
                 if t_res.is_err() {
                     return Err(format!("error (thread {tid}): {:?}", t_res).into());
                 }
             }
+
             Ok(())
         })
         .unwrap()?;
@@ -524,33 +695,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 threads,
             )?;
             if count_iter == 0 {
-                println!("Finished at {l_pass}th pass iters were <= 1");
                 break;
-            } else {
-                println!("Continue, {l_pass}th pass had {count_iter} iterations");
             }
-
-            // // WARN: Test weight conservation over louvain_move()
-            // let mut sum_k = 0usize;
-            // let mut sum_s = 0usize;
-            // for c in 0..prev_comm_count {
-            //     let kc = k.get(c).load(Ordering::Relaxed);
-            //     let sc = sigma.get(c).load(Ordering::Relaxed);
-            //     sum_k += kc;
-            //     sum_s += sc;
-            // }
-            // // For a directed-symmetric representation, sum_k must equal m2.
-            // assert_eq!(sum_k, m2 as usize, "∑k != m2");
-            // assert_eq!(sum_s, m2 as usize, "∑s != m2");
-
-            // to simplify code dendrogram lookup is always done after louvain_move()
-            // (if global conversion did not happen) this way no dendrogram lookup
-            // is necessary after louvain() terminates
-
-            // |Γ|, |Γ𝑜𝑙𝑑 | ← Number of communities in 𝐶′, C;
-            // C′ ← Renumber communities in 𝐶
-            // count communities while at it
-            println!("community renumbering");
 
             for u in 0..prev_comm_count {
                 let degree = *index.get(u * 2 + 1) - *index.get(u * 2);
@@ -588,94 +734,21 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             }
 
             // build the aggregated graph (super-vertex graph) in the 'next_index' and 'next_edges' buffers
-            {
-                println!("aggregation");
-                // exclusive scan
-                let mut sum = 0;
-                for u in 0..new_comm_count {
-                    let degree = *next_index.get(u * 2);
-                    *next_index.get_mut(u * 2) = sum;
-                    *next_index.get_mut(u * 2 + 1) = sum;
-                    sum += degree;
-                }
-                // add edge atomically
-                for u in 0..prev_comm_count {
-                    let degree = *index.get(u * 2 + 1) - *index.get(u * 2);
-                    // guard against isolated nodes to not go over com boundary
-                    if degree > 0 {
-                        // add edge (C'[u], u)
-                        *helper.get_mut(*next_index.get(*coms.get(u) * 2 + 1)) = u;
-                        *next_index.get_mut(*coms.get(u) * 2 + 1) += 1;
-                    }
-                }
-                // fill edges of new graph
-                let mut nm: HashMap<usize, usize> = HashMap::new();
-                for c in 0..new_comm_count {
-                    processed.get(c).store(false, Ordering::Relaxed);
-                    nm.clear();
-                    for e_idx in *next_index.get(c * 2)..*next_index.get(c * 2 + 1) {
-                        let u = *helper.get(e_idx);
-                        Self::scan_communities(
-                            prev_comm_count,
-                            &mut nm,
-                            edges,
-                            index,
-                            coms,
-                            u,
-                            true,
-                        );
-                    }
-                    let mut total = 0;
-                    let mut total_weight = 0;
-                    for (&d, &w) in nm.iter() {
-                        if d > new_comm_count {
-                            return Err(
-                                format!("error building supergraph: found edge to community {d} but max_id for communities is {prev_comm_count} in the {l_pass}th pass"
-                                        ).into()
-                                );
-                        }
-                        *next_edges.get_mut(*next_index.get(c * 2) + total) = (d, w);
-                        total += 1;
-                        total_weight += w;
-                    }
-                    // println!("({c} -> {{|edges| = {total}, |weight| = {total_weight}}})");
-                    *next_index.get_mut(c * 2 + 1) = *next_index.get(c * 2) + total;
-                    if c > 0 && *next_index.get(c * 2) < *next_index.get(c * 2 - 1) {
-                        return Err(
-                                format!("error building supergraph: index missalignment, node {} ends at {} and node {c} starts at {}",
-                                        c - 1, *next_index.get(c * 2 - 1), *next_index.get(c * 2)
-                                        ).into()
-                                );
-                    }
-                    k.get(c).store(total_weight, Ordering::Relaxed);
-                    sigma.get(c).store(total_weight, Ordering::Relaxed);
-                }
-            }
-
-            let mut sum_k = 0usize;
-            for c in 0..new_comm_count {
-                // WARN: Don't remove community id reassignment!!!
-                let kc = k.get(c).load(Ordering::Relaxed);
-                let sc = sigma.get(c).load(Ordering::Relaxed);
-                assert_eq!(kc, sc, "k[c] != sigma[c] at c={}", c);
-                sum_k += kc;
-            }
-            // For a directed-symmetric representation, sum_k must equal m2.
-            assert_eq!(sum_k, m2 as usize, "∑k != m2");
-
-            for c in 0..new_comm_count {
-                let s = *next_index.get(2 * c);
-                let e = *next_index.get(2 * c + 1);
-                assert!(
-                    s <= e && e <= edge_count /* of the buffer you’re writing */
-                );
-                // also walk a few entries defensively
-                for pos in s..e {
-                    let (dst, w) = *next_edges.get(pos);
-                    assert!(dst < new_comm_count, "edge dst OOB");
-                    assert!(w > 0, "zero/garbage weight");
-                }
-            }
+            Self::louvain_aggregate(
+                l_pass,
+                prev_comm_count,
+                new_comm_count,
+                k.clone(),
+                sigma.clone(),
+                processed.clone(),
+                index,
+                next_index,
+                edges,
+                next_edges,
+                coms,
+                helper,
+                threads,
+            )?;
 
             // check aggregation tolerance: if communities did not reduce sufficiently, break cycle
             if new_comm_count as f64 >= (prev_comm_count as f64 * Self::AGGREGATION_TOLERANCE) {
@@ -691,17 +764,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             std::mem::swap(&mut index, &mut next_index);
             std::mem::swap(&mut edges, &mut next_edges);
 
-            println!(
-                "{l_pass}th pass comms {prev_comm_count} -> {new_comm_count} (aggregation rate = {})",
-                new_comm_count as f64 / prev_comm_count as f64
-            );
-
             prev_comm_count = new_comm_count;
             new_comm_count = 0;
-        } // end of passes loop
+        }
 
         self.community_count = prev_comm_count;
 
+        // compute partition modularity
         if m2 == 0. {
             self.modularity = 0.0;
             return Ok(());
@@ -738,8 +807,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         }
 
         self.modularity = partition_modularity;
+        self.community.flush()?;
 
         cleanup_cache()?;
+
         Ok(())
     }
 }
