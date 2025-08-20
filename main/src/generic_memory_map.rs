@@ -2187,9 +2187,9 @@ where
         GraphMemoryMap::init(cache, self.thread_count)
     }
 
-    // Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format[^1].
-    //
-    // If none of the edge or node labeling is wanted consider using *export_petgraph_stripped*.
+    /// Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format keeping all edge and node labelings[^1].
+    ///
+    /// [^1]: if none of the edge or node labeling is wanted consider using *export_petgraph_stripped*.
     pub fn export_petgraph(
         &self,
     ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
@@ -2216,8 +2216,7 @@ where
         Ok(graph)
     }
 
-
-    // Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format[^1] stripping any edge or node labeling whatsoever.
+    /// Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format[^1] stripping any edge or node labelings whatsoever.
     pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<(), ()>::new();
         let node_count = self.size() - 1;
