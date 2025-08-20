@@ -20,6 +20,9 @@ type ProceduralMemoryBurkhardtEtAl = (
     AbstractedProceduralMemoryMut<(usize, usize)>,
 );
 
+/// For the computation of a [`GraphMemoryMap`] instance's k-truss decomposition as described in ["Bounds and algorithms for graph trusses"](https://doi.org/10.48550/arXiv.1806.05523) by Burkhardt P. et al.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoBurkhardtEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -33,12 +36,13 @@ pub struct AlgoBurkhardtEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<Ed
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoBurkhardtEtAl<'a, EdgeType, Edge>
 {
-    /// Performs k-truss decomposition as described in "Bounds and algorithms for graph trusses" by Burkhardt P. et al.
+    /// Performs k-truss decomposition as described in ["Bounds and algorithms for graph trusses"](https://doi.org/10.48550/arXiv.1806.05523) by Burkhardt P. et al.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    /// * `graph` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -70,7 +74,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok((tri_count, edge_list, edge_index, stack))
     }
 
-    /// Computes the k-trusses of a graph as described in "Bounds and algorithms for graph trusses" by Burkhardt P. et al.
+    /// Computes the k-trusses of a graph as described in ["Bounds and algorithms for graph trusses"](https://doi.org/10.48550/arXiv.1806.05523) by Burkhardt P. et al.
     ///
     /// The resulting k-truss subgraphs are stored in memory (in a memmapped file) edgewise[^1].
     ///
@@ -78,7 +82,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;

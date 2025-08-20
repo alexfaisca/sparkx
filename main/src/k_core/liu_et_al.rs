@@ -19,6 +19,9 @@ type ProceduralMemoryLiuEtAL = (
     AbstractedProceduralMemoryMut<usize>,
 );
 
+/// For the computation of a [`GraphMemoryMap`] instance's k-core decomposition as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoLiuEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -30,7 +33,7 @@ pub struct AlgoLiuEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType
 
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a, EdgeType, Edge> {
-    /// Performs k-core decomposition as described in "Parallel 𝑘-Core Decomposition: Theory and Practice" by Liu Y. et al.
+    /// Performs k-core decomposition as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
     ///
     /// * Note: we did not implement the *Node Sampling*[^1] scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs.
     ///
@@ -38,8 +41,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -75,7 +79,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
     }
 
-    /// Computes the k-cores of a graph as described in "Parallel 𝑘-Core Decomposition: Theory and Practice" by Liu Y. et al.
+    /// Computes the k-cores of a graph as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
     ///
     /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise[^1].
     /// * Note: we did not implement the *Node Sampling* scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs. Details on how to implement this potimization and how it works can be found in the *4.1.2 Details about the Sampling Scheme.* section of the aforementioned paper in pp. 6-7.
@@ -84,7 +88,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     ///
     /// # Arguments
     ///
-    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;

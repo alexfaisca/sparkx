@@ -15,6 +15,9 @@ use std::{
     time::Instant,
 };
 
+/// For the computation of the euler trail(s) of a [`GraphMemoryMap`] instance using *Hierholzer's Algorithm*.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which the euler trail(s) is(are) computed.
@@ -44,8 +47,9 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {

@@ -4,6 +4,9 @@ use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use std::collections::{HashMap, VecDeque};
 
+/// For the computation of the *HK-Relax Algorithm* as described in ["Heat Kernel Based Community Detection"](https://doi.org/10.48550/arXiv.1403.3148) by Kloster K. and Gleich D. on [`GraphMemoryMap`] instances.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[derive(Clone)]
 pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// The graph for which the community is computed.
@@ -29,21 +32,18 @@ where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
-    /// Evaluates parameters for the *HK-Relax Algorithm* as described in "Heat Kernel Based Community Detection" by Kloster K. and Gleich D.
+    /// Evaluates parameters for the *HK-Relax Algorithm* as described in ["Heat Kernel Based Community Detection"](https://doi.org/10.48550/arXiv.1403.3148) by Kloster K. and Gleich D.
     ///
     /// Evaluation is successful if `|V| >= 0`, `t` is normal and bigger than zero (not equal), `ε` is normal and (exclusive) between zero and one and `seed` is not empty and everyone of its entries is a valid node id, i.e. `0 <= seed[i] < |V|`.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
-    /// * `t`: `f64` --- temperature parameter.
-    /// * `eps`: `f64` --- ε (eps) error parameter.
-    /// * `seed`: `Vec<usize>` --- seed nodes.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `t` --- temperature parameter.
+    /// * `eps` --- ε (eps) error parameter.
+    /// * `seed` --- seed nodes.
     ///
-    /// # Returns
-    ///
-    /// `Ok(())` if successful, or `Err(_)` if not.
-    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     fn evaluate_params(
         graph: &GraphMemoryMap<EdgeType, Edge>,
         t: f64,
@@ -102,12 +102,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `n`: `usize` --- depth parameter.
-    /// * `t`: `f64` --- temperature parameter.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(_)` if successful, or `Err(_)` if not.
+    /// * `n` --- diffusion depth parameter.
+    /// * `t` --- diffusion temperature parameter.
     ///
     fn compute_psis(n: usize, t: f64) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
         let mut psis = vec![0f64; n + 1];
@@ -129,12 +125,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `t`: `f64` --- temperature parameter.
-    /// * `eps`: `f64` --- ε (eps) error parameter.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(n)` if successful, or `Err(_)` if not.
+    /// * `t`: `f64` --- diffusion temperature parameter.
+    /// * `eps`: `f64` --- diffusion ε (eps) error parameter.
     ///
     fn compute_n(t: f64, eps: f64) -> Result<usize, Box<dyn std::error::Error>> {
         let bound = f64_is_nomal(eps / 2f64, "ε/2")?;
@@ -194,17 +186,18 @@ where
         }
     }
 
-    /// Initializes the *HK-Relax Algorithm* as described in "Heat Kernel Based Community Detection" by Kloster K. and Gleich D.
+    /// Initializes the *HK-Relax Algorithm* as described in ["Heat Kernel Based Community Detection"](https://doi.org/10.48550/arXiv.1403.3148) by Kloster K. and Gleich D.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
-    /// * `t`: `f64` --- temperature parameter.
-    /// * `eps`: `f64` --- ε (eps) error parameter.
-    /// * `seed`: `Vec<usize>` --- seed nodes.
-    /// * `target_size`: `Option<usize>` --- partition's target node number.
-    /// * `target_volume`: `Option<usize>` --- partition's target edge number.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `t` --- diffusion temperature parameter.
+    /// * `eps`` --- diffusion ε (eps) error parameter.
+    /// * `seed` --- seed nodes' ids.
+    /// * `target_size` --- partition's target node number.
+    /// * `target_volume` --- partition's target edge number.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
         t: f64,
@@ -261,13 +254,9 @@ where
         })
     }
 
-    /// Computes the *HK-Relax Algorithm* as described in "Heat Kernel Based Community Detection" by Kloster K. and Gleich D.
+    /// Computes the *HK-Relax Algorithm* as described in ["Heat Kernel Based Community Detection"](https://doi.org/10.48550/arXiv.1403.3148) by Kloster K. and Gleich D.
     ///
     /// As a bonus we support optional community size/volume target values for control.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Comunity<usize>)` if successful, or `Err(_)` if not.
     ///
     pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let n = self.n as f64;

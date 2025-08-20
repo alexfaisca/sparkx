@@ -19,6 +19,9 @@ type ProceduralMemoryPKT = (
     AbstractedProceduralMemoryMut<AtomicU8>,
 );
 
+/// For the computation of a [`GraphMemoryMap`] instance's k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoPKT<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -29,12 +32,13 @@ pub struct AlgoPKT<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 }
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, EdgeType, Edge> {
-    /// Performs the *PKT Alrgorithm*'s 'k-truss decomposition as described in "Shared-memory Graph Truss Decomposition" by Kamir H. and Madduri K.
+    /// Performs the *PKT Alrgorithm*'s 'k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    /// * `graph` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -69,7 +73,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         Ok((curr, next, processed, in_curr, in_next, s))
     }
 
-    /// Computes the k-trusses of a graph with the *PKT Alrgorithm* as  described in "Shared-memory Graph Truss Decomposition" by Kamir H. and Madduri K.
+    /// Computes the k-trusses of a graph with the *PKT Alrgorithm* as  described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
     ///
     /// The resulting k-truss subgraphs are stored in memory (in a memmapped file) edgewise[^1].
     ///
@@ -77,7 +81,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     ///
     /// # Arguments
     ///
-    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;

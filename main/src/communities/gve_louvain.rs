@@ -12,7 +12,6 @@ use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-
 type ProceduralMemoryGVELouvain = (
     // K' --- renamed to k
     AbstractedProceduralMemoryMut<AtomicUsize>,
@@ -36,6 +35,9 @@ type ProceduralMemoryGVELouvain = (
     AbstractedProceduralMemoryMut<usize>,
 );
 
+/// For the computation of Louvain partitions as described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876) on [`GraphMemoryMap`] instances.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -52,7 +54,7 @@ pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeT
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoGVELouvain<'a, EdgeType, Edge>
 {
-    /// Constants set according to the optimizeds parameters described in "GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting".
+    /// Constants set according to the optimizeds parameters described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876).
     /// Described in 4.1.2 Limiting the number of iterations per pass
     const MAX_ITERATIONS: usize = 20;
     /// Described in 4.1.3 Adjusting tolerance drop rate (threshold scaling)
@@ -65,8 +67,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// Community Detection in Shared Memory Setting" p. 5).
     const MAX_PASSES: usize = 30;
 
-    /// Performs the Louvain() function as described in "GVE-Louvain: Fast Louvain Algorithm for
-    /// Community Detection in Shared Memory Setting" p. 5.
+    /// Performs the Louvain() function as described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876) p. 5.
     ///
     /// The resulting graph partition and its corresponding modularity are stored in memory (in
     /// the partition's case in a memmapped file).
@@ -75,7 +76,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the louvain partition is to be computed.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -141,12 +144,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `k_u_c`: f64 --- The weight of edges from node `u` to nodes in community `c`.
-    /// * `k_u_d`: f64 --- The weight of edges from node `u` to nodes in community `d`.
-    /// * `k_u`: f64 --- Total weight of edges from node `u`.
-    /// * `sig_c`: f64 --- Total weight of edges in community `c`.
-    /// * `sig_d`: f64 --- Total weight of edges in community `d`.
-    /// * `m`: f64 --- Total weight of edges in the graph (or half of it if graphis directed).
+    /// * `k_u_c` --- weight of edges from node `u` to nodes in community `c`.
+    /// * `k_u_d` --- weight of edges from node `u` to nodes in community `d`.
+    /// * `k_u` --- total weight of edges from node `u`.
+    /// * `sig_c` --- total weight of edges in community `c`.
+    /// * `sig_d` --- total weight of edges in community `d`.
+    /// * `m` --- total weight of edges in the graph (or half of it if graphis directed).
     ///
     /// # Returns
     ///
@@ -175,12 +178,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `nmap`: &mut HashMap<usize, usize> (updated) --- Hashmap for entries `(c, k_u_c)`, where `c` is a community and `k_u_c` is the total weight of edges from node u into nodes in `c`.
-    /// * `edges`: SharedSliceMut<(usize, usize)> --- Edges vector, should consist of entries `(dest_node: usize, edge_weight: usize)`.
-    /// * `index`: SharedSliceMut<usize> --- Index vector.
-    /// * `coms`: SharedSliceMut<usize> --- Communities vector.
-    /// * `u`: usize --- Index of node `u`.
-    /// * `self_allowed`: bool --- Flag signaling whether self-loops should be accepted.
+    /// * `nmap` (updated) --- hashmap for entries `(c, k_u_c)`, where `c` is a community and `k_u_c` is the total weight of edges from node u into nodes in `c`.
+    /// * `edges` --- edges vector[^1].
+    /// * `index` --- index vector.
+    /// * `coms` --- communities vector.
+    /// * `u` --- index of node `u`.
+    /// * `self_allowed` --- flag signaling whether self-loops should be accepted.
+    ///
+    ///  [^1]: should consist of entries of type `(dest_node: usize, edge_weight: usize)`
     #[inline(always)]
     fn scan_communities(
         comm_count: usize,
@@ -218,11 +223,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `nmap`: &mut HashMap<usize, usize> --- Hashmap of entries `(c, k_u_c)`, where `c` is a community and `k_u_c` is the total weight of edges from node `u` into nodes in `c`.
-    /// * `sigma`: SharedSliceMut<AtomicUsize> --- Total community weights vector.
-    /// * `c_u`: usize --- Community of node `u`.
-    /// * `k:u`: f64 --- Total weight of node `u` <<f64>>.
-    /// * `m`: f64 --- Total weight of edges in the graph (or half of it if graph is directed) <<f64>>.
+    /// * `nmap` --- `Hashmap` of entries `(c, k_u_c)`, where `c` is a community and `k_u_c` is the total weight of edges from node `u` into nodes in `c`.
+    /// * `sigma` --- total community weights vector.
+    /// * `c_u` --- community of node `u`.
+    /// * `k:u` --- total weight of node `u` .
+    /// * `m` --- total weight of edges in the graph (or half of it if graph is directed).
     ///
     /// # Returns
     ///
@@ -270,8 +275,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         (best_comm, best_gain)
     }
 
-    /// Performs the LouvainMove() function as described in "GVE-Louvain: Fast Louvain Algorithm for
-    /// Community Detection in Shared Memory Setting" p. 6.
+    /// Performs the LouvainMove() function as described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876) p. 6.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn louvain_move(
@@ -409,8 +413,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok(l_iter)
     }
 
-    /// Performs the LouvainAggregate() function as described in "GVE-Louvain: Fast Louvain Algorithm for
-    /// Community Detection in Shared Memory Setting" p. 6.
+    /// Performs the LouvainAggregate() function as described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876) p. 6.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn louvain_aggregate(

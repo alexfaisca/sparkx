@@ -7,6 +7,9 @@ use rand::{Rng, rng};
 use rand_distr::{Distribution, Poisson};
 use std::collections::HashMap;
 
+/// For the computation of the *ApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O. on [`GraphMemoryMap`] instances.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[derive(Clone)]
 pub struct ApproxDirHKPR<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which the community is computed.
@@ -39,21 +42,22 @@ pub enum ApproxDirichletHeatKernelK {
 
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'a, EdgeType, Edge> {
-    /// Evaluates parameters for the *ApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O.
+    /// Evaluates parameters for the *ApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O.
     ///
     /// Evaluation is successful if `|V| >= 0`, `t` is normal and bigger than zero (not equal), `ε` is normal and (exclusive) between zero and one, `target_conductance` is normal and (exclusive) between zero and one, and `seed` is a valid node id, i.e. `0 <= seed < |V|`.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
-    /// * `seed_node`: `usize` --- seed node.
-    /// * `eps`: `f64` --- ε (eps) error parameter.
-    /// * `target_conductance`: `f64` --- target conductance parameter.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `seed_node` --- seed node.
+    /// * `eps` --- ε (eps) error parameter.
+    /// * `target_conductance` --- target conductance parameter.
     ///
     /// # Returns
     ///
     /// `Ok(())` if successful, or `Err(_)` if not.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     fn evaluate_params(
         graph: GraphMemoryMap<EdgeType, Edge>,
         seed_node: usize,
@@ -102,17 +106,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         Ok(())
     }
 
-    /// Initializes the *ApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O.
+    /// Initializes the *ApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
-    /// * `eps`: `f64` --- ε (eps) error parameter.
-    /// * `seed`: `usize` --- seed node.
-    /// * `target_size`: `Option<usize>` --- partition's target node number.
-    /// * `target_volume`: `Option<usize>` --- partition's target edge number.
-    /// * `target_conductance`: `f64` --- partition's target conductance.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `eps` --- ε (eps) error parameter.
+    /// * `seed` --- seed node.
+    /// * `target_size` --- partition's target node number.
+    /// * `target_volume` --- partition's target edge number.
+    /// * `target_conductance` --- partition's target conductance.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
         eps: f64,
@@ -206,15 +211,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         Ok(curr_node)
     }
 
-    /// Computes the *ApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O. with user controlled optimization level.
+    /// Computes the *ApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O. with user controlled optimization level.
     ///
     /// # Arguments
     ///
-    /// * `big_k`: `ApproxDirichletHeatKernelK` --- described the type of optimization to be used in random walk sampling.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Comunity<usize>)` if successful, or `Err(_)` if not.
+    /// * `big_k` --- described the type of optimization to be used in random walk sampling.
     ///
     #[allow(clippy::unreachable)]
     #[deprecated]
@@ -308,11 +309,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         }
     }
 
-    /// Computes the *SolverApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O. with the therein described optimizations.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(Comunity<usize>)` if successful, or `Err(_)` if not.
+    /// Computes the *SolverApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O. with the therein described optimizations.
     ///
     pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let node_count = match self.graph.size().overflowing_sub(1) {

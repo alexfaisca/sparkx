@@ -13,6 +13,9 @@ type ProceduralMemoryBZ = (
     AbstractedProceduralMemoryMut<usize>,
 );
 
+/// For the computation of a [`GraphMemoryMap`] instance's k-core decomposition as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
+///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoBatageljZaversnik<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -26,16 +29,17 @@ pub struct AlgoBatageljZaversnik<'a, EdgeType: GenericEdgeType, Edge: GenericEdg
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoBatageljZaversnik<'a, EdgeType, Edge>
 {
-    /// Performs k-core decomposition as described in "An O(m) Algorithm for Cores Decomposition of Networks" by Batagelj V. and Zaversnik M.
+    /// Performs k-core decomposition as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
     ///
     /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise[^1].
     ///
-    ///  [^1]: for each edge of the graph it's coreness is stored in an array.
+    /// [^1]: for each edge of the graph it's coreness is stored in an array.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -67,14 +71,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok((degree, node, core, pos))
     }
 
-    /// Computes the k-cores of a graph as described in "An O(m) Algorithm for Cores Decomposition of Networks" by Batagelj V. and Zaversnik M.
+    /// Computes the k-cores of a graph as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
     ///
     /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise, i.e.
     /// for each edge of the graph it's coreness is stored in an array.
     ///
     /// # Arguments
     ///
-    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;

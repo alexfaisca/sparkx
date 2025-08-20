@@ -36,10 +36,11 @@ enum Centrality {
     LIN,
 }
 
-/// Struct for the *HyperBall Algorithm* described in "In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond" by Boldi P. and Vigna S.
+/// For the *HyperBall Algorithm* described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S. on [`GraphMemoryMap`] instances.
 ///
-/// * Note: De Bruijn graphs are simmetric graphs, so running the HyperBall algorithm on the graph is the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph to obtain the necessary components to determine the closeness, harmonic and Lin's centralities for every node of the graph.
+/// * Note: De Bruijn graphs are symmetric graphs, so running the HyperBall algorithm on the graph is the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph to obtain the necessary components to determine the closeness, harmonic and Lin's centralities for every node of the graph.
 ///
+/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct HyperBallInner<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
@@ -140,14 +141,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         }
     }
 
-    /// Performs the *HyperBall Algorithm* as described in "In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond" by Boldi P. and Vigna S.
+    /// Performs the *HyperBall Algorithm* as described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S.
     ///
     /// # Arguments
     ///
-    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
-    /// * `precision`: `Option<u8>` --- the precision to be used for each nodes *HyperLogLog++* counter (defaults to 8, equivalent to 2⁸-register bits per node).
-    /// * `max_depth`: `Option<usize>` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
+    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `precision` --- the precision to be used for each nodes *HyperLogLog++* counter (defaults to 8, equivalent to 2⁸-register bits per node).
+    /// * `max_depth` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
     ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
         precision: Option<u8>,
@@ -382,7 +384,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `normalize`: `Option<bool>` --- tri-state flag determining the type of normalization to be used for the computation.
+    /// * `normalize` --- tri-state flag determining the type of normalization to be used for the computation.
     ///     - `None` --- no normalization.
     ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
     ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
@@ -446,7 +448,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `normalize`: `Option<bool>` --- tri-state flag determining the type of normalization to be used for the computation.
+    /// * `normalize` --- tri-state flag determining the type of normalization to be used for the computation.
     ///     - `None` --- no normalization.
     ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
     ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.

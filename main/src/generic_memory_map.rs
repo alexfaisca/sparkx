@@ -169,9 +169,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    /// Parses a ggcat output file input into a `GraphCache` instance.
+    /// Parses a ggcat output file input into a [`GraphCache`] instance.
     ///
-    /// Input is assumed to be of type UTF-8 and to follow the format of GGCAT's output.
+    /// Input is assumed to be of type UTF-8 and to follow the format of [`GGCAT`](https://github.com/algbio/ggcat)'s output.
     ///
     /// # Arguments
     ///
@@ -209,6 +209,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// )?;
     /// ```
     ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     fn parse_ggcat_bytes_mmap(
         &mut self,
         input: &[u8],
@@ -262,17 +263,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Initializes a `GraphCache` instance from a cache id[^1].
+    /// Initializes a [`GraphCache`] instance from a cache id[^1].
     ///
-    /// [^1]: note that upon initialization, the instance is empty and must be populated with graphs nodes and edges (and optionally metalabels), checkout the *from_ggcat_file* or *from_mtx_file* methods to see an example of how to populate the `GraphCache` instance.
+    /// [^1]: note that upon initialization, the instance is empty and must be populated with graphs nodes and edges (and optionally metalabels), checkout the [`from_ggcat_file`] or [`from_mtx_file`] methods to see an example of how to populate the [`GraphCache`] instance.
     ///
     /// # Arguments
     ///
-    /// * `id`: `String` --- cache id to be used when creating cache files' filenames.
-    /// * `batch_size`: `Option<usize>`--- size of input chunking for fst (re)build(s)[^1][^2].
+    /// * `id` --- cache id to be used when creating cache files' filenames.
+    /// * `batch_size` --- size of input chunking for fst (re)build(s)[^1][^2].
     ///
     /// [^1]: if `None` is provided defaults to 10'000.
-    /// [^2]: for more information on the functionality of input chunking, refer to *build_fst_from_unsorted_file*'s documentation footnote #2.
+    /// [^2]: for more information on the functionality of input chunking, refer to [`build_fst_from_unsorted_file`]'s documentation footnote #2.
+    ///
+    /// [`from_ggcat_file`]: ./struct.GraphCache.html#method.from_ggcat_file
+    /// [`from_mtx_file`]: ./struct.GraphCache.html#method.from_mtx_file
+    /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     fn init_with_id(
         id: String,
         batch: Option<usize>,
@@ -338,16 +344,19 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
     }
 
-    /// Creates a `GraphCache` instance from an existing cached graph.
+    /// Creates a [`GraphCache`] instance from an existing cached graph.
     ///
     /// # Arguments
     ///
-    /// * `filename`: `String` --- filename of one of the graph's cache files[^1].
-    /// * `batch_size`: `Option<usize>`--- size of input chunking for fst (re)build(s)[^2][^3].
+    /// * `filename` --- filename of one of the graph's cache files[^1].
+    /// * `batch_size` --- size of input chunking for fst (re)build(s)[^2][^3].
     ///
-    /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the `GraphCache` instance are inferred from the cache id.
+    /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the [`GraphCache`] instance are inferred from the cache id.
     /// [^2]: if `None` is provided defaults to 10'000.
-    /// [^3]: for more information on the functionality of input chunking, refer to *build_fst_from_unsorted_file*'s documentation footnote #2.
+    /// [^3]: for more information on the functionality of input chunking, refer to [`build_fst_from_unsorted_file`]'s documentation footnote #2.
+    ///
+    /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn open(
         filename: String,
         batch: Option<usize>,
@@ -407,26 +416,27 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
     }
 
-    /// Parses a file input into a `GraphCache` instance.
+    /// Parses a file input into a [`GraphCache`] instance.
     ///
     /// Input file is assumed to be either:
-    ///  * MatrixMarket file, in which case it must have extension .mtx and be of type matrix coordinate pattern/integer symmetric/skew-symmetric/general.
-    ///  * GGCAT output file, in which case it must have extension .lz4, if provided in compressed form using LZ4, or .txt if provided in plaintext, and follow GGCAT's output file format.
+    ///  * [`MatrixMarket`](https://math.nist.gov/MatrixMarket/formats.html) file, in which case it must have extension .mtx and be of type matrix coordinate pattern/integer symmetric/skew-symmetric/general.
+    ///  * [`GGCAT`](https://github.com/algbio/ggcat) output file, in which case it must have extension .lz4, if provided in compressed form using LZ4, or .txt if provided in plaintext, and follow [`GGCAT`](https://github.com/algbio/ggcat)'s output file format.
     ///
     /// # Arguments
     ///
-    /// * `path`: `P: AsRef<Path> + Clone`[^1] - input file.
-    /// * `id`: `Option<String>` --- graph cache id for the `GraphCache` instance[^2].
-    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^3][^4].
-    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
+    /// * `path` - input file path[^1].
+    /// * `id` --- graph cache id for the [`GraphCache`] instance[^2].
+    /// * `batch` --- size of input chunking for fst rebuild[^3][^4].
+    /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
-    /// [^1]: for example, a `String`.
+    /// [^1]: for example, as a `String`.
     /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
     /// [^3]: if `None` is provided defaults to 10'000.
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
-    /// [^5]: if `None` is provided defaults to *NOT* storing any node's label.
+    /// [^5]: if `None` is provided defaults to **NOT** storing any node's label.
     /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
     ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn from_file<P: AsRef<Path> + Clone>(
         path: P,
         id: Option<String>,
@@ -467,22 +477,24 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    /// Parses a GGCAT output file input into a `GraphCache` instance.
+    /// Parses a [`GGCAT`](https://github.com/algbio/ggcat) output file input into a [`GraphCache`] instance.
     ///
-    /// Input file is assumed to have file extension .lz4, if provided in compressed form using LZ4, or .txt, if provided in plaintext form. Furthermore, the file contents must follow the format of GGCAT's output.
+    /// Input file is assumed to have file extension .lz4, if provided in compressed form using LZ4, or .txt, if provided in plaintext form. Furthermore, the file contents must follow the format of [`GGCAT`](https://github.com/algbio/ggcat)'s output.
     ///
     /// # Arguments
     ///
-    /// * `path`: `P: AsRef<Path> + Clone`[^1] - input file.
-    /// * `id`: `Option<String>` --- graph cache id for the `GraphCache` instance[^2].
-    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^3][^4].
-    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
+    /// * `path` --- input file[^1].
+    /// * `id` --- graph cache id for the [`GraphCache`] instance[^2].
+    /// * `batch`--- size of input chunking for fst rebuild[^3][^4].
+    /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
     /// [^1]: for example, a `String`.
     /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
     /// [^3]: if `None` is provided defaults to 10'000.
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
     /// [^5]: if `None` is provided defaults to storing every node's label.
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn from_ggcat_file<P: AsRef<Path> + Clone>(
         path: P,
         id: Option<String>,
@@ -520,22 +532,24 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(cache)
     }
 
-    /// Parses a MatrixMarket file input into a `GraphCache` instance.
+    /// Parses a [`MatrixMarket`](https://math.nist.gov/MatrixMarket/formats.html) file input into a [`GraphCache`] instance.
     ///
     /// Input file is assumed have file extension .mtx and must be of type matrix coordinate pattern/integer symmetric/skew-symmetric/general.
     ///
     /// # Arguments
     ///
-    /// * `path`: `P: AsRef<Path> + Clone`[^1] - input file.
-    /// * `id`: `Option<String>` --- graph cache id for the `GraphCache` instance[^2].
-    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^3][^4].
-    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
+    /// * `path` - input file[^1].
+    /// * `id` --- graph cache id for the [`GraphCache`] instance[^2].
+    /// * `batch` --- size of input chunking for fst rebuild[^3][^4].
+    /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
-    /// [^1]: for example, a `String`.
+    /// [^1]: for example, as a `String`.
     /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
     /// [^3]: if `None` is provided defaults to 10'000.
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
     /// [^5]: if `None` is provided defaults to storing every node's label.
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn from_mtx_file<P: AsRef<Path> + Clone>(
         path: P,
         id: Option<String>,
@@ -1159,19 +1173,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Parses a GGCAT output file input and builds an fst for the graph according to the input.
+    /// Parses a [`GGCAT`](https://github.com/algbio/ggcat) output file given as input and builds an fst for the graph according to the input.
     /// parameters.
     ///
-    /// Input is assumed to be of type UTF-8 and to follow the format of GGCAT's output.
+    /// Input is assumed to be of type UTF-8 and to follow the format of [`GGCAT`](https://github.com/algbio/ggcat)'s output.
     ///
     /// # Arguments
     ///
     /// * `input` - Input bytes.
     /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
-    ///
-    /// # Returns
-    ///
-    /// Empty Ok().
     ///
     /// # Errors
     ///
@@ -1198,6 +1208,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
     /// )?;
     /// ```
+    ///
     ///
     #[deprecated]
     fn fst_from_ggcat_bytes(
@@ -1265,18 +1276,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Creates a `GraphCache` instance from an existing cached graph.
+    /// Creates a [`GraphCache`] instance from an existing cached graph.
     ///
     /// # Arguments
     ///
-    /// * `filename`: `String` --- filename of one of the graph's cache files[^1].
-    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^2][^3].
-    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^4].
+    /// * `filename` --- filename of one of the graph's cache files[^1].
+    /// * `batch` --- size of input chunking for fst rebuild[^2][^3].
+    /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^4].
     ///
-    /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the `GraphCache` instance are inferred from the cache id.
+    /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the [`GraphCache`] instance are inferred from the cache id.
     /// [^2]: if `None` is provided defaults to 10'000.
     /// [^3]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
     /// [^4]: if `None` is provided defaults to storing every node's label.
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path> + Clone>(
         &mut self,
         path: P,
@@ -1440,15 +1453,17 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    /// Builds an fst for the `GraphCache` instance from an unsorted entries file[^1].
+    /// Builds an fst for the [`GraphCache`] instance from an unsorted entries file[^1].
     ///
     /// [^1]: entries should be formatted ad "{node_id}\t{node_label}\n".
     ///
     /// # Arguments
     ///
-    /// * `batch_size`: `usize` --- size of input chunking[^2].
+    /// * `batch_size` --- size of input chunking[^2].
     ///
     /// [^2]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn build_fst_from_unsorted_file(
         &mut self,
         batch_size: usize, // e.g. 10_000
@@ -1607,7 +1622,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Makes the `GraphCache` instance readonly. Allows the user to `Clone` the struct.
+    /// Make the [`GraphCache`] instance readonly. Allows the user to `Clone` the struct.
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn make_readonly(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.readonly {
             return Ok(());
@@ -1692,16 +1709,18 @@ where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
-    /// Initializes a `GraphMemoryMap` instance from a `GraphCache` instance[^1][^2].
+    /// Initializes a [`GraphMemoryMap`] instance from a [`GraphCache`] instance[^1][^2].
     ///
-    /// [^1]: `GraphCache` instance must be reandonly, dynamic graphs are not supported.
-    /// [^2]: despite being readonly, the `GraphCache` instance's fst may be rebuilt *a posteriori* if proven necessary, checkout `GraphCache`'s documentation for more information on how to perform an fst rebuild.
+    /// [^1]: [`GraphCache`] instance must be reandonly, dynamic graphs are not supported.
+    /// [^2]: despite being readonly, the [`GraphCache`] instance's fst may be rebuilt *a posteriori* if proven necessary, checkout [`GraphCache`]'s documentation for more information on how to perform an fst rebuild.
     ///
     /// # Arguments
     ///
-    /// * `cache`: `GraphCache` --- cache instance to be used.
-    /// * `thread_count`: `u8`--- user suggested number of threads to be used when computing algorithms on the graph.
+    /// * `cache` --- [`GraphCache`] instance to be used.
+    /// * `thread_count`--- user suggested number of threads to be used when computing algorithms on the graph.
     ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn init(
         cache: GraphCache<EdgeType, Edge>,
         thread_count: u8,
@@ -1794,7 +1813,9 @@ where
         }
     }
 
-    /// Returns a `NeighbourIter` iterator over the given (by id) node's neighbours.
+    /// Returns a [`NeighbourIter`] iterator over the given (by id) node's neighbours.
+    ///
+    /// [`NeighbourIter`]: ./struct.NeighbourIter.html#
     pub fn neighbours(
         &self,
         node_id: usize,
@@ -1814,7 +1835,9 @@ where
         ))
     }
 
-    /// Returns an `EdgeIter` iterator over the graph's edges.
+    /// Returns an [`EdgeIter`] iterator over all of the graph's edges.
+    ///
+    /// [`EdgeIter`]: ./struct.EdgeIter.html#
     pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         Ok(EdgeIter::<EdgeType, Edge>::new(
             self.graph.as_ptr() as *const Edge,
@@ -1824,7 +1847,14 @@ where
         ))
     }
 
-    /// Returns an `EdgeIter` iterator over the graph's edges in the range of `begin_node`'s offset begin and `end_node`'s offset end.
+    /// Returns an [`EdgeIter`] iterator over the graph's edges in a given range.
+    ///
+    /// # Arguments
+    ///
+    /// * `begin_node` --- id of the node whose offset begin marks the beginning of the iterator's range.
+    /// * `end_node` ---  id of the node whose offset end marks the end of the iterator's range.
+    ///
+    /// [`EdgeIter`]: ./struct.EdgeIter.html#
     pub fn edges_in_range(
         &self,
         begin_node: usize,
@@ -1849,9 +1879,9 @@ where
     ///
     /// # Arguments
     ///
-    /// * `diffusion`: `&mut [(usize, f64)]` --- the diffusion vector[^1].
-    /// * `target_size`: `Option<usize>` --- the partition's target size[^2].
-    /// * `target_volume`: `Option<usize>` --- the partition's target volume[^3].
+    /// * `diffusion` --- the diffusion vector[^1].
+    /// * `target_size` --- the partition's target size[^2].
+    /// * `target_volume` --- the partition's target volume[^3].
     ///
     /// [^1]: diffusion vector entries must be of type `(node_id: usize, heat: f64)`.
     /// [^2]: if `None` is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
@@ -2187,9 +2217,12 @@ where
         GraphMemoryMap::init(cache, self.thread_count)
     }
 
-    /// Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format keeping all edge and node labelings[^1].
+    /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
     ///
-    /// [^1]: if none of the edge or node labeling is wanted consider using *export_petgraph_stripped*.
+    /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
+    /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
     pub fn export_petgraph(
         &self,
     ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
@@ -2216,7 +2249,9 @@ where
         Ok(graph)
     }
 
-    /// Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format[^1] stripping any edge or node labelings whatsoever.
+    /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format stripping any edge or node labelings whatsoever.
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<(), ()>::new();
         let node_count = self.size() - 1;
