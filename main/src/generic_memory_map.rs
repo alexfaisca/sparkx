@@ -169,7 +169,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    /// Parses a ggcat output file input
+    /// Parses a ggcat output file input into a `GraphCache` instance.
     ///
     /// Input is assumed to be of type UTF-8 and to follow the format of GGCAT's output.
     ///
@@ -262,7 +262,18 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    pub fn init_with_id(
+    /// Initializes a `GraphCache` instance from a cache id[^1].
+    ///
+    /// [^1]: note that upon initialization, the instance is empty and must be populated with graphs nodes and edges (and optionally metalabels), checkout the *from_ggcat_file* or *from_mtx_file* methods to see an example of how to populate the `GraphCache` instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `id`: `String` --- cache id to be used when creating cache files' filenames.
+    /// * `batch_size`: `Option<usize>`--- size of input chunking for fst (re)build(s)[^1][^2].
+    ///
+    /// [^1]: if `None` is provided defaults to 10'000.
+    /// [^2]: for more information on the functionality of input chunking, refer to *build_fst_from_unsorted_file*'s documentation footnote #2.
+    fn init_with_id(
         id: String,
         batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
@@ -326,7 +337,96 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             _marker2: PhantomData::<EdgeType>,
         })
     }
-    /// Here by default no node's label is stored
+
+    /// Creates a `GraphCache` instance from an existing cached graph.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename`: `String` --- filename of one of the graph's cache files[^1].
+    /// * `batch_size`: `Option<usize>`--- size of input chunking for fst (re)build(s)[^2][^3].
+    ///
+    /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the `GraphCache` instance are inferred from the cache id.
+    /// [^2]: if `None` is provided defaults to 10'000.
+    /// [^3]: for more information on the functionality of input chunking, refer to *build_fst_from_unsorted_file*'s documentation footnote #2.
+    pub fn open(
+        filename: String,
+        batch: Option<usize>,
+    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
+        let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
+        let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
+        let kmer_filename = cache_file_name(filename.clone(), FileType::Fst, None)?;
+
+        let graph_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .open(graph_filename.as_str())?,
+        );
+        let index_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .open(index_filename.as_str())?,
+        );
+        let kmer_file = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
+            Ok(file) => Arc::new(file),
+            Err(_) => {
+                // if graph has no fst in cache no problem, build empty one and proceed
+                let empty_fst = Arc::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .truncate(true)
+                        .write(true)
+                        .open(&kmer_filename)?,
+                );
+                let builder = MapBuilder::new(empty_fst.clone())?;
+                builder.finish()?;
+                // make it readonly :)
+                let mut permissions = empty_fst.metadata()?.permissions();
+                permissions.set_readonly(true);
+                empty_fst.set_permissions(permissions)?;
+                empty_fst
+            }
+        };
+
+        let edges = graph_file.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+        let nodes = index_file.metadata().unwrap().len() as usize / std::mem::size_of::<Edge>();
+
+        Ok(GraphCache::<EdgeType, Edge> {
+            graph_file,
+            index_file,
+            kmer_file,
+            graph_filename,
+            index_filename,
+            kmer_filename,
+            graph_bytes: edges,
+            index_bytes: nodes,
+            readonly: true,
+            batch,
+            _marker1: PhantomData::<Edge>,
+            _marker2: PhantomData::<EdgeType>,
+        })
+    }
+
+    /// Parses a file input into a `GraphCache` instance.
+    ///
+    /// Input file is assumed to be either:
+    ///  * MatrixMarket file, in which case it must have extension .mtx and be of type matrix coordinate pattern/integer symmetric/skew-symmetric/general.
+    ///  * GGCAT output file, in which case it must have extension .lz4, if provided in compressed form using LZ4, or .txt if provided in plaintext, and follow GGCAT's output file format.
+    ///
+    /// # Arguments
+    ///
+    /// * `path`: `P: AsRef<Path> + Clone`[^1] - input file.
+    /// * `id`: `Option<String>` --- graph cache id for the `GraphCache` instance[^2].
+    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^3][^4].
+    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
+    ///
+    /// [^1]: for example, a `String`.
+    /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    /// [^3]: if `None` is provided defaults to 10'000.
+    /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
+    /// [^5]: if `None` is provided defaults to *NOT* storing any node's label.
+    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
+    ///
     pub fn from_file<P: AsRef<Path> + Clone>(
         path: P,
         id: Option<String>,
@@ -367,7 +467,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    /// Here by default no node's label is stored
+    /// Parses a GGCAT output file input into a `GraphCache` instance.
+    ///
+    /// Input file is assumed to have file extension .lz4, if provided in compressed form using LZ4, or .txt, if provided in plaintext form. Furthermore, the file contents must follow the format of GGCAT's output.
+    ///
+    /// # Arguments
+    ///
+    /// * `path`: `P: AsRef<Path> + Clone`[^1] - input file.
+    /// * `id`: `Option<String>` --- graph cache id for the `GraphCache` instance[^2].
+    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^3][^4].
+    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
+    ///
+    /// [^1]: for example, a `String`.
+    /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    /// [^3]: if `None` is provided defaults to 10'000.
+    /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
+    /// [^5]: if `None` is provided defaults to storing every node's label.
     pub fn from_ggcat_file<P: AsRef<Path> + Clone>(
         path: P,
         id: Option<String>,
@@ -405,6 +520,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(cache)
     }
 
+    /// Parses a MatrixMarket file input into a `GraphCache` instance.
+    ///
+    /// Input file is assumed have file extension .mtx and must be of type matrix coordinate pattern/integer symmetric/skew-symmetric/general.
+    ///
+    /// # Arguments
+    ///
+    /// * `path`: `P: AsRef<Path> + Clone`[^1] - input file.
+    /// * `id`: `Option<String>` --- graph cache id for the `GraphCache` instance[^2].
+    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^3][^4].
+    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
+    ///
+    /// [^1]: for example, a `String`.
+    /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    /// [^3]: if `None` is provided defaults to 10'000.
+    /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
+    /// [^5]: if `None` is provided defaults to storing every node's label.
     pub fn from_mtx_file<P: AsRef<Path> + Clone>(
         path: P,
         id: Option<String>,
@@ -474,9 +605,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Self::open(edge_fn.clone(), batch)
     }
 
-    pub fn parse_mtx_header<P: AsRef<Path>>(
-        path: P,
-    ) -> Result<MTXHeader, Box<dyn std::error::Error>> {
+    fn parse_mtx_header<P: AsRef<Path>>(path: P) -> Result<MTXHeader, Box<dyn std::error::Error>> {
         let f = File::open(path)?;
         let mut rdr = BufReader::new(f);
 
@@ -534,7 +663,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok((nrows, ncols, nnz_declared))
     }
 
-    pub fn parse_mtx_with<F, P: AsRef<Path>>(
+    fn parse_mtx_with<F, P: AsRef<Path>>(
         path: P,
         mut emit: F,
     ) -> Result<(), Box<dyn std::error::Error>>
@@ -1030,7 +1159,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Parses a ggcat output file input and builds an fst for the graph according to the input
+    /// Parses a GGCAT output file input and builds an fst for the graph according to the input.
     /// parameters.
     ///
     /// Input is assumed to be of type UTF-8 and to follow the format of GGCAT's output.
@@ -1136,7 +1265,18 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Here by default every node's label is stored
+    /// Creates a `GraphCache` instance from an existing cached graph.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename`: `String` --- filename of one of the graph's cache files[^1].
+    /// * `batch`: `Option<usize>`--- size of input chunking for fst rebuild[^2][^3].
+    /// * `in_fst`: `Option<fn(usize) -> bool>` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^4].
+    ///
+    /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the `GraphCache` instance are inferred from the cache id.
+    /// [^2]: if `None` is provided defaults to 10'000.
+    /// [^3]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
+    /// [^4]: if `None` is provided defaults to storing every node's label.
     pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path> + Clone>(
         &mut self,
         path: P,
@@ -1163,66 +1303,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    pub fn open(
-        filename: String,
-        batch: Option<usize>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
-        let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
-        let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
-        let kmer_filename = cache_file_name(filename.clone(), FileType::Fst, None)?;
-
-        let graph_file = Arc::new(
-            OpenOptions::new()
-                .read(true)
-                .open(graph_filename.as_str())?,
-        );
-        let index_file = Arc::new(
-            OpenOptions::new()
-                .read(true)
-                .open(index_filename.as_str())?,
-        );
-        let kmer_file = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
-            Ok(file) => Arc::new(file),
-            Err(_) => {
-                // if graph has no fst in cache no problem, build empty one and proceed
-                let empty_fst = Arc::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .open(&kmer_filename)?,
-                );
-                let builder = MapBuilder::new(empty_fst.clone())?;
-                builder.finish()?;
-                // make it readonly :)
-                let mut permissions = empty_fst.metadata()?.permissions();
-                permissions.set_readonly(true);
-                empty_fst.set_permissions(permissions)?;
-                empty_fst
-            }
-        };
-
-        let edges = graph_file.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-        let nodes = index_file.metadata().unwrap().len() as usize / std::mem::size_of::<Edge>();
-
-        Ok(GraphCache::<EdgeType, Edge> {
-            graph_file,
-            index_file,
-            kmer_file,
-            graph_filename,
-            index_filename,
-            kmer_filename,
-            graph_bytes: edges,
-            index_bytes: nodes,
-            readonly: true,
-            batch,
-            _marker1: PhantomData::<Edge>,
-            _marker2: PhantomData::<EdgeType>,
-        })
-    }
-
-    pub fn write_node(
+    fn write_node(
         &mut self,
         node_id: usize,
         data: &[Edge],
@@ -1255,7 +1336,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    pub fn write_unlabeled_node(
+    fn write_unlabeled_node(
         &mut self,
         node_id: usize,
         data: &[Edge],
@@ -1359,6 +1440,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
+    /// Builds an fst for the `GraphCache` instance from an unsorted entries file[^1].
+    ///
+    /// [^1]: entries should be formatted ad "{node_id}\t{node_label}\n".
+    ///
+    /// # Arguments
+    ///
+    /// * `batch_size`: `usize` --- size of input chunking[^2].
+    ///
+    /// [^2]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
     pub fn build_fst_from_unsorted_file(
         &mut self,
         batch_size: usize, // e.g. 10_000
@@ -1517,6 +1607,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
+    /// Makes the `GraphCache` instance readonly. Allows the user to `Clone` the struct.
     pub fn make_readonly(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.readonly {
             return Ok(());
@@ -1554,26 +1645,31 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
+    /// Returns the edge file's filename.
     #[inline]
     pub fn edges_filename(&self) -> String {
         self.graph_filename.clone()
     }
 
+    /// Returns the offsets file's filename.
     #[inline]
     pub fn index_filename(&self) -> String {
         self.graph_filename.clone()
     }
 
+    /// Returns the fst (metalabel-to-node map) file's filename.
     #[inline]
     pub fn fst_filename(&self) -> String {
         self.graph_filename.clone()
     }
 
+    /// Returns the graph's cache id.
     #[inline]
     pub fn cache_id(&self) -> Result<String, Box<dyn std::error::Error>> {
         graph_id_from_cache_file_name(self.graph_filename.clone())
     }
 
+    /// Remove all of cache directory's `*.tmp` files.
     pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
         cleanup_cache()
     }
@@ -1596,13 +1692,23 @@ where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
+    /// Initializes a `GraphMemoryMap` instance from a `GraphCache` instance[^1][^2].
+    ///
+    /// [^1]: `GraphCache` instance must be reandonly, dynamic graphs are not supported.
+    /// [^2]: despite being readonly, the `GraphCache` instance's fst may be rebuilt *a posteriori* if proven necessary, checkout `GraphCache`'s documentation for more information on how to perform an fst rebuild.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache`: `GraphCache` --- cache instance to be used.
+    /// * `thread_count`: `u8`--- user suggested number of threads to be used when computing algorithms on the graph.
+    ///
     pub fn init(
         cache: GraphCache<EdgeType, Edge>,
         thread_count: u8,
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if cache.readonly {
             let mmap = unsafe { MmapOptions::new().map(&File::open(&cache.kmer_filename)?)? };
-            let thread_count = if thread_count == 0 { 1 } else { thread_count };
+            let thread_count = thread_count.max(1);
             return Ok(GraphMemoryMap {
                 graph: unsafe { Arc::new(Mmap::map(&cache.graph_file)?) },
                 index: unsafe { Arc::new(Mmap::map(&cache.index_file)?) },
@@ -1627,33 +1733,40 @@ where
         self.graph.as_ptr() as *const Edge
     }
 
+    /// Returns the (suggested) number of threads being used for computations on the graph.
     #[inline(always)]
     pub fn thread_num(&self) -> usize {
         self.thread_count.max(1) as usize
     }
 
+    /// Returns the graph's cache id.
     #[inline(always)]
     pub fn graph_id(&self) -> Result<String, Box<dyn std::error::Error>> {
         self.graph_cache.cache_id()
     }
 
+    /// Returns the graph's edge file's filename.
     #[inline(always)]
     pub fn cache_edges_filename(&self) -> String {
         self.graph_cache.edges_filename()
     }
 
+    /// Returns the graph's offsets file's filename.
     #[inline(always)]
     pub fn cache_index_filename(&self) -> String {
         self.graph_cache.index_filename()
     }
 
+    /// Returns the graph's fst file's filename.
     #[inline(always)]
     pub fn cache_fst_filename(&self) -> String {
         self.graph_cache.fst_filename()
     }
 
+    /// Returns the given (by id) node's degree.
     #[inline(always)]
     pub fn node_degree(&self, node_id: usize) -> usize {
+        assert!(node_id < self.size() - 1);
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             let begin = ptr.read_unaligned();
@@ -1661,6 +1774,7 @@ where
         }
     }
 
+    /// Returns the given (by id) node's metalabel if it exists and was stored in the graph's fst.
     #[inline(always)]
     pub fn node_id_from_kmer(&self, kmer: &str) -> Result<u64, Box<dyn std::error::Error>> {
         if let Some(val) = self.kmers.get(kmer) {
@@ -1670,19 +1784,22 @@ where
         }
     }
 
+    /// Returns the given (by id) node's edges' offsets.
     #[inline(always)]
     pub fn index_node(&self, node_id: usize) -> std::ops::Range<usize> {
+        assert!(node_id < self.size() - 1);
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             ptr.read_unaligned()..ptr.add(1).read_unaligned()
         }
     }
 
+    /// Returns a `NeighbourIter` iterator over the given (by id) node's neighbours.
     pub fn neighbours(
         &self,
         node_id: usize,
     ) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if node_id >= self.size() {
+        if node_id >= self.size() - 1 {
             return Err(format!(
                 "error {node_id} must be smaller than |V| = {}",
                 self.size() - 1
@@ -1697,6 +1814,7 @@ where
         ))
     }
 
+    /// Returns an `EdgeIter` iterator over the graph's edges.
     pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
         Ok(EdgeIter::<EdgeType, Edge>::new(
             self.graph.as_ptr() as *const Edge,
@@ -1706,26 +1824,38 @@ where
         ))
     }
 
+    /// Returns an `EdgeIter` iterator over the graph's edges in the range of `begin_node`'s offset begin and `end_node`'s offset end.
     pub fn edges_in_range(
         &self,
-        start_node: usize,
+        begin_node: usize,
         end_node: usize,
     ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if start_node > end_node {
+        if begin_node > end_node {
             return Err("error invalid range, beginning after end".into());
         }
-        if start_node > self.size() || end_node > self.size() {
+        if begin_node > self.size() || end_node > self.size() {
             return Err("error invalid range".into());
         }
 
         Ok(EdgeIter::<EdgeType, Edge>::new(
             self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
-            start_node,
+            begin_node,
             end_node,
         ))
     }
 
+    /// Performs a sweep cut over a given diffusion vector[^1] by partition conductance.
+    ///
+    /// # Arguments
+    ///
+    /// * `diffusion`: `&mut [(usize, f64)]` --- the diffusion vector[^1].
+    /// * `target_size`: `Option<usize>` --- the partition's target size[^2].
+    /// * `target_volume`: `Option<usize>` --- the partition's target volume[^3].
+    ///
+    /// [^1]: diffusion vector entries must be of type `(node_id: usize, heat: f64)`.
+    /// [^2]: if `None` is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
+    /// [^3]: if `None` is provided defaults to `|E|`, effectively, the overall best partition by conducatance is returned independent on the number of edges in it.
     pub fn sweep_cut_over_diffusion_vector_by_conductance(
         &self,
         diffusion: &mut [(usize, f64)],
@@ -1930,12 +2060,18 @@ where
         None
     }
 
-    /// returns number of entries in node index file (== |V| + 1)
+    /// Returns number of entries in the offset file[^1].
+    ///
+    /// [^1]: this is equivalent to `|V| + 1`, as there is an extrea offset file entry to mark the end of edges' offsets.
+    #[inline(always)]
     pub fn size(&self) -> usize {
         self.graph_cache.index_bytes // num nodes
     }
 
-    /// returns number of entries in edge file (== |E|)
+    /// Returns number of entries in edge file[^1].
+    ///
+    /// [^1]: this is equivalent to `|E|`.
+    #[inline(always)]
     pub fn width(&self) -> usize {
         self.graph_cache.graph_bytes // num edges
     }
@@ -1953,11 +2089,11 @@ where
         Ok((self.exports - 1) as usize)
     }
 
-    /// Applies the mask: fn(usize) -> bool function to each node id and returns a subgraph wherein
-    /// only the set of nodes, S ⊂ V, of the nods for whose the output of mask is true, as well as,
-    /// only the set of edges coming from and going to nodes in S
-    /// the node ids of th subgraph may not, and probably will not, correspond to the original node
-    /// identifiers
+    /// Applies the mask: fn(usize) -> bool function to each node id and returns the resulting subgraph.
+    ///
+    /// The resulting subgraph is that wherein only the set of nodes, `S ⊂ V`, of the nods for whose the output of mask is true, as well as, only the set of edges coming from and going to nodes in `S`[^1].
+    ///
+    /// [^1]: the node ids of the subgraph may not, and probably will not, correspond to the original node identifiers, efffectively, it will be a whole new graph.
     pub fn apply_mask_to_nodes(
         &self,
         mask: fn(usize) -> bool,
@@ -2051,6 +2187,9 @@ where
         GraphMemoryMap::init(cache, self.thread_count)
     }
 
+    // Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format[^1].
+    //
+    // If none of the edge or node labeling is wanted consider using *export_petgraph_stripped*.
     pub fn export_petgraph(
         &self,
     ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
@@ -2077,6 +2216,8 @@ where
         Ok(graph)
     }
 
+
+    // Export the `GraphMemoryMap` instance to petgraph's `DiGraph` format[^1] stripping any edge or node labeling whatsoever.
     pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<(), ()>::new();
         let node_count = self.size() - 1;

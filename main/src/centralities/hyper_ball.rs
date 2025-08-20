@@ -36,26 +36,26 @@ enum Centrality {
     LIN,
 }
 
-/// De Bruijn graphs are simmetric graphs, so running the HyperBall algorithm on the graph is
-/// the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph
-/// to obtain the necessary components to determine the closeness, harmonic and Lin's centralities
-/// for every node of the graph.
+/// Struct for the *HyperBall Algorithm* described in "In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond" by Boldi P. and Vigna S.
+///
+/// * Note: De Bruijn graphs are simmetric graphs, so running the HyperBall algorithm on the graph is the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph to obtain the necessary components to determine the closeness, harmonic and Lin's centralities for every node of the graph.
+///
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct HyperBallInner<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// Graph for which node/edge coreness is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    /// vec with a hyperloglog++ counter for each node of the graph
+    /// Memmapped slice containing each node's *HyperLogLog++* counter.
     counters: AbstractedProceduralMemoryMut<
         hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>,
     >,
-    // counters: AbstractedProceduralMemoryMut<HyperLogLogPlus<usize, RandomState>>,
-    /// cached slice of the sum of the distances for each node of the graph
+    /// Memmapped slice containing each node's distance accumulator.
     distances: AbstractedProceduralMemoryMut<f64>,
-    /// cached slice of the sum of the inverse of the distances for each node of the graph
+    /// Memmapped slice containing each node's inverse distance accumulator.
     inverse_distances: AbstractedProceduralMemoryMut<f64>,
-    /// precision of the hyperloglog++ counters used in the algorithm
+    /// Precision of the *HyperLogLog++* counters.
     precision: u8,
-    /// maximum number of iteration --- default is 128, max is 1024 (arbitrarily large values)
+    /// Maximum number of iteration --- default is 128, max is 1024 (details on how these values are ludicrously big are found in the abovementioned paper).
     max_t: usize,
 }
 
@@ -140,6 +140,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         }
     }
 
+    /// Performs the *HyperBall Algorithm* as described in "In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond" by Boldi P. and Vigna S.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    /// * `precision`: `Option<u8>` --- the precision to be used for each nodes *HyperLogLog++* counter (defaults to 8, equivalent to 2⁸-register bits per node).
+    /// * `max_depth`: `Option<usize>` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
         precision: Option<u8>,
@@ -370,8 +378,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok(())
     }
 
-    // FIXME: for all centralities: what happens when the distance is not  normal and: is zero, or
-    // is infinite
+    /// Computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalize`: `Option<bool>` --- tri-state flag determining the type of normalization to be used for the computation.
+    ///     - `None` --- no normalization.
+    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///
     pub fn compute_closeness_centrality(
         &mut self,
         normalize: Option<bool>,
@@ -427,6 +442,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok(mem)
     }
 
+    /// Computes the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalize`: `Option<bool>` --- tri-state flag determining the type of normalization to be used for the computation.
+    ///     - `None` --- no normalization.
+    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///
     pub fn compute_harmonic_centrality(
         &mut self,
         normalize: Option<bool>,
@@ -481,6 +505,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok(mem)
     }
 
+    /// Computes the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
+    ///
     pub fn compute_lins_centrality(
         &mut self,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {

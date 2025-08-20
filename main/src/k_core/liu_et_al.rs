@@ -22,13 +22,24 @@ type ProceduralMemoryLiuEtAL = (
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoLiuEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// Graph for which node/edge coreness is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    /// memmapped slice containing the coreness of each edge
+    /// Memmapped slice containing the coreness of each edge.
     k_cores: AbstractedProceduralMemoryMut<u8>,
 }
 
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a, EdgeType, Edge> {
+    /// Performs k-core decomposition as described in "Parallel 𝑘-Core Decomposition: Theory and Practice" by Liu Y. et al.
+    ///
+    /// * Note: we did not implement the *Node Sampling*[^1] scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs.
+    ///
+    /// [^1]: details on how to implement this potimization and how it works can be found in the *4.1.2 Details about the Sampling Scheme.* section of the aforementioned paper in pp. 6-7.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -39,7 +50,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         liu_et_al.compute(10)?;
         Ok(liu_et_al)
     }
-
     fn init_procedural_memory_liu_et_al(
         &self,
         mmap: u8,
@@ -65,6 +75,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
     }
 
+    /// Computes the k-cores of a graph as described in "Parallel 𝑘-Core Decomposition: Theory and Practice" by Liu Y. et al.
+    ///
+    /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise[^1].
+    /// * Note: we did not implement the *Node Sampling* scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs. Details on how to implement this potimization and how it works can be found in the *4.1.2 Details about the Sampling Scheme.* section of the aforementioned paper in pp. 6-7.
+    ///
+    /// [^1]: for each edge of the graph it's coreness is stored in an array.
+    ///
+    /// # Arguments
+    ///
+    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;
         let edge_count = self.graph.width();

@@ -9,7 +9,9 @@ use std::{
     fmt::{Debug, Display},
 };
 
-/// describes the behavior edge types must exhibit to be used by the tool
+/// Describes the behavior edge types must exhibit to be used by the tool.
+///
+/// Given an struct this trait may be automatically implemented using the provided procedural macro `GenericEdgeType`.
 #[allow(dead_code)]
 pub trait GenericEdgeType:
     Copy
@@ -26,13 +28,15 @@ pub trait GenericEdgeType:
     + Send
     + Sync
 {
-    /// edge_label getter
+    /// Edge label getter.
     fn label(&self) -> usize;
-    /// edge_label setter
+    /// Edge label setter.
     fn set_label(&mut self, label: u64);
 }
 
-/// describes the behavior edges must exhibit to be used by the tool
+/// Describes the behavior edges must exhibit to be used by the tool.
+///
+/// Given an implicitly packed struct this trait may be automatically implemented using the provided procedural macro `GenericEdge`.
 #[allow(dead_code)]
 pub trait GenericEdge<T: GenericEdgeType>:
     Copy
@@ -49,15 +53,15 @@ pub trait GenericEdge<T: GenericEdgeType>:
     + Send
     + Sync
 {
-    /// constructor from an <<edge_dest: u64>> and an <<edge_type: u64>>
+    /// Constructor from an <<edge_dest: u64>> and an <<edge_type: u64>>
     fn new(edge_dest: u64, edge_type: u64) -> Self;
-    /// edge_dest setter from a <<new_edge_dest: u64>>
+    /// Edge destiny node setter from a <<new_edge_dest: u64>>.
     fn set_edge_dest(&mut self, new_edge_dest: u64) -> &mut Self;
-    /// edge_type setter from a <<new_edge_type: u64>>
+    /// Edge type setter from a <<new_edge_type: u64>>.
     fn set_edge_type(&mut self, new_edge_type: u64) -> &mut Self;
-    /// edge_dest getter
+    /// Edge destiny node getter.
     fn dest(&self) -> usize;
-    /// edge_type getter
+    /// Edge type getter.
     fn e_type(&self) -> T;
 }
 

@@ -39,21 +39,20 @@ type ProceduralMemoryGVELouvain = (
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    /// the graph for which the partition is computed
+    /// Graph for which the partition is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    /// memmapped array containing each node's community
+    /// Memmapped array containing each node's community.
     community: AbstractedProceduralMemoryMut<usize>,
-    /// cardinality of distinct communities in the final partition
+    /// Cardinality of distinct communities in the final partition.
     community_count: usize,
-    /// partition modularity
+    /// Partition modularity.
     modularity: f64,
 }
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoGVELouvain<'a, EdgeType, Edge>
 {
-    /// constants set according to the optimizeds parameters described in "GVE-Louvain: Fast Louvain Algorithm for
-    /// Community Detection in Shared Memory Setting".
+    /// Constants set according to the optimizeds parameters described in "GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting".
     /// Described in 4.1.2 Limiting the number of iterations per pass
     const MAX_ITERATIONS: usize = 20;
     /// Described in 4.1.3 Adjusting tolerance drop rate (threshold scaling)
@@ -136,10 +135,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok((k, sigma, gdi, gde, gddi, gdde, processed, coms, helper))
     }
 
-    /// Computes the differencial modularity upon moving a node `u`, from a community `d` to a
-    /// community `c`:
+    /// Computes the differencial modularity[^1], 𝛿𝑄, upon moving a node `u`, from a community `d` to a community `c`.
     ///
-    /// 𝛿𝑄 = (Ku->c - Ku->d) / m - (Ku * (Σc - Σd) / (2m^2)).
+    /// [^1]: 𝛿𝑄 = (Ku->c - Ku->d) / m - (Ku * (Σc - Σd) / (2m^2)).
     ///
     /// # Arguments
     ///

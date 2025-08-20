@@ -16,8 +16,9 @@ type ProceduralMemoryBZ = (
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoBatageljZaversnik<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// Graph for which node/edge coreness is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    /// memmapped slice containing the coreness of each edge
+    /// Memmapped slice containing the coreness of each edge.
     k_cores: AbstractedProceduralMemoryMut<u8>,
 }
 
@@ -25,6 +26,16 @@ pub struct AlgoBatageljZaversnik<'a, EdgeType: GenericEdgeType, Edge: GenericEdg
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoBatageljZaversnik<'a, EdgeType, Edge>
 {
+    /// Performs k-core decomposition as described in "An O(m) Algorithm for Cores Decomposition of Networks" by Batagelj V. and Zaversnik M.
+    ///
+    /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise[^1].
+    ///
+    ///  [^1]: for each edge of the graph it's coreness is stored in an array.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -56,6 +67,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok((degree, node, core, pos))
     }
 
+    /// Computes the k-cores of a graph as described in "An O(m) Algorithm for Cores Decomposition of Networks" by Batagelj V. and Zaversnik M.
+    ///
+    /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise, i.e.
+    /// for each edge of the graph it's coreness is stored in an array.
+    ///
+    /// # Arguments
+    ///
+    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;
         let edge_count = self.graph.width();

@@ -1,62 +1,63 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
+use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use ordered_float::OrderedFloat;
 use rand::{Rng, rng};
 use rand_distr::{Distribution, Poisson};
 use std::collections::HashMap;
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct ApproxDirHKPR<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// Graph for which the community is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    /// Diffusion temperature.
     pub t: f64,
+    /// Diffusion error (ε).
     pub eps: f64,
+    /// Diffusion seed (starting node).
     pub seed: usize,
-    pub target_size: usize,
-    pub target_vol: usize,
+    /// Partition's target conductance.
     pub target_conductance: f64,
+    /// Partition's target node number --- defaults to half the graph (tolerance up to full graph).
+    pub target_size: usize,
+    /// Partition's target edge number --- defaults to quarter of the graph (tolerance up to half graph).
+    pub target_vol: usize,
 }
 
-/// describes the type of limiter to be used for the number of steps to take for each
-/// random walk
+/// Type of limiter to be used for the number of steps to take for each random walk.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum ApproxDirichletHeatKernelK {
-    /// too stringent of a limitation -- results will be no good
+    /// * Note: too stringent of a limitation -- results will be no good.
     None,
-    /// optimization described in SolverApproxDirHKPR's algorithm
+    /// * Note: optimization described in SolverApproxDirHKPR's algorithm.
     Mean,
-    /// no limit --- probably won't run for eps < 0.005
+    /// * Note: no limit --- infeasible for eps < 0.005 in large graphs.
     Unlim,
 }
 
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'a, EdgeType, Edge> {
-    #[inline(always)]
-    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Box<dyn std::error::Error>> {
-        if !val.is_normal() {
-            return Err(
-                format!("error hk-relax abnormal value at {op_description} = {val}",).into(),
-            );
-        }
-        Ok(val)
-    }
-
-    fn f64_to_usize_safe(x: f64) -> Option<usize> {
-        if x.is_normal() && x > 0f64 && x <= usize::MAX as f64 {
-            Some(x as usize) // truncates toward zero
-        } else {
-            None
-        }
-    }
-
+    /// Evaluates parameters for the *ApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O.
+    ///
+    /// Evaluation is successful if `|V| >= 0`, `t` is normal and bigger than zero (not equal), `ε` is normal and (exclusive) between zero and one, `target_conductance` is normal and (exclusive) between zero and one, and `seed` is a valid node id, i.e. `0 <= seed < |V|`.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
+    /// * `seed_node`: `usize` --- seed node.
+    /// * `eps`: `f64` --- ε (eps) error parameter.
+    /// * `target_conductance`: `f64` --- target conductance parameter.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful, or `Err(_)` if not.
+    ///
     fn evaluate_params(
         graph: GraphMemoryMap<EdgeType, Edge>,
         seed_node: usize,
         eps: f64,
-        _target_size: usize,
-        _target_vol: usize,
         target_conductance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = match graph.size().overflowing_sub(1) {
@@ -101,6 +102,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         Ok(())
     }
 
+    /// Initializes the *ApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
+    /// * `eps`: `f64` --- ε (eps) error parameter.
+    /// * `seed`: `usize` --- seed node.
+    /// * `target_size`: `Option<usize>` --- partition's target node number.
+    /// * `target_volume`: `Option<usize>` --- partition's target edge number.
+    /// * `target_conductance`: `f64` --- partition's target conductance.
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
         eps: f64,
@@ -109,16 +121,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         target_vol: usize,
         target_conductance: f64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = Self::evaluate_params(
-            graph.clone(),
-            seed,
-            eps,
-            target_size,
-            target_vol,
-            target_conductance,
-        )?;
+        let () = Self::evaluate_params(graph.clone(), seed, eps, target_conductance)?;
         let t_formula = "(1. / target_conductance) * ln((2. * sqrt(target_vol)) / (1. - ε) + 2. * ε * target_size)";
-        let t = Self::f64_is_nomal(
+        let t = f64_is_nomal(
             (1. / target_conductance)
                 * f64::ln(
                     (2. * f64::sqrt(target_vol as f64)) / (1. - eps)
@@ -201,9 +206,19 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         Ok(curr_node)
     }
 
+    /// Computes the *ApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O. with user controlled optimization level.
+    ///
+    /// # Arguments
+    ///
+    /// * `big_k`: `ApproxDirichletHeatKernelK` --- described the type of optimization to be used in random walk sampling.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Comunity<usize>)` if successful, or `Err(_)` if not.
+    ///
     #[allow(clippy::unreachable)]
     #[deprecated]
-    pub fn compute_specify_k(
+    fn compute_specify_k(
         &self,
         big_k: ApproxDirichletHeatKernelK,
     ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
@@ -213,19 +228,19 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             (i, _) => i as f64,
         };
 
-        let r = Self::f64_is_nomal(
+        let r = f64_is_nomal(
             (16. / self.eps.powi(2)) * f64::ln(node_count),
             "(16.0 / ε²) * ln(|V|)",
         )?;
-        let one_over_r = Self::f64_is_nomal(1. / r, "1. / r")?;
+        let one_over_r = f64_is_nomal(1. / r, "1. / r")?;
 
         let k = match big_k {
-            ApproxDirichletHeatKernelK::None => Self::f64_is_nomal(
+            ApproxDirichletHeatKernelK::None => f64_is_nomal(
                 2. * f64::ln(1. / self.eps) / (f64::ln(f64::ln(1. / self.eps))),
                 "2. * ln(1. / ε) / ln(ln(1. / ε))",
             )?,
             // optimization of SolverApproxDirHKPR
-            ApproxDirichletHeatKernelK::Mean => Self::f64_is_nomal(2. * self.t, "2. * t")?,
+            ApproxDirichletHeatKernelK::Mean => f64_is_nomal(2. * self.t, "2. * t")?,
             ApproxDirichletHeatKernelK::Unlim => f64::INFINITY,
             #[expect(unreachable_patterns)]
             _ => {
@@ -237,7 +252,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             "k (ceil on sample value) computed to be {k}\nr (number of samples) computed to be {r}",
         );
 
-        let num_samples: usize = match Self::f64_to_usize_safe(r) {
+        let num_samples: usize = match f64_to_usize_safe(r) {
             Some(s) => s,
             None => {
                 return Err(format!("error approx-dirchlet-hk couldn't cast {r} to usize").into());
@@ -248,7 +263,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
 
         for little_k in steps {
             let OrderedFloat(little_k) = std::cmp::min(little_k, k);
-            let little_k_usize = match Self::f64_to_usize_safe(little_k) {
+            let little_k_usize = match f64_to_usize_safe(little_k) {
                 Some(val) => val,
                 None => {
                     return Err(format!(
@@ -293,6 +308,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         }
     }
 
+    /// Computes the *SolverApproxDirHKPR Algorithm* as described in "Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank" by Chung F. and Simpson O. with the therein described optimizations.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Comunity<usize>)` if successful, or `Err(_)` if not.
+    ///
     pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let node_count = match self.graph.size().overflowing_sub(1) {
             (_, true) => {
@@ -302,20 +323,20 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             (i, _) => i as f64,
         };
 
-        let r = Self::f64_is_nomal(
+        let r = f64_is_nomal(
             (16. / self.eps.powi(2)) * f64::ln(node_count),
             "(16.0 / ε²) * ln(|V|)",
         )?;
-        let one_over_r = Self::f64_is_nomal(1. / r, "1. / r")?;
+        let one_over_r = f64_is_nomal(1. / r, "1. / r")?;
 
-        let k = Self::f64_is_nomal(2. * self.t, "2. * t")?;
+        let k = f64_is_nomal(2. * self.t, "2. * t")?;
         let k = OrderedFloat(k);
         println!(
             "k (ceil on sample value) computed to be {}\nr (number of samples) computed to be {}",
             k, r
         );
 
-        let num_samples: usize = match Self::f64_to_usize_safe(r) {
+        let num_samples: usize = match f64_to_usize_safe(r) {
             Some(s) => s,
             None => {
                 return Err(format!("error approx-dirchlet-hk couldn't cast {r} to usize").into());
@@ -326,7 +347,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
 
         for little_k in steps {
             let OrderedFloat(little_k) = std::cmp::min(little_k, k);
-            let little_k_usize = match Self::f64_to_usize_safe(little_k) {
+            let little_k_usize = match f64_to_usize_safe(little_k) {
                 Some(val) => val,
                 None => {
                     return Err(format!(

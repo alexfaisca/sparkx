@@ -23,14 +23,22 @@ type ProceduralMemoryBurkhardtEtAl = (
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoBurkhardtEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// Graph for which edge trussness is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    /// memmapped slice containing the coreness of each edge
+    /// Memmapped slice containing the trussness of each edge.
     k_trusses: AbstractedProceduralMemoryMut<u8>,
 }
+
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoBurkhardtEtAl<'a, EdgeType, Edge>
 {
+    /// Performs k-truss decomposition as described in "Bounds and algorithms for graph trusses" by Burkhardt P. et al.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -62,6 +70,16 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         Ok((tri_count, edge_list, edge_index, stack))
     }
 
+    /// Computes the k-trusses of a graph as described in "Bounds and algorithms for graph trusses" by Burkhardt P. et al.
+    ///
+    /// The resulting k-truss subgraphs are stored in memory (in a memmapped file) edgewise[^1].
+    ///
+    /// [^1]: for each edge of the graph it's trussness is stored in an array.
+    ///
+    /// # Arguments
+    ///
+    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.graph.size() - 1;
         let edge_count = self.graph.width();

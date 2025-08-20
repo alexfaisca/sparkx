@@ -1,17 +1,26 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
+use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone)]
 pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// The graph for which the community is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    /// Diffusion depth.
     pub n: usize,
+    /// Diffusion temperature.
     pub t: f64,
+    /// Diffusion error (ε).
     pub eps: f64,
+    /// Diffusion seed(s) (starting nodes).
     pub seed: Vec<usize>,
-    pub psis: Vec<f64>,
+    /// Alogrithm parameters.
+    psis: Vec<f64>,
+    /// Partition's target node number --- defaults to half the graph (tolerance up to full graph).
     pub target_size: Option<usize>,
+    /// Partition's target edge number --- defaults to quarter of the graph (tolerance up to half graph).
     pub target_volume: Option<usize>,
 }
 
@@ -20,26 +29,23 @@ where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
-    #[inline(always)]
-    fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Box<dyn std::error::Error>> {
-        if !val.is_normal() {
-            return Err(
-                format!("error hk-relax abnormal value at {op_description} = {val}",).into(),
-            );
-        }
-        Ok(val)
-    }
-
-    fn f64_to_usize_safe(x: f64) -> Option<usize> {
-        if x.is_normal() && x > 0f64 && x <= usize::MAX as f64 {
-            Some(x as usize) // truncates toward zero
-        } else {
-            None
-        }
-    }
-
+    /// Evaluates parameters for the *HK-Relax Algorithm* as described in "Heat Kernel Based Community Detection" by Kloster K. and Gleich D.
+    ///
+    /// Evaluation is successful if `|V| >= 0`, `t` is normal and bigger than zero (not equal), `ε` is normal and (exclusive) between zero and one and `seed` is not empty and everyone of its entries is a valid node id, i.e. `0 <= seed[i] < |V|`.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
+    /// * `t`: `f64` --- temperature parameter.
+    /// * `eps`: `f64` --- ε (eps) error parameter.
+    /// * `seed`: `Vec<usize>` --- seed nodes.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful, or `Err(_)` if not.
+    ///
     fn evaluate_params(
-        graph: GraphMemoryMap<EdgeType, Edge>,
+        graph: &GraphMemoryMap<EdgeType, Edge>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
@@ -88,11 +94,26 @@ where
         Ok(())
     }
 
+    /// Given an `n` (diffusion depth) and `t` (diffusion temperature) parameters calculates the weighted
+    /// sum of the errors at each individual term of the sum approximating the heat kernel
+    /// diffusion vector, h, at each term, `ψ_k(t)`.
+    ///
+    /// [^1]: h = s + t/1 * P * s + ··· + t / n! * P^n * s.
+    ///
+    /// # Arguments
+    ///
+    /// * `n`: `usize` --- depth parameter.
+    /// * `t`: `f64` --- temperature parameter.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(_)` if successful, or `Err(_)` if not.
+    ///
     fn compute_psis(n: usize, t: f64) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
         let mut psis = vec![0f64; n + 1];
         psis[n] = 1f64;
         for i in (0..n).rev() {
-            psis[i] = Self::f64_is_nomal(
+            psis[i] = f64_is_nomal(
                 psis[i + 1] * t / (i as f64 + 1f64) + 1f64,
                 format!(
                     "{{at round: {}}} (psis[{i} + 1] * t / (i + 1) + 1)",
@@ -104,8 +125,19 @@ where
         Ok(psis)
     }
 
+    /// Given a `t` (diffusion temperature) and an `eps` (ε) parameters calculates the appropriate depth for the heat kernel diffusion.
+    ///
+    /// # Arguments
+    ///
+    /// * `t`: `f64` --- temperature parameter.
+    /// * `eps`: `f64` --- ε (eps) error parameter.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(n)` if successful, or `Err(_)` if not.
+    ///
     fn compute_n(t: f64, eps: f64) -> Result<usize, Box<dyn std::error::Error>> {
-        let bound = Self::f64_is_nomal(eps / 2f64, "ε/2")?;
+        let bound = f64_is_nomal(eps / 2f64, "ε/2")?;
 
         let n_plus_two_i32 = match i32::try_from(t.floor() as i64) {
             Ok(n) => match n.overflowing_add(1) {
@@ -124,13 +156,13 @@ where
             }
         };
 
-        let mut t_power_n_plus_one = Self::f64_is_nomal(t.powi(n_plus_two_i32 - 1), "t^(n + 1)")?;
+        let mut t_power_n_plus_one = f64_is_nomal(t.powi(n_plus_two_i32 - 1), "t^(n + 1)")?;
 
         let mut n_plus_one_fac = match (2..n_plus_two_i32).try_fold(1.0_f64, |acc, x| {
             let res = acc * (x as f64);
             if res.is_finite() { Some(res) } else { None }
         }) {
-            Some(fac) => Self::f64_is_nomal(fac, "(n + 1)!")?,
+            Some(fac) => f64_is_nomal(fac, "(n + 1)!")?,
             None => {
                 return Err(format!(
                     "error computing n for hk-relax overflowed trying to compute ({})!",
@@ -143,13 +175,13 @@ where
         let mut n_plus_two = n_plus_two_i32 as f64;
 
         while (t_power_n_plus_one * n_plus_two / n_plus_one_fac / (n_plus_two - t)) >= bound {
-            t_power_n_plus_one = Self::f64_is_nomal(t_power_n_plus_one * t, "t^(n + 1)")?;
-            n_plus_one_fac = Self::f64_is_nomal(n_plus_one_fac * n_plus_two, "(n + 1)!")?;
+            t_power_n_plus_one = f64_is_nomal(t_power_n_plus_one * t, "t^(n + 1)")?;
+            n_plus_one_fac = f64_is_nomal(n_plus_one_fac * n_plus_two, "(n + 1)!")?;
             n_plus_two += 1f64;
         }
 
         // convert the f64 value to usize subtract 2 and output n
-        match Self::f64_to_usize_safe(n_plus_two) {
+        match f64_to_usize_safe(n_plus_two) {
             Some(n_plus_two_usize) => match n_plus_two_usize.overflowing_sub(2) {
                 (n, false) => Ok(n),
                 (_, true) =>
@@ -162,6 +194,17 @@ where
         }
     }
 
+    /// Initializes the *HK-Relax Algorithm* as described in "Heat Kernel Based Community Detection" by Kloster K. and Gleich D.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which the community is computed.
+    /// * `t`: `f64` --- temperature parameter.
+    /// * `eps`: `f64` --- ε (eps) error parameter.
+    /// * `seed`: `Vec<usize>` --- seed nodes.
+    /// * `target_size`: `Option<usize>` --- partition's target node number.
+    /// * `target_volume`: `Option<usize>` --- partition's target edge number.
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
         t: f64,
@@ -170,7 +213,7 @@ where
         target_size: Option<usize>,
         target_volume: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = match Self::evaluate_params(graph.clone(), t, eps, seed.clone()) {
+        let () = match Self::evaluate_params(graph, t, eps, seed.clone()) {
             Ok(_) => {}
             Err(e) => {
                 return Err(format!("error creating HKRelax instance: {e}").into());
@@ -190,9 +233,7 @@ where
         })
     }
 
-    /// receives an instance of HKRelax for a given graph and parameters for t, epsilon and a
-    /// vector of seed nodes.
-    /// returns an instance of HKRelax for the same graph with parameters adjusted accordingly
+    #[deprecated]
     pub fn _adjust_parameters(
         &self,
         t: f64,
@@ -201,7 +242,7 @@ where
         target_size: Option<usize>,
         target_volume: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = match Self::evaluate_params(self.graph.clone(), t, eps, seed.clone()) {
+        let () = match Self::evaluate_params(self.graph, t, eps, seed.clone()) {
             Ok(_) => {}
             Err(e) => {
                 return Err(format!("error creating HKRelax instance: {e}").into());
@@ -220,9 +261,17 @@ where
         })
     }
 
+    /// Computes the *HK-Relax Algorithm* as described in "Heat Kernel Based Community Detection" by Kloster K. and Gleich D.
+    ///
+    /// As a bonus we support optional community size/volume target values for control.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Comunity<usize>)` if successful, or `Err(_)` if not.
+    ///
     pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         let n = self.n as f64;
-        let threshold_pre_u_pre_j = Self::f64_is_nomal(self.t.exp() * self.eps / n, "e^t * ε / n")?;
+        let threshold_pre_u_pre_j = f64_is_nomal(self.t.exp() * self.eps / n, "e^t * ε / n")?;
         let mut x: HashMap<usize, f64> = HashMap::new();
         let mut r: HashMap<(usize, usize), f64> = HashMap::new();
         let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
@@ -254,10 +303,10 @@ where
             // x[v] += rvj && check if r[(v, j)] is normal
             match x.get_mut(&v) {
                 Some(x_v) => {
-                    *x_v = Self::f64_is_nomal(*x_v + rvj, "x[v] + r([v, j])")?;
+                    *x_v = f64_is_nomal(*x_v + rvj, "x[v] + r([v, j])")?;
                 }
                 None => {
-                    x.insert(v, Self::f64_is_nomal(rvj, "r([v, j])")?);
+                    x.insert(v, f64_is_nomal(rvj, "r([v, j])")?);
                 }
             };
 
@@ -285,13 +334,10 @@ where
                     // x[u] += rvj / len(G[v])
                     match x.get_mut(&u) {
                         Some(x_u) => {
-                            *x_u = Self::f64_is_nomal(
-                                *x_u + rvj / deg_v,
-                                "x[u] + (r[(v, j)] / deg_v)",
-                            )?
+                            *x_u = f64_is_nomal(*x_u + rvj / deg_v, "x[u] + (r[(v, j)] / deg_v)")?
                         }
                         None => {
-                            x.insert(u, Self::f64_is_nomal(rvj / deg_v, "r[(v, j)] / deg_v")?);
+                            x.insert(u, f64_is_nomal(rvj / deg_v, "r[(v, j)] / deg_v")?);
                         }
                     };
                     continue;
@@ -313,7 +359,7 @@ where
                 };
                 // thresh = math.exp(t) * eps * len(G[u]) / (N * psis[j + 1])
                 let deg_u = self.graph.node_degree(u) as f64;
-                let threshold = Self::f64_is_nomal(
+                let threshold = f64_is_nomal(
                     threshold_pre_u_pre_j * deg_u / self.psis[j + 1],
                     "e^t * ε * deg_u / (n * psis[j + 1])",
                 )?;

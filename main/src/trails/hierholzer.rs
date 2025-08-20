@@ -17,9 +17,12 @@ use std::{
 
 #[allow(dead_code)]
 pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+    /// Graph for which the euler trail(s) is(are) computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    euler_trails: AbstractedProceduralMemoryMut<usize>,
-    trail_index: Vec<usize>,
+    /// Memmapped slice containing the euler trails.
+    pub euler_trails: AbstractedProceduralMemoryMut<usize>,
+    /// Array containing the starting position of each euler trail.
+    pub trail_index: Vec<usize>,
 }
 
 #[allow(dead_code)]
@@ -28,6 +31,21 @@ where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
+    /// Performs graph traversal using *Hierholzer's Algorithm*.
+    ///
+    /// The resulting Euler trail(s) is(are) stored in memory (in a memmapped file) nodewise[^1].
+    ///
+    /// * Note *1*: by definition, isolated nodes won't be present in the euler trail unless they have *self-loops*[^2].
+    /// * Note *2*: in the case of a non-eulerian graph, trails are stored sequentially in memory, with their respective starting indexes stored in the aboce mentioned `trail_index` array.
+    /// * Note *3*: the last edge of each euler trail, connecting the trail into an euler cycle is intentionally left out of the resulting euler trail(s).
+    ///
+    /// [^1]: for each two consecutive node entries, u and v, the(an) edge (u,v) between them is traversed.
+    /// [^2]: edges of the type (u, u), for a given node u.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: `&GraphMemoryMap<EdgeType, Edge>` --- the graph for which k-core decomposition is to be performed in.
+    ///
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -88,9 +106,12 @@ where
         Ok((edges, count))
     }
 
-    /// find Eulerian cycle and write sequence of node ids to memory-mapped file.
-    /// num_threads controls parallelism level (defaults to 1, single-threaded).
-    /// returns vec of (euler path file sequence number, file size(vytes)).
+    /// Computes the euler trail(s) of a graph using *Hierholzer's Algorithm*.
+    ///
+    /// # Arguments
+    ///
+    /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
+    ///
     pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let time = Instant::now();
         let node_count = match self.graph.size() - 1 {
@@ -183,10 +204,21 @@ where
         Ok(())
     }
 
+    /// Returns the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm.
     pub fn trail_number(&self) -> usize {
         self.trail_index.len()
     }
 
+    /// Returns the starting index of a given euler trail.
+    ///
+    /// # Arguments
+    ///
+    /// * `idx`: `usize` --- the euler trail for which the in-memory starting index is to be returned.
+    ///
+    /// * Returns
+    ///
+    /// This method will return `Some` if `idx` is smaller than the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm and `None` otherwise, i.e. iff `idx < trail_index.len()`.
+    ///
     pub fn get_trail(&self, idx: usize) -> Option<SharedSliceMut<usize>> {
         if idx < self.trail_index.len() {
             Some(self.euler_trails.shared_slice())
