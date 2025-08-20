@@ -1669,7 +1669,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         graph_id_from_cache_file_name(self.graph_filename.clone())
     }
 
-    /// Remove all of cache directory's `*.tmp` files.
+    /// Remove all of cache directory's `.tmp` files.
     pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
         cleanup_cache()
     }
