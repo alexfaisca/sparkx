@@ -70,22 +70,22 @@ pub trait GenericEdge<T: GenericEdgeType>:
 pub struct Test {
     #[edge_dest(getter = "_get_d", t = "u32")]
     pub dest_node: u32,
-    #[edge_type(getter = "_get_t", t = "SubStandardColoredEdgeType")]
-    pub edge_type: SubStandardColoredEdgeType,
+    #[edge_type(getter = "_get_t", t = "CompactLabel")]
+    pub edge_type: CompactLabel,
 }
 
 impl Test {
     fn _get_d(&self) -> u32 {
         self.dest_node
     }
-    fn _get_t(&self) -> SubStandardColoredEdgeType {
+    fn _get_t(&self) -> CompactLabel {
         self.edge_type
     }
     fn _set_d(&mut self, d: u32) -> &mut Self {
         self.dest_node = d;
         self
     }
-    fn _set_t(mut self, t: SubStandardColoredEdgeType) -> Self {
+    fn _set_t(mut self, t: CompactLabel) -> Self {
         self.edge_type = t;
         self
     }
@@ -138,10 +138,10 @@ bitfield! {
 
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "SubStandardColoredEdgeType")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "CompactLabel")]
 #[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u32")]
 #[repr(C)]
-    pub struct CompactColorCompactEdge(u64);
+    pub struct CompactLabelCompactEdge(u64);
     impl BitAnd;
     impl BitOr;
     impl BitXor;
@@ -153,10 +153,10 @@ bitfield! {
 
 bitfield! {
 #[derive(GenericEdge)]
-#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "ColoredEdgeType")]
+#[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "StandardLabel")]
 #[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
 #[repr(C)]
-    pub struct StandardColorStandardEdge(u128);
+    pub struct StandardLabelStandardEdge(u128);
     impl BitAnd;
     impl BitOr;
     impl BitXor;
@@ -206,13 +206,13 @@ pub enum TinyEdgeType {
 #[derive(GenericEdgeType)]
 #[generic_edge_type(is_directed = "true")]
 #[repr(C)]
-pub struct SubStandardColoredEdgeType {
-    color: usize,
+pub struct CompactLabel {
+    color: u32,
 }
 
 #[derive(GenericEdgeType)]
 #[repr(C)]
-pub struct ColoredEdgeType {
+pub struct StandardLabel {
     color: usize,
 }
 
@@ -237,6 +237,54 @@ impl convert::From<usize> for VoidLabel {
 impl convert::From<VoidLabel> for usize {
     fn from(_v: VoidLabel) -> usize {
         0usize
+    }
+}
+
+impl convert::From<u64> for CompactLabel {
+    fn from(v: u64) -> Self {
+        CompactLabel { color: v as u32 }
+    }
+}
+
+impl convert::From<CompactLabel> for u64 {
+    fn from(v: CompactLabel) -> u64 {
+        v.color as u64
+    }
+}
+
+impl convert::From<usize> for CompactLabel {
+    fn from(v: usize) -> Self {
+        CompactLabel { color: v as u32 }
+    }
+}
+
+impl convert::From<CompactLabel> for usize {
+    fn from(v: CompactLabel) -> usize {
+        v.color as usize
+    }
+}
+
+impl convert::From<u64> for StandardLabel {
+    fn from(v: u64) -> Self {
+        Self { color: v as usize }
+    }
+}
+
+impl convert::From<StandardLabel> for u64 {
+    fn from(v: StandardLabel) -> u64 {
+        v.color as u64
+    }
+}
+
+impl convert::From<usize> for StandardLabel {
+    fn from(v: usize) -> Self {
+        Self { color: v }
+    }
+}
+
+impl convert::From<StandardLabel> for usize {
+    fn from(v: StandardLabel) -> usize {
+        v.color
     }
 }
 
@@ -286,54 +334,6 @@ impl convert::From<TinyEdgeType> for usize {
     }
 }
 
-impl convert::From<u64> for SubStandardColoredEdgeType {
-    fn from(v: u64) -> Self {
-        SubStandardColoredEdgeType { color: v as usize }
-    }
-}
-
-impl convert::From<SubStandardColoredEdgeType> for u64 {
-    fn from(v: SubStandardColoredEdgeType) -> u64 {
-        v.color as u64
-    }
-}
-
-impl convert::From<usize> for SubStandardColoredEdgeType {
-    fn from(v: usize) -> Self {
-        SubStandardColoredEdgeType { color: v }
-    }
-}
-
-impl convert::From<SubStandardColoredEdgeType> for usize {
-    fn from(v: SubStandardColoredEdgeType) -> usize {
-        v.color
-    }
-}
-
-impl convert::From<u64> for ColoredEdgeType {
-    fn from(v: u64) -> Self {
-        ColoredEdgeType { color: v as usize }
-    }
-}
-
-impl convert::From<ColoredEdgeType> for u64 {
-    fn from(v: ColoredEdgeType) -> u64 {
-        v.color as u64
-    }
-}
-
-impl convert::From<usize> for ColoredEdgeType {
-    fn from(v: usize) -> Self {
-        ColoredEdgeType { color: v }
-    }
-}
-
-impl convert::From<ColoredEdgeType> for usize {
-    fn from(v: ColoredEdgeType) -> usize {
-        v.color
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,8 +357,8 @@ mod tests {
     const _: () = _static_checker::<TinyEdgeType, TinyLabelTinyEdge>();
     const _: () = _static_checker::<TinyEdgeType, TinyLabelCompactEdge>();
     const _: () = _static_checker::<TinyEdgeType, TinyLabelStandardEdge>();
-    const _: () = _static_checker::<SubStandardColoredEdgeType, CompactColorCompactEdge>();
-    const _: () = _static_checker::<ColoredEdgeType, StandardColorStandardEdge>();
+    const _: () = _static_checker::<CompactLabel, CompactLabelCompactEdge>();
+    const _: () = _static_checker::<StandardLabel, StandardLabelStandardEdge>();
     const _: () = _static_checker::<VoidLabel, UnlabeledTinyEdge>();
     const _: () = _static_checker::<VoidLabel, UnlabeledCompactEdge>();
     const _: () = _static_checker::<VoidLabel, UnlabeledStandardEdge>();
@@ -369,15 +369,15 @@ mod tests {
         #[derive(GenericEdge)]
         struct NamedTest1 {
             pub dest_node: i32,
-            pub edge_type: SubStandardColoredEdgeType,
+            pub edge_type: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest1>();
+        _static_checker::<CompactLabel, NamedTest1>();
 
         let t1_test = NamedTest1::new(142351, 124141);
         let t1_expect = NamedTest1 {
             dest_node: 142351,
-            edge_type: SubStandardColoredEdgeType { color: 124141usize },
+            edge_type: CompactLabel { color: 124141u32 },
         };
         assert!(
             t1_test == t1_expect,
@@ -388,7 +388,7 @@ mod tests {
             "named struct proc macro implicit fields auto dest getter malfunction"
         );
         assert!(
-            t1_test.e_type() == SubStandardColoredEdgeType::from(124141usize),
+            t1_test.e_type() == CompactLabel::from(124141usize),
             "named struct proc macro implicit fields auto e_type getter malfunction"
         );
     }
@@ -399,15 +399,15 @@ mod tests {
         #[derive(GenericEdge)]
         struct NamedTest2 {
             pub dest_node: i32,
-            pub edge_type: SubStandardColoredEdgeType,
+            pub edge_type: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest2>();
+        _static_checker::<CompactLabel, NamedTest2>();
 
         let mut t2_test = NamedTest2::default();
         let t2_expect = NamedTest2 {
             dest_node: 0,
-            edge_type: SubStandardColoredEdgeType { color: 0 },
+            edge_type: CompactLabel { color: 0 },
         };
         assert!(
             t2_test == t2_expect,
@@ -418,7 +418,7 @@ mod tests {
             "named struct proc macro implicit fields auto dest getter malfunction"
         );
         assert!(
-            t2_test.e_type() == SubStandardColoredEdgeType::from(0usize),
+            t2_test.e_type() == CompactLabel::from(0usize),
             "named struct proc macro implicit fields auto e_type getter malfunction"
         );
         t2_test.set_edge_dest(1);
@@ -428,7 +428,7 @@ mod tests {
         );
         t2_test.set_edge_type(2352);
         assert!(
-            t2_test.e_type() == SubStandardColoredEdgeType::from(2352u64),
+            t2_test.e_type() == CompactLabel::from(2352u64),
             "named struct proc macro implicit fields auto set_edge_type malfunction"
         );
     }
@@ -441,14 +441,14 @@ mod tests {
             #[edge_dest]
             pub edge_type: i32,
             #[edge_type]
-            pub node_dest: SubStandardColoredEdgeType,
+            pub node_dest: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest3>();
+        _static_checker::<CompactLabel, NamedTest3>();
         let t3_test = NamedTest3::new(142351, 124141);
         let t3_expect = NamedTest3 {
             edge_type: 142351,
-            node_dest: SubStandardColoredEdgeType { color: 124141usize },
+            node_dest: CompactLabel { color: 124141u32 },
         };
         assert!(
             t3_test == t3_expect,
@@ -459,7 +459,7 @@ mod tests {
             "named struct proc macro annotated fields dest getter malfunction"
         );
         assert!(
-            t3_test.e_type() == SubStandardColoredEdgeType::from(124141usize),
+            t3_test.e_type() == CompactLabel::from(124141usize),
             "named struct proc macro annotated fields e_type getter malfunction"
         );
     }
@@ -471,14 +471,14 @@ mod tests {
         struct NamedTest4 {
             pub dest_node: i32,
             #[edge_type]
-            pub color: SubStandardColoredEdgeType,
+            pub color: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest4>();
+        _static_checker::<CompactLabel, NamedTest4>();
         let t4_test = NamedTest4::new(932351, 51241);
         let t4_expect = NamedTest4 {
             dest_node: 932351,
-            color: SubStandardColoredEdgeType { color: 51241usize },
+            color: CompactLabel { color: 51241u32 },
         };
         assert!(
             t4_test == t4_expect,
@@ -489,7 +489,7 @@ mod tests {
             "named struct proc macro partial annotated fields dest getter malfunction"
         );
         assert!(
-            t4_test.e_type() == SubStandardColoredEdgeType::from(51241usize),
+            t4_test.e_type() == CompactLabel::from(51241usize),
             "named struct proc macro partial annotated fields e_type getter malfunction"
         );
     }
@@ -501,14 +501,14 @@ mod tests {
         struct NamedTest5 {
             pub dest_node: i32,
             #[edge_type]
-            pub color: SubStandardColoredEdgeType,
+            pub color: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest5>();
+        _static_checker::<CompactLabel, NamedTest5>();
         let mut t5_test = NamedTest5::default();
         let mut t5_expect = NamedTest5 {
             dest_node: 0,
-            color: SubStandardColoredEdgeType { color: 0 },
+            color: CompactLabel { color: 0 },
         };
         assert!(
             t5_test == t5_expect,
@@ -536,20 +536,17 @@ mod tests {
             #[edge_dest]
             pub dest: i32,
             #[edge_type(getter = "c", setter = "random_setter_name_12242")]
-            pub color: SubStandardColoredEdgeType,
+            pub color: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest6>();
+        _static_checker::<CompactLabel, NamedTest6>();
 
         impl NamedTest6 {
-            pub fn c(&self) -> SubStandardColoredEdgeType {
-                SubStandardColoredEdgeType { color: 3 }
+            pub fn c(&self) -> CompactLabel {
+                CompactLabel { color: 3 }
             }
-            pub fn random_setter_name_12242(
-                &mut self,
-                _blah: SubStandardColoredEdgeType,
-            ) -> &mut Self {
-                self.color = SubStandardColoredEdgeType { color: 555555 };
+            pub fn random_setter_name_12242(&mut self, _blah: CompactLabel) -> &mut Self {
+                self.color = CompactLabel { color: 555555 };
                 self
             }
         }
@@ -562,8 +559,7 @@ mod tests {
         );
         t6_test.set_edge_type(1);
         assert!(
-            t6_test.e_type() == SubStandardColoredEdgeType { color: 3 }
-                && t6_test.color.color == 555555,
+            t6_test.e_type() == CompactLabel { color: 3 } && t6_test.color.color == 555555,
             "named struct proc macro annotated fields custom getter setter e_type getter or setter malfunction"
         );
     }
@@ -576,10 +572,10 @@ mod tests {
             #[edge_dest(getter = "banana", setter = "savannah")]
             pub pi: i32,
             #[edge_type(setter = "random_setter_name_12242")]
-            pub euler: SubStandardColoredEdgeType,
+            pub euler: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest7>();
+        _static_checker::<CompactLabel, NamedTest7>();
 
         impl NamedTest7 {
             pub fn banana(&self) -> usize {
@@ -589,10 +585,7 @@ mod tests {
                 self.pi = baboon;
                 self
             }
-            pub fn random_setter_name_12242(
-                &mut self,
-                blah: SubStandardColoredEdgeType,
-            ) -> &mut Self {
+            pub fn random_setter_name_12242(&mut self, blah: CompactLabel) -> &mut Self {
                 self.euler = blah;
                 self
             }
@@ -606,7 +599,7 @@ mod tests {
         );
         t7_test.set_edge_type(1);
         assert!(
-            t7_test.e_type() == SubStandardColoredEdgeType { color: 1 } && t7_test.euler.color == 1,
+            t7_test.e_type() == CompactLabel { color: 1 } && t7_test.euler.color == 1,
             "named struct proc macro annotated fields custom douche getter setter e_type getter or setter malfunction"
         );
         t7_test.set_edge_dest(1);
@@ -625,22 +618,22 @@ mod tests {
             #[edge_dest(getter = "banana", setter = "savannah")]
             pub pi: i32,
             #[edge_type(setter = "random_setter_name_12242")]
-            pub euler: SubStandardColoredEdgeType,
+            pub euler: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest8>();
+        _static_checker::<CompactLabel, NamedTest8>();
 
         impl NamedTest8 {
             pub fn new_test(_e: u64, _t: u64) -> Self {
                 NamedTest8 {
                     pi: 53234,
-                    euler: SubStandardColoredEdgeType { color: 1234 },
+                    euler: CompactLabel { color: 1234 },
                 }
             }
             pub fn default_test() -> Self {
                 NamedTest8 {
                     pi: 53234,
-                    euler: SubStandardColoredEdgeType { color: 1234 },
+                    euler: CompactLabel { color: 1234 },
                 }
             }
             pub fn banana(&self) -> usize {
@@ -650,10 +643,7 @@ mod tests {
                 self.pi = baboon;
                 self
             }
-            pub fn random_setter_name_12242(
-                &mut self,
-                blah: SubStandardColoredEdgeType,
-            ) -> &mut Self {
+            pub fn random_setter_name_12242(&mut self, blah: CompactLabel) -> &mut Self {
                 self.euler = blah;
                 self
             }
@@ -667,7 +657,7 @@ mod tests {
         );
         t8_test.set_edge_type(1);
         assert!(
-            t8_test.e_type() == SubStandardColoredEdgeType { color: 1 } && t8_test.euler.color == 1,
+            t8_test.e_type() == CompactLabel { color: 1 } && t8_test.euler.color == 1,
             "named struct proc macro annotated fields custom phony builder default getter setter e_type getter or setter malfunction"
         );
         t8_test.set_edge_dest(1);
@@ -686,22 +676,22 @@ mod tests {
             #[edge_dest(getter = "banana", setter = "savannah")]
             pub pi: i32,
             #[edge_type(setter = "random_setter_name_12242")]
-            pub euler: SubStandardColoredEdgeType,
+            pub euler: CompactLabel,
         }
         // static type debug
-        _static_checker::<SubStandardColoredEdgeType, NamedTest9>();
+        _static_checker::<CompactLabel, NamedTest9>();
 
         impl NamedTest9 {
             pub fn new(e: u64, t: u64) -> Self {
                 NamedTest9 {
                     pi: i32::try_from(e).unwrap(),
-                    euler: SubStandardColoredEdgeType { color: t as usize },
+                    euler: CompactLabel { color: t as u32 },
                 }
             }
             pub fn default() -> Self {
                 NamedTest9 {
                     pi: 0,
-                    euler: SubStandardColoredEdgeType { color: 0 },
+                    euler: CompactLabel { color: 0 },
                 }
             }
             pub fn banana(&self) -> usize {
@@ -711,10 +701,7 @@ mod tests {
                 self.pi = baboon;
                 self
             }
-            pub fn random_setter_name_12242(
-                &mut self,
-                blah: SubStandardColoredEdgeType,
-            ) -> &mut Self {
+            pub fn random_setter_name_12242(&mut self, blah: CompactLabel) -> &mut Self {
                 self.euler = blah;
                 self
             }
@@ -724,7 +711,7 @@ mod tests {
             t9_test
                 == NamedTest9 {
                     pi: 12414i32,
-                    euler: SubStandardColoredEdgeType { color: 141241usize },
+                    euler: CompactLabel { color: 141241u32 },
                 },
             "named struct proc macro not recognizing auto builder annotated fields custom builder default getter setter"
         );
@@ -741,7 +728,7 @@ mod tests {
     fn unnamed_struct_len_one() {
         bitfield! {
         #[derive(GenericEdge)]
-        #[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "ColoredEdgeType")]
+        #[edge_type(setter = "set_edge_type", getter = "edge_type", real_type = "StandardLabel")]
         #[edge_dest(setter = "set_dest_node", getter = "dest_node", real_type = "u64")]
         #[repr(C)]
             pub struct UnnamedTest1(u128);
@@ -754,14 +741,14 @@ mod tests {
             u64, dest_node, set_dest_node: 127, 64;
         }
         // static type debug
-        _static_checker::<ColoredEdgeType, UnnamedTest1>();
+        _static_checker::<StandardLabel, UnnamedTest1>();
 
         let t10_test = UnnamedTest1::new(12414, 141241);
         assert!(
             t10_test.dest_node() == 141241 && t10_test.edge_type() == 12414,
             "unnnamed struct lenght one proc macro not recognizing self builder"
         );
-        let t10_test = <UnnamedTest1 as GenericEdge<ColoredEdgeType>>::new(12414, 141241);
+        let t10_test = <UnnamedTest1 as GenericEdge<StandardLabel>>::new(12414, 141241);
         assert!(
             t10_test.dest_node() == 12414 && t10_test.edge_type() == 141241,
             "unnnamed struct lenght one proc macro not recognizing auto builder"
@@ -772,15 +759,15 @@ mod tests {
             t10_test == t10_expect,
             "unnamed struct lenght one proc macro not recognizing auto default"
         );
-        let mut t10_test = <UnnamedTest1 as GenericEdge<ColoredEdgeType>>::new(12414, 141241);
+        let mut t10_test = <UnnamedTest1 as GenericEdge<StandardLabel>>::new(12414, 141241);
         assert!(
-            t10_test.dest() == 12414 && t10_test.e_type() == ColoredEdgeType { color: 141241 },
+            t10_test.dest() == 12414 && t10_test.e_type() == StandardLabel { color: 141241 },
             "unnnamed struct lenght one proc macro not recognizing auto dest or e_type getter"
         );
         t10_test.set_edge_type(333);
         t10_test.set_edge_dest(123);
         assert!(
-            t10_test.dest() == 123 && t10_test.e_type() == ColoredEdgeType { color: 333 },
+            t10_test.dest() == 123 && t10_test.e_type() == StandardLabel { color: 333 },
             "unnnamed struct lenght one proc macro not recognizing auto dest or e_type setter"
         );
     }
@@ -790,7 +777,7 @@ mod tests {
         bitfield! {
         #[derive(GenericEdge)]
         #[generic_edge(constructor = "new_test", from_void = "default")]
-        #[edge_type(setter = "savannah", getter = "edge_type", real_type = "ColoredEdgeType")]
+        #[edge_type(setter = "savannah", getter = "edge_type", real_type = "StandardLabel")]
         #[edge_dest(setter = "random_setter_name_12242", getter = "banana", real_type = "u64")]
         #[repr(C)]
             pub struct UnnamedTest2(u128);
@@ -803,7 +790,7 @@ mod tests {
             u64, dest_node, set_dest_node: 127, 64;
         }
         // static type debug
-        _static_checker::<ColoredEdgeType, UnnamedTest2>();
+        _static_checker::<StandardLabel, UnnamedTest2>();
 
         impl UnnamedTest2 {
             pub fn new_test(_e: u64, _t: u64) -> Self {
@@ -831,10 +818,10 @@ mod tests {
             t11_test.edge_type() == 112
                 && t11_test.dest_node() == 112
                 && t11_test.dest() == 123
-                && t11_test.e_type() == ColoredEdgeType { color: 112 },
+                && t11_test.e_type() == StandardLabel { color: 112 },
             "unnnamed struct lenght one proc macro not recognizing custom default or getters"
         );
-        let mut t11_test = <UnnamedTest2 as GenericEdge<ColoredEdgeType>>::new(99035432, 995226);
+        let mut t11_test = <UnnamedTest2 as GenericEdge<StandardLabel>>::new(99035432, 995226);
         assert!(
             t11_test.edge_type() == 111
                 && t11_test.dest_node() == 111
@@ -845,8 +832,8 @@ mod tests {
 
         // to avoid using fully qualified syntax define struct setter methods with different
         // identifiers than `GenericEdge` trait methods
-        <UnnamedTest2 as GenericEdge<ColoredEdgeType>>::set_edge_type(&mut t11_test, 43124);
-        <UnnamedTest2 as GenericEdge<ColoredEdgeType>>::set_edge_dest(&mut t11_test, 124351);
+        <UnnamedTest2 as GenericEdge<StandardLabel>>::set_edge_type(&mut t11_test, 43124);
+        <UnnamedTest2 as GenericEdge<StandardLabel>>::set_edge_dest(&mut t11_test, 124351);
         assert!(
             t11_test.edge_type() == 123123 && t11_test.dest_node() == 0,
             "unnnamed struct lenght one proc macro not recognizing custom setters"
@@ -857,13 +844,13 @@ mod tests {
     fn unnamed_struct_len_two_auto() {
         #[repr(C)]
         #[derive(GenericEdge)]
-        pub struct UnnamedTest3(u64, ColoredEdgeType);
+        pub struct UnnamedTest3(u64, StandardLabel);
         // static type debug
-        _static_checker::<ColoredEdgeType, UnnamedTest3>();
+        _static_checker::<StandardLabel, UnnamedTest3>();
 
         let t12_test = UnnamedTest3::new(357, 753);
         assert!(
-            t12_test.0 == 357 && t12_test.1 == ColoredEdgeType { color: 753 },
+            t12_test.0 == 357 && t12_test.1 == StandardLabel { color: 753 },
             "unnnamed struct lenght two proc macro not recognizing auto builder"
         );
         let t12_test = UnnamedTest3::default();
@@ -874,13 +861,13 @@ mod tests {
         );
         let mut t12_test = UnnamedTest3::new(12414, 141241);
         assert!(
-            t12_test.dest() == 12414 && t12_test.e_type() == ColoredEdgeType { color: 141241 },
+            t12_test.dest() == 12414 && t12_test.e_type() == StandardLabel { color: 141241 },
             "unnnamed struct lenght two proc macro not recognizing auto getters"
         );
         t12_test.set_edge_type(311);
         t12_test.set_edge_dest(123);
         assert!(
-            t12_test.dest() == 123 && t12_test.e_type() == ColoredEdgeType { color: 311 },
+            t12_test.dest() == 123 && t12_test.e_type() == StandardLabel { color: 311 },
             "unnnamed struct lenght two proc macro not recognizing auto setters"
         );
     }
@@ -893,14 +880,14 @@ mod tests {
     //     #[edge_type(
     //         setter = "savannah",
     //         getter = "edge_type",
-    //         real_type = "ColoredEdgeType"
+    //         real_type = "StandardLabel"
     //     )]
     //     #[edge_dest(
     //         setter = "random_setter_name_12242",
     //         getter = "banana",
     //         real_type = "u64"
     //     )]
-    //     pub struct UnnamedTest4(u64, ColoredEdgeType);
+    //     pub struct UnnamedTest4(u64, StandardLabel);
     //
     //     impl UnnamedTest4 {
     //         pub fn new_test(_e: u64, _t: u64) -> Self {
@@ -918,7 +905,7 @@ mod tests {
     //         //     self
     //         // }
     //         // pub fn random_setter_name_12242(&mut self, _blah: u64) -> &mut Self {
-    //         //     self.1 = ColoredEdgeType { color: 123123 };
+    //         //     self.1 = StandardLabel { color: 123123 };
     //         //     self
     //         // }
     //     }

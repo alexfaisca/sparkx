@@ -102,6 +102,15 @@ pub fn cache_file_name(
     target_type: FileType,
     sequence_number: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    if target_type == FileType::Test {
+        return Ok(CACHE_DIR.to_string()
+            + file_name_from_id_and_sequence_for_type(
+                target_type,
+                original_filename,
+                sequence_number,
+            )
+            .as_str());
+    }
     let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename)?;
     let new_filename = file_name_from_id_and_sequence_for_type(target_type, id, sequence_number);
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
@@ -134,7 +143,7 @@ pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum FileType {
     Edges,
@@ -155,6 +164,7 @@ pub enum FileType {
     HyperBallHarmonicCentrality,
     HyperBallLinCentrality,
     GVELouvain,
+    Test,
 }
 
 pub fn file_name_from_id_and_sequence_for_type(
@@ -210,6 +220,10 @@ pub fn file_name_from_id_and_sequence_for_type(
             Some(i) => format!("{}_{}_{}.{}", "louvaintmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "louvain", id, "mmap"),
         },
+        FileType::Test => {
+            let random_id = rand::random::<u128>().to_string();
+            format!("{}_{}.{}", "test", random_id, "tmp")
+        }
     }
 }
 
@@ -234,6 +248,7 @@ impl std::fmt::Display for FileType {
             FileType::HyperBallHarmonicCentrality => "HyperBallHarmonicCentrality",
             FileType::HyperBallLinCentrality => "HyperBallLinCentrality",
             FileType::GVELouvain => "Louvain",
+            FileType::Test => "Test",
         };
         write!(f, "{}", s)
     }

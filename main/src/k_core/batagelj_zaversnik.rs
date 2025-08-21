@@ -97,7 +97,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
 
         // initialize degree and bins count vecs
-        let mut bins: Vec<usize> = match thread::scope(
+        let mut bins: Vec<usize> = thread::scope(
             |scope| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
                 let mut bins = vec![0usize; u8::MAX as usize];
                 let mut max_vecs = vec![];
@@ -128,49 +128,32 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     ));
                 }
                 // join results
-                for b in max_vecs {
-                    let joined_bins = match b.join() {
-                        Ok(b) => b,
-                        Err(_) => {
-                            return Err("error joining degree bins".into());
-                        }
-                    };
-                    for bin in joined_bins.into_iter() {
-                        for (degree, count) in bin.iter().enumerate() {
+                for handle_bin in max_vecs {
+                    let joined_bin = handle_bin.join().map_err(
+                        |e| -> Box<dyn std::error::Error + Send + Sync> {
+                            format!("{:?}", e).into()
+                        },
+                    )?;
+                    for entries in joined_bin.into_iter() {
+                        for (degree, count) in entries.iter().enumerate() {
                             bins[degree] += *count;
                         }
                     }
                 }
                 Ok(bins)
             },
-        ) {
-            Ok(i) => {
-                degree.flush()?;
-                match i {
-                    Ok(i) => i,
-                    Err(_e) => {
-                        return Err(stringify!(_e).into());
-                    }
-                }
-            }
-            _ => {
-                return Err("error calculating max degree".into());
-            }
-        };
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
-        let max_degree = match bins
+        let (max_degree, _) = bins
             .iter()
             .enumerate()
             .max_by_key(|(deg, c)| *deg * (if **c != 0 { 1 } else { 0 }))
-        {
-            Some((deg, _)) => {
-                bins.resize(deg + 1, 0);
-                deg
-            }
-            None => {
-                return Err("error couldn't get max degree".into());
-            }
-        };
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                "error couldn't get max degree".into()
+            })?;
+        bins.resize(max_degree + 1, 0);
 
         // println!()
         let dead_nodes = bins[0];
@@ -282,11 +265,57 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             r.resize(max + 1, 0);
             println!("k-cores {:?}", r);
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
         // flush output to ensure all data is written to disk
         self.k_cores.flush_async()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::k_core::verify_k_cores;
+
+    use super::*;
+    use paste::paste;
+    use std::path::Path;
+
+    macro_rules! graph_tests {
+        ($($name:ident => $path:expr ,)*) => {
+            $(
+                paste! {
+                    #[test]
+                    fn [<k_cores_batagelj_zaversik_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                        generic_test($path)
+                    }
+                }
+            )*
+        }
+    }
+
+    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let graph_cache =
+            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        let bz_k_cores = AlgoBatageljZaversnik::new(&graph)?;
+
+        verify_k_cores(&graph, bz_k_cores.k_cores)?;
+        Ok(())
+    }
+
+    // generate test cases from dataset
+    graph_tests! {
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // … add the rest
     }
 }

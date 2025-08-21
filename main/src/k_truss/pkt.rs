@@ -186,7 +186,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 });
             }
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
         let mut l: u8 = 1;
         let buff_size = 4096;
@@ -263,12 +263,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                             }
                             synchronize.wait();
 
-                            let mut to_process = match curr.slice(0, curr.len()) {
-                                Some(i) => i,
-                                None => {
-                                    return Err("error reading curr in pkt".into());
-                                }
-                            };
+                            let mut to_process = curr.slice(0, curr.len()).ok_or_else(
+                                || -> Box<dyn std::error::Error + Send + Sync> {
+                                    "error reading curr in pkt".into()
+                                },
+                            )?;
                             // println!("new cicle initialized {} {:?}", todo, curr.ptr);
                             while !to_process.is_empty() {
                                 todo = match todo.overflowing_sub(to_process.len()) {
@@ -408,12 +407,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                                 in_next = std::mem::replace(&mut in_curr, in_next);
 
                                 synchronize.wait();
-                                to_process = match curr.slice(0, curr.len()) {
-                                    Some(i) => i,
-                                    None => {
-                                        return Err("error couldn't get new to_process vec".into());
-                                    }
-                                };
+                                to_process = curr.slice(0, curr.len()).ok_or_else(
+                                    || -> Box<dyn std::error::Error + Send + Sync> {
+                                        "error reading curr in pkt".into()
+                                    },
+                                )?;
                                 synchronize.wait();
                             }
                             l = match l.overflowing_add(1) {
@@ -454,8 +452,54 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 println!("k-trussness {:?}", r);
             }
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::k_truss::verify_k_trusses;
+
+    use super::*;
+    use paste::paste;
+    use std::path::Path;
+
+    macro_rules! graph_tests {
+        ($($name:ident => $path:expr ,)*) => {
+            $(
+                paste! {
+                    #[test]
+                    fn [<k_trusses_pkt_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                        generic_test($path)
+                    }
+                }
+            )*
+        }
+    }
+
+    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let graph_cache =
+            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        let pkt_k_trusses = AlgoPKT::new(&graph)?;
+
+        verify_k_trusses(&graph, pkt_k_trusses.k_trusses)?;
+        Ok(())
+    }
+
+    // generate test cases from dataset
+    graph_tests! {
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // … add the rest
     }
 }

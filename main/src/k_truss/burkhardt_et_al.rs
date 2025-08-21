@@ -170,7 +170,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 });
             }
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
         let stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(edge_stack.shared_slice());
 
@@ -282,5 +282,51 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.k_trusses.flush_async()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::k_truss::verify_k_trusses;
+
+    use super::*;
+    use paste::paste;
+    use std::path::Path;
+
+    macro_rules! graph_tests {
+        ($($name:ident => $path:expr ,)*) => {
+            $(
+                paste! {
+                    #[test]
+                    fn [<k_trusses_burkhardt_et_al_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                        generic_test($path)
+                    }
+                }
+            )*
+        }
+    }
+
+    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let graph_cache =
+            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        let burkhardt_et_al_k_trusses = AlgoBurkhardtEtAl::new(&graph)?;
+
+        verify_k_trusses(&graph, burkhardt_et_al_k_trusses.k_trusses)?;
+        Ok(())
+    }
+
+    // generate test cases from dataset
+    graph_tests! {
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // … add the rest
     }
 }

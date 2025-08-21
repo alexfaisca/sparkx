@@ -144,7 +144,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
             let _ = alive.flush_async();
             total_dead_nodes
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
         // ditch node sampling as graphs are inherintely sparse
         // use veertical granularity control:
@@ -324,7 +324,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
             }
             Ok(())
         })
-        .unwrap()?;
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
         coreness.flush()?;
 
         // --- Compute per-edge core labels and write output ---
@@ -378,11 +378,57 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
             r.resize(max + 1, 0);
             println!("k-cores {:?}", r);
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
         // flush output to ensure all data is written to disk
         self.k_cores.flush_async()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::k_core::verify_k_cores;
+
+    use super::*;
+    use paste::paste;
+    use std::path::Path;
+
+    macro_rules! graph_tests {
+        ($($name:ident => $path:expr ,)*) => {
+            $(
+                paste! {
+                    #[test]
+                    fn [<k_cores_liu_et_al_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                        generic_test($path)
+                    }
+                }
+            )*
+        }
+    }
+
+    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let graph_cache =
+            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        let liu_et_al_k_cores = AlgoLiuEtAl::new(&graph)?;
+
+        verify_k_cores(&graph, liu_et_al_k_cores.k_cores)?;
+        Ok(())
+    }
+
+    // generate test cases from dataset
+    graph_tests! {
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // … add the rest
     }
 }

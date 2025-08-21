@@ -206,14 +206,15 @@ where
         target_size: Option<usize>,
         target_volume: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = match Self::evaluate_params(graph, t, eps, seed.clone()) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(format!("error creating HKRelax instance: {e}").into());
-            }
-        };
+        let () = Self::evaluate_params(graph, t, eps, seed.clone()).map_err(
+            |e| -> Box<dyn std::error::Error> {
+                format!("error creating HKRelax instance: {e}").into()
+            },
+        )?;
+
         let n = Self::compute_n(t, eps)?;
         println!("n computed to be {}", n);
+
         Ok(HKRelax {
             graph,
             n,
@@ -235,13 +236,14 @@ where
         target_size: Option<usize>,
         target_volume: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = match Self::evaluate_params(self.graph, t, eps, seed.clone()) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(format!("error creating HKRelax instance: {e}").into());
-            }
-        };
+        let () = Self::evaluate_params(self.graph, t, eps, seed.clone()).map_err(
+            |e| -> Box<dyn std::error::Error> {
+                format!("error creating HKRelax instance: {e}").into()
+            },
+        )?;
+
         let n = Self::compute_n(t, eps)?;
+
         Ok(HKRelax {
             graph: self.graph,
             n,
@@ -279,16 +281,12 @@ where
         }
 
         while let Some((v, j)) = queue.pop_front() {
-            let rvj = match r.get(&(v, j)) {
-                Some(i) => *i,
-                None => {
-                    return Err(format!(
-                        "error hk-relax ({v}, {j}) present in queue but not in residual",
-                    )
-                    .into());
-                }
-            };
-
+            let rvj = *r
+                .get(&(v, j))
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    format!("error hk-relax ({v}, {j}) present in queue but not in residual",)
+                        .into()
+                })?;
             // x[v] += rvj && check if r[(v, j)] is normal
             match x.get_mut(&v) {
                 Some(x_v) => {
@@ -308,12 +306,9 @@ where
             };
 
             //  mass = (t * rvj / (float(j) + 1.)) / len(G[v]) /* calculation validity checked when poppped from queue */
-            let (deg_v, v_n) = match self.graph.neighbours(v) {
-                Ok(v_n) => (v_n.remaining_neighbours() as f64, v_n),
-                Err(e) => {
-                    return Err(format!("error hk-relax getting neighbours of {v}: {e}").into());
-                }
-            };
+            let v_n = self.graph.neighbours(v)?;
+            let deg_v = v_n.remaining_neighbours() as f64;
+
             let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
 
             for u in v_n {

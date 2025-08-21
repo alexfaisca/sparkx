@@ -3,10 +3,10 @@ use tool::centralities::hyper_ball::*;
 use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
+use tool::generic_edge::CompactLabel;
 #[allow(unused_imports)]
 use tool::generic_edge::{
-    GenericEdge, GenericEdgeType, SubStandardColoredEdgeType, Test, TinyEdgeType,
-    TinyLabelStandardEdge,
+    GenericEdge, GenericEdgeType, StandardLabel, Test, TinyEdgeType, TinyLabelStandardEdge,
 };
 #[allow(unused_imports)]
 use tool::generic_memory_map::{GraphCache, GraphMemoryMap};
@@ -88,7 +88,7 @@ fn main() {
         (Some("txt"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<SubStandardColoredEdgeType, Test, String>(
+                    parse_bytes_mmaped::<CompactLabel, Test, String>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,

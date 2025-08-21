@@ -392,17 +392,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                         },
                     ));
                 }
-                for (i, r) in thread_res.into_iter().enumerate() {
-                    let t_res = r.join();
-                    if t_res.is_err() {
-                        return Err(
-                            format!("error joining {i}, couldn't get 𝛿𝑄: {:?}", t_res).into()
-                        );
-                    }
+                // check for errors
+                for (tid, r) in thread_res.into_iter().enumerate() {
+                    r.join()
+                        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("error in move (thread {tid}): {:?}", e).into()
+                        })?;
                 }
                 Ok(())
             })
-            .unwrap()?;
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
             // check convergence criteria for the local-moving phase
             if global_delta_q.load(Ordering::Relaxed).abs() < tolerance {
@@ -546,15 +546,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     },
                 ));
             }
-            for (i, r) in thread_res.into_iter().enumerate() {
-                let t_res = r.join();
-                if t_res.is_err() {
-                    return Err(format!("error joining {i} in aggregation: {:?}", t_res).into());
-                }
+            // check for errors
+            for (tid, r) in thread_res.into_iter().enumerate() {
+                r.join()
+                    .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("error in aggregation (thread {tid}): {:?}", e).into()
+                    })?;
             }
             Ok(())
         })
-        .unwrap()?;
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
         Ok(())
     }
@@ -605,15 +607,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                     .into());
                                 }
                             };
-                            let edges = match graph_ptr.slice(u_start, u_end) {
-                                Some(e) => e
-                                    .iter()
-                                    .map(|e| (e.dest(), 1))
-                                    .collect::<Vec<(usize, usize)>>(),
-                                None => {
-                                    return Err(format!("error reading node {u} in init").into());
-                                }
-                            };
+                            let edges = graph_ptr
+                                .slice(u_start, u_end)
+                                .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                                    format!("error reading node {u} in init").into()
+                                })?
+                                .iter()
+                                .map(|e| (e.dest(), 1))
+                                .collect::<Vec<(usize, usize)>>();
 
                             // mark all nodes unprocessed
                             processed.get(u).swap(false, Ordering::Relaxed);
@@ -639,15 +640,16 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
             // check for errors
             for (tid, r) in threads_res.into_iter().enumerate() {
-                let t_res = r.join();
-                if t_res.is_err() {
-                    return Err(format!("error (thread {tid}): {:?}", t_res).into());
-                }
+                r.join()
+                    .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("error in initialization (thread {tid}): {:?}", e).into()
+                    })?;
             }
 
             Ok(())
         })
-        .unwrap()?;
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
         let mut tolerance = Self::INITIAL_TOLERANCE;
 

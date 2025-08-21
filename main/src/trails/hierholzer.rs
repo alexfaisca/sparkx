@@ -104,9 +104,11 @@ where
                 });
             }
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+
         edges.flush()?;
         count.flush()?;
+
         Ok((edges, count))
     }
 
@@ -189,14 +191,16 @@ where
             }
             if !cycle.is_empty() {
                 cycle.reverse();
+
                 let cycle_slice = cycle.as_slice();
                 let end = cycle_slice.len() - 1;
-                write_idx = match cycles.write_slice(write_idx, &cycle_slice[..end]) {
-                    Some(b) => b,
-                    None => {
-                        return Err("error couldn't slice mmap to write cycle".into());
-                    }
-                };
+
+                write_idx = cycles
+                    .write_slice(write_idx, &cycle_slice[..end])
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "error couldn't slice mmap to write cycle".into()
+                    })?;
+
                 self.trail_index.push(write_idx);
                 cycle.clear();
             }
@@ -417,8 +421,6 @@ where
         );
         println!("euler trails merge {:?}", time.elapsed());
 
-        cleanup_cache()?;
-
         Ok(())
     }
 }
@@ -479,5 +481,55 @@ impl FindDisjointSetsEulerTrails {
         }
 
         self.cycle_check = true;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::trails::verify_euler_trails;
+
+    use super::*;
+    use paste::paste;
+    use std::path::Path;
+
+    macro_rules! graph_tests {
+        ($($name:ident => $path:expr ,)*) => {
+            $(
+                paste! {
+                    #[test]
+                    fn [<k_trusses_pkt_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                        generic_test($path)
+                    }
+                }
+            )*
+        }
+    }
+
+    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let graph_cache =
+            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        let hierholzer_euler_trails = AlgoHierholzer::new(&graph)?;
+
+        verify_euler_trails(
+            &graph,
+            hierholzer_euler_trails.euler_trails,
+            hierholzer_euler_trails.trail_index,
+        )?;
+        Ok(())
+    }
+
+    // generate test cases from dataset
+    graph_tests! {
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // … add the rest
     }
 }

@@ -140,25 +140,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Returns an error if:
     /// * An unknown annotation is given as input.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// // encoding for forward-forward edge
-    /// let ff_edge = Self::parse_ggcat_direction("+", "+");
-    /// ```
-    /// ```
-    /// // encoding for forward-reverse edge
-    /// let fr_edge = Self::parse_ggcat_direction("+", "-");
-    /// ```
-    /// ```
-    /// // encoding for reverse-forward edge
-    /// let rf_edge = Self::parse_ggcat_direction("-", "+");
-    /// ```
-    /// ```
-    /// // encoding for reverse-reverse edge
-    /// let rr_edge = Self::parse_ggcat_direction(".", "-");
-    /// ```
-    ///
     fn parse_ggcat_direction(orig: &str, dest: &str) -> Result<u64, Box<dyn std::error::Error>> {
         match (orig, dest) {
             ("+", "+") => Ok(0u64),
@@ -192,23 +173,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * An error occurs parsing an edge's destiny node identifier or direction annototation.
     /// * An error occurs writing the node into the memmapped cache files.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// // for every node record at most 16 (default maximum value) edges and always add its label
-    /// // to the grapph's finite state transducer
-    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(input_bytes, None, |_id: usize| {true})?;
-    /// ```
-    /// ```
-    /// // for every node record at most 8 edges and add its label to the grapph's finite state
-    /// // transducer if the node id is 123432 or 912383 or it its id is divisible by 7
-    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(
-    ///     input_bytes,
-    ///     Some(8),
-    ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
-    /// )?;
-    /// ```
-    ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     fn parse_ggcat_bytes_mmap(
         &mut self,
@@ -241,8 +205,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             let _node_color = node.next(); // color value
             for link in node {
                 let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
+                let dest: u64 = link_slice[1].parse()?;
                 edges.push(Edge::new(
-                    link_slice[1].parse()?,
+                    dest,
                     Self::parse_ggcat_direction(link_slice[0], link_slice[2])?,
                 ));
             }
@@ -492,7 +457,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
     /// [^3]: if `None` is provided defaults to 10'000.
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
-    /// [^5]: if `None` is provided defaults to storing every node's label.
+    /// [^5]: if `None` is provided defaults to **NOT** storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn from_ggcat_file<P: AsRef<Path> + Clone>(
@@ -1191,24 +1156,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * An error occurs parsing a node's identifier.
     /// * An error occurs parsing an edge's destiny node identifier or direction annototation.
     /// * An error occurs writing the node into the memmapped cache files.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// // for every node record at most 16 (default maximum value) edges and always add its label
-    /// // to the grapph's finite state transducer
-    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(input_bytes, None, |_id: usize| {true})?;
-    /// ```
-    /// ```
-    /// // for every node record at most 8 edges and add its label to the grapph's finite state
-    /// // transducer if the node id is 123432 or 912383 or it its id is divisible by 7
-    /// let () = mut_graph_cache.parse_ggcat_bytes_mmap(
-    ///     input_bytes,
-    ///     Some(8),
-    ///     |id: usize| { if id == 123432 || id == 912383 || id % 7 == 0 { true } else { false }}
-    /// )?;
-    /// ```
-    ///
     ///
     #[deprecated]
     fn fst_from_ggcat_bytes(

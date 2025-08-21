@@ -63,6 +63,18 @@ impl<T> AbstractedProceduralMemory<T> {
     pub fn shared_slice(&self) -> SharedSlice<T> {
         self.slice.clone()
     }
+    pub fn get(&self, idx: usize) -> &T {
+        self.slice.get(idx)
+    }
+    pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
+        self.slice.slice(start, end)
+    }
+    pub fn len(&self) -> usize {
+        self.shared_slice().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.shared_slice().len() == 0
+    }
 }
 
 #[allow(dead_code)]
@@ -87,6 +99,9 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     }
     pub fn len(&self) -> usize {
         self.shared_slice().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.shared_slice().len() == 0
     }
     pub fn flush(&self) -> Result<(), Error> {
         if self.mmapped {
