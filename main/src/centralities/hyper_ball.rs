@@ -6,12 +6,9 @@ use crate::utils::*;
 use crossbeam::thread;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use num_cpus::get_physical;
-use std::{
-    io::Error,
-    sync::{
-        Arc, Barrier,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Barrier,
+    atomic::{AtomicUsize, Ordering},
 };
 
 type ProceduralMemoryHB = (
@@ -157,10 +154,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (node_count, overflow) = graph.size().overflowing_sub(1);
         if overflow || node_count == 0 {
-            return Err(Box::new(Error::new(
-                std::io::ErrorKind::Other,
-                "error initiating hyperball graph is empty",
-            )));
+            return Err("error initiating hyperball graph is empty".into());
         }
         // make sure presision is within bounds
         let precision =
@@ -218,8 +212,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             )?;
 
         let mut counters = self.counters.shared_slice();
-        let mut counters = counters.mut_slice(0, self.graph.size() - 1).unwrap();
-        let mut swap = swap.mut_slice(0, self.graph.size() - 1).unwrap();
+        let mut counters = counters.mut_slice(0, self.graph.size() - 1).ok_or_else(
+            || -> Box<dyn std::error::Error> { "error getting counters mut slice".into() },
+        )?;
+        let mut swap = swap.mut_slice(0, self.graph.size() - 1).ok_or_else(
+            || -> Box<dyn std::error::Error> { "error getting counters swap mut slice".into() },
+        )?;
 
         loop {
             for u in 0..self.graph.size() - 1 {
@@ -279,96 +277,86 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let counters = self.counters.shared_slice();
         let swap = swap.shared_slice();
 
-        match thread::scope(|scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            for tid in 0..threads {
-                let graph = self.graph.clone();
+        thread::scope(
+            |scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                for tid in 0..threads {
+                    let graph = self.graph.clone();
 
-                let mut counters = counters;
-                let mut swap = swap;
-                let mut distance_accumulator = self.distances.shared_slice();
-                let mut inverse_distance_accumulator = self.inverse_distances.shared_slice();
+                    let mut counters = counters;
+                    let mut swap = swap;
+                    let mut distance_accumulator = self.distances.shared_slice();
+                    let mut inverse_distance_accumulator = self.inverse_distances.shared_slice();
 
-                let global_changed = Arc::clone(&global_changed);
-                let synchronize = Arc::clone(&synchronize);
+                    let global_changed = Arc::clone(&global_changed);
+                    let synchronize = Arc::clone(&synchronize);
 
-                let begin = std::cmp::min(tid * node_load, node_count);
-                let end = std::cmp::min(begin + node_load, node_count);
-                scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-
-                    loop {
-
-                        {
-                        // println!("HyperBall tid {tid} iteration {t_f64}");
-                        }
-
-                        for u in begin..end {
-
-                            let mut a: HyperLogLog::<hyperloglog_rs::prelude::Precision6, 8> = *counters.get_mut(u);
-
-                            let prev_count = a.estimate_cardinality();
-
-                            let u_n = match graph.neighbours(u) {
-                                Ok(n) => n,
-                                Err(_) => {
-                                    return Err(Box::new(Error::new(
-                                                std::io::ErrorKind::NotFound,
-                                                format!("error HyperBall couldn't find neighbours of {u}")
-                                                )));
+                    let begin = std::cmp::min(tid * node_load, node_count);
+                    let end = std::cmp::min(begin + node_load, node_count);
+                    scope.spawn(
+                        move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                            loop {
+                                {
+                                    // println!("HyperBall tid {tid} iteration {t_f64}");
                                 }
-                            };
 
-                            for v in u_n {
-                                a |= counters.get(v.dest());
+                                for u in begin..end {
+                                    let mut a: HyperLogLog<hyperloglog_rs::prelude::Precision6, 8> =
+                                        *counters.get_mut(u);
+
+                                    let prev_count = a.estimate_cardinality();
+
+                                    let u_n = graph.neighbours(u).map_err(
+                                        |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                            format!("couldn't find neighbours of {u}: {e}").into()
+                                        },
+                                    )?;
+
+                                    for v in u_n {
+                                        a |= counters.get(v.dest());
+                                    }
+
+                                    let curr_count = a.estimate_cardinality();
+                                    let count_diff = (curr_count - prev_count) as f64;
+
+                                    if count_diff > 0f64 {
+                                        // update accumulators
+                                        *distance_accumulator.get_mut(u) += t_f64 * count_diff;
+                                        *inverse_distance_accumulator.get_mut(u) +=
+                                            inv_t_f64 * count_diff;
+                                        // update local changed count
+                                        changed += 1;
+                                    }
+
+                                    *swap.get_mut(u) = a;
+                                }
+
+                                global_changed.fetch_add(changed, Ordering::Relaxed);
+                                synchronize.wait();
+
+                                if changed == 0 && global_changed.load(Ordering::Relaxed) == 0 {
+                                    break Ok(());
+                                }
+
+                                swap = std::mem::replace(&mut counters, swap);
+                                changed = 0;
+                                t_f64 += 1.;
+                                inv_t_f64 = 1. / t_f64;
+
+                                synchronize.wait();
+
+                                if tid == 0 {
+                                    global_changed.store(0, Ordering::Relaxed);
+                                }
                             }
-
-                            let curr_count = a.estimate_cardinality();
-                            let count_diff = (curr_count - prev_count) as f64;
-
-
-                            if count_diff > 0f64 {
-                                // update accumulators
-                                *distance_accumulator.get_mut(u) += t_f64 * count_diff;
-                                *inverse_distance_accumulator.get_mut(u) += inv_t_f64 * count_diff;
-                                // update local changed count
-                                changed += 1;
-                            }
-
-                            *swap.get_mut(u) = a;
-                        }
-
-                        global_changed.fetch_add(changed, Ordering::Relaxed);
-                        synchronize.wait();
-
-                        if changed == 0 && global_changed.load(Ordering::Relaxed) == 0 {
-                            break Ok(());
-                        }
-
-                        swap = std::mem::replace(&mut counters, swap);
-                        changed = 0;
-                        t_f64 += 1.;
-                        inv_t_f64 = 1. / t_f64;
-
-                        synchronize.wait();
-
-                        if tid == 0 {
-                            global_changed.store(0, Ordering::Relaxed);
-                        }
-                    }
-                });
-            }
-            Ok(())
-        })
-        .unwrap() {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(Box::new(Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("error HyperBall: {e}")
-                            ))
+                        },
                     );
-            }
+                }
+                Ok(())
+            },
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?;
 
-        };
         self.counters.flush()?;
         cleanup_cache()?;
 

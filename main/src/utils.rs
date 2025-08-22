@@ -130,7 +130,7 @@ pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     for entry in cache_entries {
         std::fs::remove_file(entry.map_err(|_e| -> Box<dyn std::error::Error> {
-            format!("error cleaning up cache: {_e}").into()
+            format!("error cleaning up cache entry: {_e}").into()
         })?)?;
     }
     Ok(())
