@@ -288,22 +288,17 @@ where
                         .into()
                 })?;
             // x[v] += rvj && check if r[(v, j)] is normal
-            match x.get_mut(&v) {
-                Some(x_v) => {
-                    *x_v = f64_is_nomal(*x_v + rvj, "x[v] + r([v, j])")?;
-                }
-                None => {
-                    x.insert(v, f64_is_nomal(rvj, "r([v, j])")?);
-                }
-            };
+            x.entry(v)
+                .and_modify(|x_v| {
+                    *x_v = f64_is_nomal(*x_v + rvj, "x[u] + r[(v, j)]").unwrap();
+                })
+                .or_insert_with(|| f64_is_nomal(rvj, "r[(v, j)]").unwrap());
 
             // r[(v, j)] = 0
-            match r.get_mut(&(v, j)) {
-                Some(rvj) => *rvj = 0f64,
-                None => {
-                    return Err(format!("error hk-relax r({v}, {j}) Some and None").into());
-                }
-            };
+            *r.get_mut(&(v, j))
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    format!("error hk-relax r({v}, {j}) `Some` and `None`").into()
+                })? = 0f64;
 
             //  mass = (t * rvj / (float(j) + 1.)) / len(G[v]) /* calculation validity checked when poppped from queue */
             let v_n = self.graph.neighbours(v)?;
@@ -316,31 +311,18 @@ where
                 let next = (u, j + 1);
                 if j + 1 == self.n {
                     // x[u] += rvj / len(G[v])
-                    match x.get_mut(&u) {
-                        Some(x_u) => {
-                            *x_u = f64_is_nomal(*x_u + rvj / deg_v, "x[u] + (r[(v, j)] / deg_v)")?
-                        }
-                        None => {
-                            x.insert(u, f64_is_nomal(rvj / deg_v, "r[(v, j)] / deg_v")?);
-                        }
-                    };
+                    x.entry(u)
+                        .and_modify(|x_u| {
+                            *x_u = f64_is_nomal(*x_u + rvj / deg_v, "x[u] + (r[(v, j)] / deg_v)")
+                                .unwrap();
+                        })
+                        .or_insert_with(|| f64_is_nomal(rvj / deg_v, "r[(v, j)] / deg_v").unwrap());
                     continue;
                 }
+
                 // if next not in r: r[next] = 0.
-                let r_next = match r.get_mut(&next) {
-                    Some(r_next) => r_next,
-                    None => {
-                        r.insert(next, 0f64);
-                        match r.get_mut(&next) {
-                            Some(r_next) => r_next,
-                            None => return Err(format!(
-                                "error hk-relax just inserted ({u}, {}) into residual and got None",
-                                j + 1
-                            )
-                            .into()),
-                        }
-                    }
-                };
+                let r_next = r.entry(next).or_insert(0_f64);
+
                 // thresh = math.exp(t) * eps * len(G[u]) / (N * psis[j + 1])
                 let deg_u = self.graph.node_degree(u) as f64;
                 let threshold = f64_is_nomal(

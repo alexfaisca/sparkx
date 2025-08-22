@@ -298,6 +298,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
         let mut l_iter = 0;
         let synchronize = Arc::new(Barrier::new(threads));
+
         for i in 0..Self::MAX_ITERATIONS {
             let global_delta_q = Arc::new(AtomicF64::new(0.0));
 
@@ -306,6 +307,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 // use dynamic style scheduling by splitting range [0, cur_node_count) for threads
                 let mut thread_res = Vec::with_capacity(threads);
                 for tid in 0..threads {
+                    let mut local_delta_q_sum = 0.0;
+                    let mut nmap: HashMap<usize, usize> = HashMap::new();
+
                     let k = k.clone();
                     let sigma = sigma.clone();
                     let processed = processed.clone();
@@ -333,8 +337,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                             // wait for all threads to finish current pass initialization
                             synchronize.wait();
 
-                            let mut local_delta_q_sum = 0.0;
-                            let mut nmap: HashMap<usize, usize> = HashMap::new();
                             for u in begin..end {
                                 // skip this vertex if it was marked as pruned (no need to process)
                                 if processed.get(u).swap(true, Ordering::Relaxed) {
@@ -379,7 +381,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                         }
                                     } else {
                                         return Err(
-                                            format!("error louvain_move(): {} {u} can't be removed from its community {c_u} as node weight is {k_u} but community total weight is only {}", 
+                                            format!("error louvain_move(): {} {u} can't be removed from its community {c_u} as node weight is {k_u} but community total weight is only {}",
                                                     if l_pass == 0 {"node"} else {"super-node"}, sigma.get(c_u).load(Ordering::Relaxed)
                                                     ).into()
                                             );
@@ -410,6 +412,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             }
             l_iter += 1;
         }
+
         Ok(l_iter)
     }
 

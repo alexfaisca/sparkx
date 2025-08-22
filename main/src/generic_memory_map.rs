@@ -62,10 +62,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         graph_id: Option<String>,
         target_type: FileType,
     ) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let id = match graph_id {
-            Some(i) => i,
-            None => rand::random::<u64>().to_string(),
-        };
+        let id = graph_id.unwrap_or(rand::random::<u128>().to_string());
+
         Ok((
             match target_type {
                 FileType::Edges => format!("{}{}_{}.{}", CACHE_DIR, "edges", id, "mmap"),
@@ -188,13 +186,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
             // convert each line to str temporarily && cut off ">" char
             let line_str = std::str::from_utf8(&line[1..])?;
+            let sequence_line = lines.next().ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!("error no k-mer sequence for node {line_str}").into()
+            })?;
 
-            let sequence_line = match lines.next() {
-                None => {
-                    return Err(format!("error no k-mer sequence for node {line_str}").into());
-                }
-                Some(i) => i,
-            };
             // convert each line to str temporarily -> cut off ">" char
             let line_str = std::str::from_utf8(&line[1..line.len()])?;
             let node = line_str.split_whitespace().collect::<Vec<&str>>();
@@ -479,10 +474,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // parse optional inputs && fallback to defaults for the Nones found
         let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
         let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
-        let in_fst = match in_fst {
-            Some(f) => f,
-            None => |_id: usize| -> bool { false },
-        };
+        let in_fst = in_fst.unwrap_or(|_id: usize| -> bool { false });
         let input = Self::read_input_file(path)?;
 
         // init cache
@@ -938,10 +930,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                             }
                         };
 
-                        match res {
-                            Ok(i) => Ok(i),
-                            Err(e) => Err(format!("error occured for thread {i}: {e}").into()),
-                        }
+                        res.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                            format!("error occured for thread {i}: {e}").into()
+                        })
                     },
                 );
 
@@ -949,22 +940,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
 
             let mut all_batches = Vec::new();
-            for handle in batch_handles {
-                match handle.join() {
-                    Ok(Ok(batches)) => {
-                        all_batches.extend(batches);
-                    }
-                    Ok(Err(e)) => {
-                        return Err(e);
-                    }
-                    Err(e) => {
-                        return Err(format!("Error in thread: {:?}", e).into());
-                    }
-                }
+            for (idx, handle) in batch_handles.into_iter().enumerate() {
+                all_batches.extend(
+                    handle
+                        .join()
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("error joining thread {idx}: {:?}", e).into()
+                        })?
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("error in thread {idx}: {:?}", e).into()
+                        })?,
+                );
             }
             Ok(all_batches)
         })
-        .unwrap()?;
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
         // Now merge all batch FSTs into one option
         self.merge_fsts(&batches)?;
@@ -1013,12 +1003,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
             // convert each line to str temporarily && cut off ">" char
             let line_str = std::str::from_utf8(&line[1..])?;
-            let label_line = match lines.next() {
-                None => {
-                    return Err(format!("error no label for node {line_str}").into());
-                }
-                Some(i) => i,
-            };
+            let label_line = lines.next().ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!("error no label for node {line_str}").into()
+            })?;
 
             let line_str = std::str::from_utf8(&line[1..line.len()])?;
             let node = line_str.split_whitespace().collect::<Vec<&str>>();
@@ -1069,7 +1056,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let shared_slice = SharedSlice::from_slice(input);
 
         let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-            let mut batches = Vec::new();
+            let mut thread_res = Vec::new();
             for i in 0..threads {
                 let mut cache = self.clone();
 
@@ -1081,46 +1068,40 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                     input_size,
                 );
 
-                batches.push(s.spawn(
+                thread_res.push(s.spawn(
                     move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
-                        let input = match shared_slice.slice(start, end) {
-                            Some(slice) => slice,
-                            None => {
-                                return Err("error occured while chunking input in slices".into());
-                            }
-                        };
+                        let input = shared_slice.slice(start, end).ok_or_else(
+                            || -> Box<dyn std::error::Error + Send + Sync> {
+                                "error occured while chunking input in slices".into()
+                            },
+                        )?;
 
-                        match cache.process_chunk(input, chunk_size, batch_num, batch_size, in_fst)
-                        {
-                            Ok(b) => Ok(b),
-                            Err(e) => Err(format!(
-                                "error occured while batching fst build in parallel: {e}"
-                            )
-                            .into()),
-                        }
+                        cache
+                            .process_chunk(input, chunk_size, batch_num, batch_size, in_fst)
+                            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                format!("error occured while batching fst build in parallel: {e}")
+                                    .into()
+                            })
                     },
                 ));
             }
 
-            let mut b = Vec::new();
-            for batch in batches {
-                match batch.join() {
-                    Ok(i) => match i {
-                        Ok(paths) => {
-                            for path in paths {
-                                b.push(path);
-                            }
-                        }
-                        Err(e) => return Err(format!("error is thread {e}").into()),
-                    },
-                    Err(e) => {
-                        return Err(format!("error is thread {:?}", e).into());
-                    }
-                }
+            let mut all_batches = Vec::new();
+            for (idx, handle) in thread_res.into_iter().enumerate() {
+                all_batches.extend(
+                    handle
+                        .join()
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("error joining thread {idx}: {:?}", e).into()
+                        })?
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("error in thread {idx}: {:?}", e).into()
+                        })?,
+                );
             }
-            Ok(b)
+            Ok(all_batches)
         })
-        .unwrap()?;
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
         // if graph cache was used to build a graph then the graph's fst
         //  holds kmer_filename open, hence, it must be removed so that the new fst may
@@ -1180,12 +1161,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             // convert each line to str temporarily && cut off ">" char
             let line_str = std::str::from_utf8(&line[1..])?;
 
-            let sequence_line = match lines.next() {
-                None => {
-                    return Err(format!("error no k-mer sequence for node {line_str}").into());
-                }
-                Some(i) => i,
-            };
+            let sequence_line = lines.next().ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!("error no k-mer sequence for node {line_str}").into()
+            })?;
 
             let line = std::str::from_utf8(&line[1..])?;
             let node = line.split_whitespace().collect::<Vec<&str>>();
@@ -1244,10 +1222,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         in_fst: Option<fn(usize) -> bool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let batching = batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b);
-        let in_fst = match in_fst {
-            Some(f) => f,
-            None => |_id: usize| -> bool { true },
-        };
+        let in_fst = in_fst.unwrap_or(|_id: usize| -> bool { true });
 
         // self.parallel_fst_from_ggcat_with_reader(path, batching, in_fst, get_physical())?;
         let input = Self::read_input_file(path)?;
@@ -1275,20 +1250,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 // write label
                 writeln!(self.kmer_file, "{}\t{}", node_id, label)?;
 
-                match self.index_file.write_all(self.graph_bytes.as_bytes()) {
-                    Ok(_) => self.index_bytes += 1,
-                    Err(e) => {
-                        return Err(format!("error writing index for {node_id}: {e}").into());
+                self.index_file.write_all(self.graph_bytes.as_bytes()).map_err(
+                    |e| -> Box<dyn std::error::Error> {
+                        format!("error writing index for {node_id}: {e}").into()
                     }
-                };
+                )?;
+                self.index_bytes += 1;
 
-                match self.graph_file.write_all(bytemuck::cast_slice(data)) {
-                    Ok(_) => {
-                        self.graph_bytes += data.len();
-                        Ok(())
+                self.graph_file.write_all(bytemuck::cast_slice(data)).map_err(
+                    |e| -> Box<dyn std::error::Error> {
+                        format!("error writing edges for {node_id}: {e}").into()
                     }
-                    Err(e) => Err(format!("error writing edges for {node_id}: {e}").into()),
-                }
+                )?;
+                self.graph_bytes += data.len();
+
+                Ok(())
             }
             false => Err(
                 format!("error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
@@ -1304,20 +1280,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let expected_id = self.index_bytes;
         match node_id == expected_id {
             true => {
-                match self.index_file.write_all(self.graph_bytes.as_bytes()) {
-                    Ok(_) => self.index_bytes += 1,
-                    Err(e) => {
-                        return Err(format!("error writing index for {node_id}: {e}").into());
+                self.index_file.write_all(self.graph_bytes.as_bytes()).map_err(
+                    |e| -> Box<dyn std::error::Error> {
+                        format!("error writing index for {node_id}: {e}").into()
                     }
-                };
+                )?;
+                self.index_bytes += 1;
 
-                match self.graph_file.write_all(bytemuck::cast_slice(data)) {
-                    Ok(_) => {
-                        self.graph_bytes += data.len();
-                        Ok(())
+
+                self.graph_file.write_all(bytemuck::cast_slice(data)).map_err(
+                    |e| -> Box<dyn std::error::Error> {
+                        format!("error writing edges for {node_id}: {e}").into()
                     }
-                    Err(e) => Err(format!("error writing edges for {node_id}: {e}").into()),
-                }
+                )?;
+                self.graph_bytes += data.len();
+                Ok(())
             }
             false => Err(format!(
                     "error nodes must be mem mapped in ascending order, (id: {node_id}, expected_id: {expected_id})"
@@ -1356,48 +1333,42 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             .create(false)
             .open(sorted_file)?;
         // As reandonly is false, no clones exist -> safe to take file ownership from Arc
-        let mut build = match MapBuilder::new(&*self.kmer_file) {
-            Ok(i) => i,
-            Err(e) => {
-                return Err(format!("error couldn't initialize builder: {e}").into());
-            }
-        };
+        let mut build =
+            MapBuilder::new(&*self.kmer_file).map_err(|e| -> Box<dyn std::error::Error> {
+                format!("error couldn't initialize builder: {e}").into()
+            })?;
 
         let mut reader = BufReader::new(sorted_file);
         let mut line = Vec::new();
 
         loop {
-            let () = match reader.read_until(b'\n', &mut line) {
-                Ok(i) => {
-                    if i == 0 {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    return Err(format!("error reading file: {e}").into());
-                }
-            };
+            if reader
+                .read_until(b'\n', &mut line)
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("error reading file: {e}").into()
+                })?
+                == 0
+            {
+                break;
+            }
+
             if let Ok(text) = std::str::from_utf8(&line) {
                 let mut parts = text.trim_end().split('\t');
                 if let (Some(id_value), Some(kmer)) = (parts.next(), parts.next()) {
                     let id = id_value.parse::<u64>()?;
-                    match build.insert(kmer, id) {
-                        Ok(i) => i,
-                        Err(e) => {
-                            return Err(format!(
-                                    "error couldn't insert kmer for node (id: {id_value} label: {kmer}): {e}"
-                                ).into());
-                        }
-                    };
+                    build.insert(kmer, id).map_err(|e| -> Box<dyn std::error::Error> {
+                        format!(
+                            "error couldn't insert kmer for node (id: {id_value} label: {kmer}): {e}"
+                            ).into()
+                    })?;
                 }
             }
             line.clear();
         }
 
-        match build.finish() {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("error couldn't finish fst build: {e}").into()),
-        }
+        build.finish().map_err(|e| -> Box<dyn std::error::Error> {
+            format!("error couldn't finish fst build: {e}").into()
+        })
     }
 
     /// Builds an fst for the [`GraphCache`] instance from an unsorted entries file[^1].
@@ -1578,26 +1549,24 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // complete index file
-        match self.index_file.write_all(self.graph_bytes.as_bytes()) {
-            Ok(_) => self.index_bytes += 1,
-            Err(e) => {
-                return Err(format!("error couldn't finish index: {e}").into());
-            }
-        };
+        self.index_file
+            .write_all(self.graph_bytes.as_bytes())
+            .map_err(|e| -> Box<dyn std::error::Error> {
+                format!("error couldn't finish index: {e}").into()
+            })?;
+        self.index_bytes += 1;
 
         if let Some(batch_size) = self.batch {
-            match self.build_fst_from_unsorted_file(batch_size) {
-                Ok(_) => {}
-                Err(e) => {
-                    return Err(format!(
-                        "error couldn't build fst from unsorted file in bacthes of 10'000: {e}"
-                    )
-                    .into());
-                }
-            };
+            self.build_fst_from_unsorted_file(batch_size).map_err(
+                |e| -> Box<dyn std::error::Error> {
+                    format!("error couldn't build fst from unsorted file in bacthes of {batch_size}: {e}")
+                        .into()
+                },
+            )?;
         } else {
             self.build_fst_from_sorted_file()?;
         }
+
         // make all files read-only and cleanup
         for file in [&self.index_file, &self.graph_file, &self.kmer_file] {
             let mut permissions = file.metadata()?.permissions();
@@ -1826,13 +1795,14 @@ where
     ///
     /// # Arguments
     ///
-    /// * `diffusion` --- the diffusion vector[^1].
-    /// * `target_size` --- the partition's target size[^2].
-    /// * `target_volume` --- the partition's target volume[^3].
+    /// * `diffusion` --- the diffusion vector[^1][^2].
+    /// * `target_size` --- the partition's target size[^3].
+    /// * `target_volume` --- the partition's target volume[^4].
     ///
     /// [^1]: diffusion vector entries must be of type `(node_id: usize, heat: f64)`.
-    /// [^2]: if `None` is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
-    /// [^3]: if `None` is provided defaults to `|E|`, effectively, the overall best partition by conducatance is returned independent on the number of edges in it.
+    /// [^2]: entries must be descendingly ordered by diffusion.
+    /// [^3]: if `None` is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
+    /// [^4]: if `None` is provided defaults to `|E|`, effectively, the overall best partition by conducatance is returned independent on the number of edges in it.
     pub fn sweep_cut_over_diffusion_vector_by_conductance(
         &self,
         diffusion: &mut [(usize, f64)],
@@ -1855,42 +1825,38 @@ where
         let mut best_width = 0usize;
 
         for (idx, (u, _)) in diffusion.iter().enumerate() {
-            let u_n = match self.neighbours(*u) {
-                Ok(u_n) => {
-                    vol_s = match vol_s.overflowing_add(u_n.remaining_neighbours()) {
-                        (r, false) => r,
-                        (_, true) => {
-                            return Err(format!(
-                                "error sweep cut overflow_add in vol_s at node {u}"
-                            )
-                            .into());
-                        }
-                    };
-                    vol_v_minus_s = match vol_v_minus_s.overflowing_sub(u_n.remaining_neighbours())
-                    {
-                        (r, false) => r,
-                        (_, true) => {
-                            return Err(format!(
-                                "error sweep cut overflow_add in vol_v_minus_s at node {u}"
-                            )
-                            .into());
-                        }
-                    };
-                    u_n
-                }
-                Err(e) => {
-                    return Err(format!("error sweep cut couldn't get {u} neighbours: {e}").into());
+            let u_n = self
+                .neighbours(*u)
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("error sweep cut couldn't get {u} neighbours: {e}").into()
+                })?;
+            let neighbour_count = u_n.remaining_neighbours();
+
+            vol_s = match vol_s.overflowing_add(neighbour_count) {
+                (r, false) => r,
+                (_, true) => {
+                    return Err(format!("error sweep cut overflow_add in vol_s at node {u}").into());
                 }
             };
-            match community.get(u) {
-                Some(_) => {
+
+            vol_v_minus_s = match vol_v_minus_s.overflowing_sub(neighbour_count) {
+                (r, false) => r,
+                (_, true) => {
                     return Err(format!(
-                        "error sweepcut diffusion vector: {u} is present multiple times"
+                        "error sweep cut overflow_add in vol_v_minus_s at node {u}"
                     )
                     .into());
                 }
-                None => community.insert(*u),
             };
+
+            if community.contains(u) {
+                return Err(
+                    format!("error sweepcut diffusion vector: {u} present multiple times").into(),
+                );
+            } else {
+                community.insert(*u);
+            }
+
             for v in u_n {
                 // if edge is (u, u) it doesn't influence delta(S)
                 if v.dest() == *u {
@@ -2106,13 +2072,10 @@ where
         }
 
         let mut kmer_stream = self.kmers.stream();
-        let id = match identifier {
-            Some(id) => id,
-            None => id_for_subgraph_export(
-                self.graph_id()?,
-                Some(self.clone().exports_fetch_increment()?),
-            )?,
-        };
+        let id = identifier.unwrap_or(id_for_subgraph_export(
+            self.graph_id()?,
+            Some(self.clone().exports_fetch_increment()?),
+        )?);
 
         // prepare files for subgraph
         let (edges_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
@@ -2334,9 +2297,11 @@ where
                 });
             }
         })
-        .unwrap();
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+
         er.flush()?;
         eo.flush()?;
+
         Ok((er, eo))
     }
 

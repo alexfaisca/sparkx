@@ -18,37 +18,35 @@ pub fn graph_id_from_cache_file_name(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let path = Path::new(cache_filename.as_str());
 
-    let file_name = match path.file_name() {
-        Some(i) => match i.to_str() {
-            Some(i) => i,
-            None => {
-                return Err("error invalid file path --- empty path".into());
-            }
-        },
-        None => {
-            return Err("error invalid file path --- path not found".into());
-        }
-    };
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error invalid file path --- path not found".into()
+        })?
+        .to_str()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error invalid file path --- empty path".into()
+        })?;
 
     // extract id from filename
-    let re = match Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).ok() {
-        Some(i) => i,
-        None => {
-            return Err("error analyzing file name (regex failed)".into());
-        }
-    };
-    let caps = match re.captures(file_name) {
-        Some(i) => i,
-        None => {
-            return Err("error capturing filnr name (regex captures failed: fail point 1)".into());
-        }
-    };
-    let id = match caps.get(1) {
-        Some(i) => i.as_str(),
-        None => {
-            return Err("error capturing filne name (regex capture failed: fail point 2)".into());
-        }
-    };
+    let re = Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).map_err(
+        |e| -> Box<dyn std::error::Error> {
+            format!("error analyzing file name (regex failed): {e}").into()
+        },
+    )?;
+
+    let caps = re
+        .captures(file_name)
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error capturing file name (regex captures failed: fail point 1)".into()
+        })?;
+
+    let id = caps
+        .get(1)
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error capturing file name (regex captures failed: fail point 2)".into()
+        })?
+        .as_str();
 
     Ok(id.to_string())
 }
@@ -59,39 +57,37 @@ fn graph_id_and_dir_from_cache_file_name(
 ) -> Result<(String, PathBuf), Box<dyn std::error::Error>> {
     let path = Path::new(cache_filename.as_str());
 
-    let file_name = match path.file_name() {
-        Some(i) => match i.to_str() {
-            Some(i) => i,
-            None => {
-                return Err("error invalid file path --- empty path".into());
-            }
-        },
-        None => {
-            return Err("error invalid file path --- path not found".into());
-        }
-    };
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error invalid file path --- path not found".into()
+        })?
+        .to_str()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error invalid file path --- empty path".into()
+        })?;
 
     let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
 
     // extract id from filename
-    let re = match Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).ok() {
-        Some(i) => i,
-        None => {
-            return Err("error analyzing file name (regex failed)".into());
-        }
-    };
-    let caps = match re.captures(file_name) {
-        Some(i) => i,
-        None => {
-            return Err("error capturing filnr name (regex captures failed: fail point 1)".into());
-        }
-    };
-    let id = match caps.get(1) {
-        Some(i) => i.as_str(),
-        None => {
-            return Err("error capturing filne name (regex capture failed: fail point 2)".into());
-        }
-    };
+    let re = Regex::new(r#"^(?:[a-zA-Z0-9_]+_)(\w+)(\.[a-zA-Z0-9]+$)"#).map_err(
+        |e| -> Box<dyn std::error::Error> {
+            format!("error analyzing file name (regex failed): {e}").into()
+        },
+    )?;
+
+    let caps = re
+        .captures(file_name)
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error capturing file name (regex captures failed: fail point 1)".into()
+        })?;
+
+    let id = caps
+        .get(1)
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            "error capturing file name (regex captures failed: fail point 2)".into()
+        })?
+        .as_str();
 
     Ok((id.to_string(), PathBuf::from(parent_dir)))
 }
@@ -129,18 +125,15 @@ pub fn id_for_subgraph_export(
 
 #[allow(dead_code)]
 pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
-    match glob((CACHE_DIR.to_string() + "/*.tmp").as_str()) {
-        Ok(entries) => {
-            for entry in entries {
-                match entry {
-                    Ok(path) => std::fs::remove_file(path)?,
-                    Err(e) => panic!("{}", e),
-                };
-            }
-            Ok(())
-        }
-        Err(e) => Err(format!("error cleaning up cache: {e}").into()),
+    let cache_entries = glob((CACHE_DIR.to_string() + "/*.tmp").as_str()).map_err(
+        |e| -> Box<dyn std::error::Error> { format!("error cleaning up cache: {e}").into() },
+    )?;
+    for entry in cache_entries {
+        std::fs::remove_file(entry.map_err(|_e| -> Box<dyn std::error::Error> {
+            format!("error cleaning up cache: {_e}").into()
+        })?)?;
     }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq)]

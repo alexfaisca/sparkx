@@ -229,47 +229,43 @@ fn parse_bytes_mmaped<
     // End of lookup test
     /* ********************************************************************************* */
     //
-
+    let mut i = 0;
+    while i < graph_mmaped.size() - 1 {
+        let time = Instant::now();
+        let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
+        let _ = hk_relax.compute()?;
+        println!("HKRelax {:?}", time.elapsed());
+        i += 12346;
+    }
     let time = Instant::now();
     let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     println!("found {} communities", _louvain.community_count());
     println!("partition modularity {} ", _louvain.partition_modularity());
     println!("louvain finished in {:?}", time.elapsed());
     println!();
-    //
-    // let time = Instant::now();
-    // let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    // println!("k-core liu et al {:?}", time.elapsed());
-    // println!();
-    //
-    // let time = Instant::now();
-    // let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
-    // println!("k-truss burkhardt et al {:?}", time.elapsed());
-    // println!();
-    //
-    // let time = Instant::now();
-    // let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    // println!("k-truss pkt {:?}", time.elapsed());
-    // println!();
-    // let time = Instant::now();
-    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    // println!("k-core batagelj zaversnik {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let hk_relax = HKRelax::new(
-    //     &graph_mmaped,
-    //     20.,
-    //     0.0001,
-    //     vec![64256],
-    //     Some(10_000),
-    //     Some(50_000),
-    // )?;
-    // let _ = hk_relax.compute()?;
-    // println!("HKRelax {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    // println!("found {} euler trails", _euler_trail.trail_number());
-    // println!("euler trail built {:?}", time.elapsed());
-    //
+
+    let time = Instant::now();
+    let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
+    println!();
+
+    let time = Instant::now();
+    let _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    println!("k-truss burkhardt et al {:?}", time.elapsed());
+    println!();
+
+    let time = Instant::now();
+    let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    println!("k-truss pkt {:?}", time.elapsed());
+    println!();
+    let time = Instant::now();
+    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    let time = Instant::now();
+    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
+
     // let time = Instant::now();
     // let _approx_dirichlet_hkpr =
     //     ApproxDirHKPR::new(&graph_mmaped, 0.008, 8, 100000, 4000000, 0.05)?;
@@ -280,9 +276,9 @@ fn parse_bytes_mmaped<
     //     .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
     // println!("graph even nodes {:?}", b);
 
-    // let time = Instant::now();
-    // let a = graph_mmaped.export_petgraph_stripped()?;
-    // println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
+    let time = Instant::now();
+    let a = graph_mmaped.export_petgraph_stripped()?;
+    println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
     // let time = Instant::now();
     // use rustworkx_core::centrality::betweenness_centrality;
     // println!(
