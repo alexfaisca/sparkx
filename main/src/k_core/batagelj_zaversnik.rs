@@ -43,9 +43,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KCoreBZ, None)?;
-        let k_cores =
-            SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
+        let output_fn = cache_file_name(graph.cache_fst_filename(), FileType::KCoreBZ(H::H), None)?;
+        let k_cores = SharedSliceMut::<u8>::abst_mem_mut(output_fn.clone(), graph.width(), true)?;
         let bz = Self { graph, k_cores };
         bz.compute(10)?;
         Ok(bz)
@@ -58,10 +57,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let node_count = self.graph.size() - 1;
 
         let template_fn = self.graph.cache_edges_filename();
-        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(0))?;
-        let n_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(2))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(3))?;
+        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ(H::H), Some(0))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ(H::H), Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ(H::H), Some(2))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ(H::H), Some(3))?;
 
         let degree = SharedSliceMut::<u8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
         let node = SharedSliceMut::<usize>::abst_mem_mut(n_fn, node_count, mmap > 1)?;

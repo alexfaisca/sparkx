@@ -51,7 +51,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let output_filename = cache_file_name(
             graph.cache_fst_filename(),
-            FileType::ClusteringCoefficient,
+            FileType::ClusteringCoefficient(H::H),
             None,
         )?;
         let local =
@@ -91,7 +91,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let template_fn = self.graph.cache_index_filename();
         let t_fn = cache_file_name(
             template_fn.clone(),
-            FileType::ClusteringCoefficient,
+            FileType::ClusteringCoefficient(H::H),
             Some(0),
         )?;
 

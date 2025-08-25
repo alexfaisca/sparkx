@@ -53,7 +53,11 @@ where
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_fn = cache_file_name(graph.cache_index_filename(), FileType::EulerPath, None)?;
+        let output_fn = cache_file_name(
+            graph.cache_index_filename(),
+            FileType::EulerPath(H::H),
+            None,
+        )?;
         let mut euler = AlgoHierholzer {
             graph,
             euler_trails: SharedSliceMut::<usize>::abst_mem_mut(output_fn, graph.width(), true)?,
@@ -80,8 +84,8 @@ where
         let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), self.graph.size());
 
         let template_fn = self.graph.cache_edges_filename();
-        let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp, Some(2))?;
+        let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp(H::H), Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp(H::H), Some(2))?;
 
         let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, node_count, mmap > 0)?;
         let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, node_count, mmap > 1)?;
@@ -275,7 +279,11 @@ where
         cycle_offsets: Vec<(usize, usize, usize)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-        let mmap_fn = cache_file_name(self.graph.cache_index_filename(), FileType::EulerTmp, None)?;
+        let mmap_fn = cache_file_name(
+            self.graph.cache_index_filename(),
+            FileType::EulerTmp(H::H),
+            None,
+        )?;
         let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<usize>(mmap_fn)?;
 
         cycle_offsets.iter().for_each(|(idx, begin, _)| {

@@ -47,10 +47,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename =
-            cache_file_name(graph.cache_fst_filename(), FileType::KCoreLEA, None)?;
-        let k_cores =
-            SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
+        let output_fn =
+            cache_file_name(graph.cache_fst_filename(), FileType::KCoreLEA(H::H), None)?;
+        let k_cores = SharedSliceMut::<u8>::abst_mem_mut(output_fn.clone(), graph.width(), true)?;
         let liu_et_al = Self { graph, k_cores };
         liu_et_al.compute(10)?;
         Ok(liu_et_al)
@@ -63,12 +62,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_edges_filename();
-        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(0))?;
-        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(5))?;
-        let a_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(2))?;
-        let f_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(3))?;
-        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(4))?;
+        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(0))?;
+        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(5))?;
+        let a_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(2))?;
+        let f_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(3))?;
+        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(4))?;
 
         let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
         let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, node_count, mmap > 3)?;

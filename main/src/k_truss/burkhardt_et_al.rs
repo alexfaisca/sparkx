@@ -46,10 +46,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename =
-            cache_file_name(graph.cache_fst_filename(), FileType::KTrussBEA, None)?;
-        let k_trusses =
-            SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
+        let output_fn =
+            cache_file_name(graph.cache_fst_filename(), FileType::KTrussBEA(H::H), None)?;
+        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(output_fn.clone(), graph.width(), true)?;
         let burkhardt_et_al = Self { graph, k_trusses };
         burkhardt_et_al.compute(10)?;
         Ok(burkhardt_et_al)
@@ -62,10 +61,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_index_filename();
-        let t_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(0))?;
-        let el_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(1))?;
-        let ei_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(2))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(3))?;
+        let t_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(0))?;
+        let el_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(1))?;
+        let ei_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(2))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(3))?;
 
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, edge_count, mmap > 0)?;
         let edge_list = SharedSliceMut::<usize>::abst_mem_mut(el_fn, edge_count, mmap > 1)?;

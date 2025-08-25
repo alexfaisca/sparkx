@@ -42,7 +42,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let out_fn = cache_file_name(graph.cache_fst_filename(), FileType::KTrussPKT, None)?;
+        let out_fn = cache_file_name(graph.cache_fst_filename(), FileType::KTrussPKT(H::H), None)?;
         let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(out_fn.clone(), graph.width(), true)?;
         let pkt = Self { graph, k_trusses };
         pkt.compute(10)?;
@@ -56,12 +56,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_fst_filename();
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(1))?;
-        let n_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(2))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(3))?;
-        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(4))?;
-        let in_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(5))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, None)?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(1))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(2))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(3))?;
+        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(4))?;
+        let in_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(5))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), None)?;
 
         let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, edge_count, mmap > 2)?;
         let next = SharedSliceMut::<usize>::abst_mem_mut(n_fn, edge_count, mmap > 2)?;
@@ -103,7 +103,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let template_fn = self.graph.cache_fst_filename();
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
         for i in 0..threads {
-            let x_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(8 + i))?;
+            let x_fn =
+                cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(8 + i))?;
             x.push(SharedSliceMut::<usize>::abst_mem_mut(
                 x_fn,
                 node_count,

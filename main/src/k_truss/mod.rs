@@ -11,7 +11,7 @@ mod _verify {
         generic_edge::{GenericEdge, GenericEdgeType},
         generic_memory_map::GraphMemoryMap,
         shared_slice::{AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut},
-        utils::{FileType, cache_file_name},
+        utils::{FileType, H, cache_file_name},
     };
 
     use crossbeam::thread;
@@ -52,7 +52,7 @@ mod _verify {
         let graph_ptr = SharedSlice::<Edge>::new(graph.edges_ptr(), edge_count);
 
         let support = SharedSliceMut::<AtomicU8>::abst_mem_mut(
-            cache_file_name("".to_string(), FileType::Test, None)?,
+            cache_file_name("".to_string(), FileType::Test(H::H), None)?,
             edge_count,
             true,
         )?;

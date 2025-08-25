@@ -9,7 +9,7 @@ mod _verify {
         generic_edge::{GenericEdge, GenericEdgeType},
         generic_memory_map::GraphMemoryMap,
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
-        utils::{FileType, cache_file_name},
+        utils::{FileType, H, cache_file_name},
     };
 
     #[allow(dead_code)]
@@ -52,7 +52,7 @@ mod _verify {
         }
 
         let edge_checker = SharedSliceMut::<bool>::abst_mem_mut(
-            cache_file_name("".to_string(), FileType::Test, None)?,
+            cache_file_name("".to_string(), FileType::Test(H::H), None)?,
             graph.width(),
             true,
         )?;

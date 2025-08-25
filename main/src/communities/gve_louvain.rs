@@ -83,7 +83,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let output_filename =
-            cache_file_name(graph.cache_fst_filename(), FileType::GVELouvain, None)?;
+            cache_file_name(graph.cache_fst_filename(), FileType::GVELouvain(H::H), None)?;
         let community =
             SharedSliceMut::<usize>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
         let mut gve_louvain = Self {
@@ -114,15 +114,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let node_count = self.graph.size() - 1;
 
         let template_fn = self.graph.cache_index_filename();
-        let k_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(0))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(1))?;
-        let gdi_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(2))?;
-        let gde_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(3))?;
-        let gddi_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(4))?;
-        let gdde_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(5))?;
-        let a_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(6))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(7))?;
-        let nc_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain, Some(8))?;
+        let k_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(0))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(1))?;
+        let gdi_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(2))?;
+        let gde_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(3))?;
+        let gddi_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(4))?;
+        let gdde_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(5))?;
+        let a_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(6))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(7))?;
+        let nc_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(8))?;
 
         let k = SharedSliceMut::<AtomicUsize>::abst_mem_mut(k_fn, node_count, mmap > 0)?;
         let sigma = SharedSliceMut::<AtomicUsize>::abst_mem_mut(s_fn, node_count, mmap > 0)?;

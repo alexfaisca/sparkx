@@ -3,7 +3,7 @@ use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
 };
 use crate::utils::{
-    CACHE_DIR, FileType, cache_file_name, cache_file_name_from_id, cleanup_cache,
+    CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id, cleanup_cache,
     graph_id_from_cache_file_name, id_for_subgraph_export,
 };
 
@@ -67,12 +67,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         Ok((
             match target_type {
-                FileType::Edges => cache_file_name_from_id(FileType::Edges, id.clone(), None),
-                FileType::Index => cache_file_name_from_id(FileType::Index, id.clone(), None),
-                FileType::Fst => cache_file_name_from_id(FileType::Fst, id.clone(), None),
-                FileType::KmerTmp => cache_file_name_from_id(FileType::KmerTmp, id.clone(), None),
-                FileType::KmerSortedTmp => {
-                    cache_file_name_from_id(FileType::KmerSortedTmp, id.clone(), None)
+                FileType::Edges(_) => {
+                    cache_file_name_from_id(FileType::Edges(H::H), id.clone(), None)
+                }
+                FileType::Index(H::H) => {
+                    cache_file_name_from_id(FileType::Index(H::H), id.clone(), None)
+                }
+                FileType::Fst(H::H) => {
+                    cache_file_name_from_id(FileType::Fst(H::H), id.clone(), None)
+                }
+                FileType::KmerTmp(H::H) => {
+                    cache_file_name_from_id(FileType::KmerTmp(H::H), id.clone(), None)
+                }
+                FileType::KmerSortedTmp(H::H) => {
+                    cache_file_name_from_id(FileType::KmerSortedTmp(H::H), id.clone(), None)
                 }
                 _ => {
                     return Err(format!(
@@ -252,11 +260,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         let (graph_filename, id) =
-            Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges)?;
+            Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges(H::H))?;
         let (index_filename, id) =
-            Self::init_cache_file_from_id_or_random(Some(id), FileType::Index)?;
+            Self::init_cache_file_from_id_or_random(Some(id), FileType::Index(H::H))?;
         let (kmer_filename, _) =
-            Self::init_cache_file_from_id_or_random(Some(id), FileType::KmerTmp)?;
+            Self::init_cache_file_from_id_or_random(Some(id), FileType::KmerTmp(H::H))?;
 
         let graph_file = Arc::new(
             OpenOptions::new()
@@ -323,9 +331,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
-        let graph_filename = cache_file_name(filename.clone(), FileType::Edges, None)?;
-        let index_filename = cache_file_name(filename.clone(), FileType::Index, None)?;
-        let kmer_filename = cache_file_name(filename.clone(), FileType::Fst, None)?;
+        let graph_filename = cache_file_name(filename.clone(), FileType::Edges(H::H), None)?;
+        let index_filename = cache_file_name(filename.clone(), FileType::Index(H::H), None)?;
+        let kmer_filename = cache_file_name(filename.clone(), FileType::Fst(H::H), None)?;
 
         let graph_file = Arc::new(
             OpenOptions::new()
@@ -516,10 +524,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         let (nr, _nc, _nnz_declared) = Self::parse_mtx_header(path.clone())?;
 
-        let (edge_fn, id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges)?;
-        let (index_fn, _id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Index)?;
-        let offset_fn = cache_file_name(edge_fn.clone(), FileType::EulerTmp, Some(20))?;
-        let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, nr + 1, true)?;
+        let (e_fn, id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges(H::H))?;
+        let (i_fn, _id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Index(H::H))?;
+        let offset_fn = cache_file_name(e_fn.clone(), FileType::EulerTmp(H::H), Some(20))?;
+        let mut index = SharedSliceMut::<usize>::abst_mem_mut(i_fn, nr + 1, true)?;
         let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(offset_fn, nr, true)?;
 
         // accumulate node degrees on index
@@ -530,7 +538,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 *index.get_mut(u) += 1;
             })?;
         }
-        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edge_fn.clone(), edge_count, true)?;
+        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(e_fn.clone(), edge_count, true)?;
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
@@ -560,7 +568,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         edges.flush()?;
         index.flush()?;
-        Self::open(edge_fn.clone(), batch)
+        Self::open(e_fn.clone(), batch)
     }
 
     fn parse_mtx_header<P: AsRef<Path>>(path: P) -> Result<MTXHeader, Box<dyn std::error::Error>> {
@@ -1299,9 +1307,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     fn build_fst_from_sorted_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Build finite state tranducer for k-mer to node id
-        let fst_filename = cache_file_name(self.kmer_filename.clone(), FileType::Fst, None)?;
-        let sorted_file =
-            cache_file_name(self.kmer_filename.clone(), FileType::KmerSortedTmp, None)?;
+        let fst_filename = cache_file_name(self.kmer_filename.clone(), FileType::Fst(H::H), None)?;
+        let sorted_file = cache_file_name(
+            self.kmer_filename.clone(),
+            FileType::KmerSortedTmp(H::H),
+            None,
+        )?;
 
         Self::external_sort_by_content(self.kmer_filename.as_str(), sorted_file.as_str())?;
 
@@ -1427,7 +1438,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch.sort_by(|a, b| a.0.cmp(&b.0));
         let tempfst_fn = cache_file_name(
             self.kmer_filename.clone(),
-            FileType::KmerSortedTmp,
+            FileType::KmerSortedTmp(H::H),
             Some(batch_num),
         )?;
 
@@ -1455,7 +1466,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch.sort_by(|a, b| a.0.cmp(b.0));
         let tempfst_fn = cache_file_name(
             self.kmer_filename.clone(),
-            FileType::KmerSortedTmp,
+            FileType::KmerSortedTmp(H::H),
             Some(batch_num),
         )?;
 
@@ -1476,7 +1487,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Merge multiple FST batch files into a final FST.
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
         // open output FST file for writing
-        let out_fn = cache_file_name(self.kmer_filename.clone(), FileType::Fst, None)?;
+        let out_fn = cache_file_name(self.kmer_filename.clone(), FileType::Fst(H::H), None)?;
         let out = Arc::new(
             OpenOptions::new()
                 .create(true)
@@ -2072,15 +2083,15 @@ where
         // prepare files for subgraph
         let (edges_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             Some(id),
-            FileType::Edges,
+            FileType::Edges(H::H),
         )?;
         let (index_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             Some(id),
-            FileType::Index,
+            FileType::Index(H::H),
         )?;
         let (kmers_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             Some(id),
-            FileType::Fst,
+            FileType::Fst(H::H),
         )?;
         let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edges_fn, curr_edge_count, true)?;
         let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, curr_node_index + 1, true)?;
@@ -2191,8 +2202,8 @@ where
         let node_count = self.size() - 1;
 
         let template_fn = self.graph_cache.graph_filename.clone();
-        let er_fn = cache_file_name(template_fn.clone(), FileType::EdgeReciprocal, None)?;
-        let eo_fn = cache_file_name(template_fn.clone(), FileType::EdgeOver, None)?;
+        let er_fn = cache_file_name(template_fn.clone(), FileType::EdgeReciprocal(H::H), None)?;
+        let eo_fn = cache_file_name(template_fn.clone(), FileType::EdgeOver(H::H), None)?;
 
         let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(er_fn, edge_count, true)?;
         let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, node_count, true)?;
@@ -2301,7 +2312,7 @@ where
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let fn_template = self.graph_cache.graph_filename.clone();
-        let er_fn = cache_file_name(fn_template.clone(), FileType::EdgeReciprocal, None)?;
+        let er_fn = cache_file_name(fn_template.clone(), FileType::EdgeReciprocal(H::H), None)?;
         let dud = Vec::new();
         let er = match OpenOptions::new().read(true).open(er_fn.as_str()) {
             Ok(i) => SharedSlice::<usize>::abstract_mem(
@@ -2335,7 +2346,7 @@ where
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let fn_template = self.graph_cache.graph_filename.clone();
-        let eo_fn = cache_file_name(fn_template.clone(), FileType::EdgeOver, None)?;
+        let eo_fn = cache_file_name(fn_template.clone(), FileType::EdgeOver(H::H), None)?;
         let dud = Vec::new();
         let eo = match OpenOptions::new().read(true).open(eo_fn.as_str()) {
             Ok(i) => SharedSlice::<usize>::abstract_mem(

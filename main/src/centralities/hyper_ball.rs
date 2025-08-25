@@ -74,15 +74,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     fn init_cache(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
-        let c_fn = cache_file_name(graph.cache_fst_filename(), FileType::HyperBall, None)?;
+        let c_fn = cache_file_name(graph.cache_fst_filename(), FileType::HyperBall(H::H), None)?;
         let d_fn = cache_file_name(
             graph.cache_fst_filename(),
-            FileType::HyperBallDistances,
+            FileType::HyperBallDistances(H::H),
             None,
         )?;
         let i_fn = cache_file_name(
             graph.cache_fst_filename(),
-            FileType::HyperBallInvDistances,
+            FileType::HyperBallInvDistances(H::H),
             None,
         )?;
         let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
@@ -103,42 +103,42 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         match centrality {
             Centrality::HYPERBALL => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallHarmonicCentrality,
+                FileType::HyperBallHarmonicCentrality(H::H),
                 Some(0),
             )?),
             Centrality::CLOSENESS => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallClosenessCentrality,
+                FileType::HyperBallClosenessCentrality(H::H),
                 Some(0),
             )?),
             Centrality::NCLOSENESS => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallClosenessCentrality,
+                FileType::HyperBallClosenessCentrality(H::H),
                 Some(1),
             )?),
             Centrality::NCCLOSENESS => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallClosenessCentrality,
+                FileType::HyperBallClosenessCentrality(H::H),
                 Some(2),
             )?),
             Centrality::HARMONIC => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallHarmonicCentrality,
+                FileType::HyperBallHarmonicCentrality(H::H),
                 Some(0),
             )?),
             Centrality::NHARMONIC => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallHarmonicCentrality,
+                FileType::HyperBallHarmonicCentrality(H::H),
                 Some(1),
             )?),
             Centrality::NCHARMONIC => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallHarmonicCentrality,
+                FileType::HyperBallHarmonicCentrality(H::H),
                 Some(1),
             )?),
             Centrality::LIN => Ok(cache_file_name(
                 template_fn,
-                FileType::HyperBallLinCentrality,
+                FileType::HyperBallLinCentrality(H::H),
                 None,
             )?),
         }

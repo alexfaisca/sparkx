@@ -1,7 +1,7 @@
 use crate::{
     generic_edge::{TinyEdgeType, TinyLabelStandardEdge},
     generic_memory_map::GraphCache,
-    utils::{FileType, cache_file_name_from_id},
+    utils::{FileType, H, cache_file_name_from_id},
 };
 #[allow(unused_imports)]
 use crate::{
@@ -49,7 +49,7 @@ fn cache_file_for(graph_path: &Path) -> Result<String, Box<dyn std::error::Error
             .into()
         })?;
     Ok(cache_file_name_from_id(
-        FileType::Edges,
+        FileType::Edges(H::H),
         id_from_filename(filename)?,
         None,
     ))

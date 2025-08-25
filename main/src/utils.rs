@@ -101,7 +101,7 @@ pub fn cache_file_name(
     sequence_number: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     #[cfg(test)]
-    if target_type == FileType::Test {
+    if target_type == FileType::Test(H::H) {
         return Ok(CACHE_DIR.to_string()
             + file_name_from_id_and_sequence_for_type(
                 target_type,
@@ -139,38 +139,48 @@ pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Hides file types from users.
+///
+/// Short for "Hidden".
+#[derive(Debug, PartialEq)]
+pub(crate) enum H {
+    H,
+}
+
 #[derive(Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum FileType {
-    Edges,
-    Index,
-    Fst,
-    EulerPath,
-    EulerTmp,
-    KmerTmp,
-    KmerSortedTmp,
-    KCoreBZ,
-    KCoreLEA,
-    KTrussBEA,
-    KTrussPKT,
-    ClusteringCoefficient,
-    EdgeReciprocal,
-    EdgeOver,
-    HyperBall,
-    HyperBallDistances,
-    HyperBallInvDistances,
-    HyperBallClosenessCentrality,
-    HyperBallHarmonicCentrality,
-    HyperBallLinCentrality,
-    GVELouvain,
+    /// Only member visible to users
+    General,
+    Edges(H),
+    Index(H),
+    Fst(H),
+    EulerPath(H),
+    EulerTmp(H),
+    KmerTmp(H),
+    KmerSortedTmp(H),
+    KCoreBZ(H),
+    KCoreLEA(H),
+    KTrussBEA(H),
+    KTrussPKT(H),
+    ClusteringCoefficient(H),
+    EdgeReciprocal(H),
+    EdgeOver(H),
+    HyperBall(H),
+    HyperBallDistances(H),
+    HyperBallInvDistances(H),
+    HyperBallClosenessCentrality(H),
+    HyperBallHarmonicCentrality(H),
+    HyperBallLinCentrality(H),
+    GVELouvain(H),
     #[cfg(test)]
-    ExactClosenessCentrality,
+    ExactClosenessCentrality(H),
     #[cfg(test)]
-    ExactHarmonicCentrality,
+    ExactHarmonicCentrality(H),
     #[cfg(test)]
-    ExactLinCentrality,
+    ExactLinCentrality(H),
     #[cfg(test)]
-    Test,
+    Test(H),
 }
 
 pub fn cache_file_name_from_id(
@@ -188,79 +198,83 @@ fn file_name_from_id_and_sequence_for_type(
     sequence_number: Option<usize>,
 ) -> String {
     match target_type {
-        FileType::Edges => format!("{}_{}.{}", "edges", id, "mmap"),
-        FileType::Index => format!("{}_{}.{}", "index", id, "mmap"),
-        FileType::Fst => format!("{}_{}.{}", "fst", id, "fst"),
-        FileType::EulerTmp => match sequence_number {
+        FileType::General => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "miscelanious", i, id, "tmp"),
+            None => format!("{}_{}.{}", "miscelanious", id, "mmap"),
+        },
+        FileType::Edges(_) => format!("{}_{}.{}", "edges", id, "mmap"),
+        FileType::Index(_) => format!("{}_{}.{}", "index", id, "mmap"),
+        FileType::Fst(_) => format!("{}_{}.{}", "fst", id, "fst"),
+        FileType::EulerTmp(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "eulertmp", id, "tmp"),
         },
-        FileType::EulerPath => match sequence_number {
+        FileType::EulerPath(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
             None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
         },
-        FileType::KmerTmp => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
-        FileType::KmerSortedTmp => match sequence_number {
+        FileType::KmerTmp(_) => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
+        FileType::KmerSortedTmp(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
             None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
         },
-        FileType::KCoreBZ => match sequence_number {
+        FileType::KCoreBZ(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kcorebz_tmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "kcoresbz", id, "mmap"),
         },
-        FileType::KCoreLEA => match sequence_number {
+        FileType::KCoreLEA(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kcorelea_tmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "kcoreslea", id, "mmap"),
         },
-        FileType::KTrussBEA => match sequence_number {
+        FileType::KTrussBEA(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "ktrussbea_tmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "ktrussbea", id, "mmap"),
         },
-        FileType::KTrussPKT => match sequence_number {
+        FileType::KTrussPKT(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "ktrusspkt_tmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "ktrusspkt", id, "mmap"),
         },
-        FileType::ClusteringCoefficient => match sequence_number {
+        FileType::ClusteringCoefficient(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "clusteringcoefficienttmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "clusteringcoefficient", id, "mmap"),
         },
-        FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
-        FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
-        FileType::HyperBall => match sequence_number {
+        FileType::EdgeReciprocal(_) => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
+        FileType::EdgeOver(_) => format!("{}_{}.{}", "edge_over", id, "mmap"),
+        FileType::HyperBall(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "hyperball", i, id, "tmp"),
             None => format!("{}_{}.{}", "hyperball", id, "mmap"),
         },
-        FileType::HyperBallDistances => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
-        FileType::HyperBallInvDistances => {
+        FileType::HyperBallDistances(_) => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
+        FileType::HyperBallInvDistances(_) => {
             format!("{}_{}.{}", "hyperball_inv_distances", id, "mmap")
         }
-        FileType::HyperBallClosenessCentrality => {
+        FileType::HyperBallClosenessCentrality(_) => {
             format!("{}_{}.{}", "hyperball_closeness", id, "mmap")
         }
-        FileType::HyperBallHarmonicCentrality => {
+        FileType::HyperBallHarmonicCentrality(_) => {
             format!("{}_{}.{}", "hyperball_harmonic", id, "mmap")
         }
-        FileType::HyperBallLinCentrality => {
+        FileType::HyperBallLinCentrality(_) => {
             format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
         }
-        FileType::GVELouvain => match sequence_number {
+        FileType::GVELouvain(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "louvaintmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "louvain", id, "mmap"),
         },
         #[cfg(test)]
-        FileType::ExactClosenessCentrality => {
+        FileType::ExactClosenessCentrality(_) => {
             format!("{}_{}.{}", "exact_closeness_centarlity", id, "mmap")
         }
         #[cfg(test)]
-        FileType::ExactHarmonicCentrality => {
+        FileType::ExactHarmonicCentrality(_) => {
             format!("{}_{}.{}", "exact_harmonic_centarlity", id, "mmap")
         }
         #[cfg(test)]
-        FileType::ExactLinCentrality => {
+        FileType::ExactLinCentrality(_) => {
             format!("{}_{}.{}", "exact_lin_centarlity", id, "mmap")
         }
         #[cfg(test)]
-        FileType::Test => {
+        FileType::Test(_) => {
             let random_id = rand::random::<u128>().to_string();
             format!("{}_{}.{}", "test", random_id, "tmp")
         }
@@ -270,35 +284,36 @@ fn file_name_from_id_and_sequence_for_type(
 impl std::fmt::Display for FileType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            FileType::Edges => "Edges",
-            FileType::Index => "Index",
-            FileType::Fst => "Fst",
-            FileType::EulerPath => "EulerPath",
-            FileType::EulerTmp => "EulerTmp",
-            FileType::KmerTmp => "KmerTmp",
-            FileType::KmerSortedTmp => "KmerSortedTmp",
-            FileType::KCoreBZ => "KCoreBatageljZaversnik",
-            FileType::KCoreLEA => "KCoreLiuEtAl",
-            FileType::KTrussBEA => "KTrussBurkhardtEtAl",
-            FileType::KTrussPKT => "KTrussPKT",
-            FileType::ClusteringCoefficient => "ClusteringCoefficient",
-            FileType::EdgeReciprocal => "EdgeReciprocal",
-            FileType::EdgeOver => "EdgeOver",
-            FileType::HyperBall => "HyperBall",
-            FileType::HyperBallDistances => "HyperBallDistances",
-            FileType::HyperBallInvDistances => "HyperBallInverseDistances",
-            FileType::HyperBallClosenessCentrality => "HyperBallClosenessCentrality",
-            FileType::HyperBallHarmonicCentrality => "HyperBallHarmonicCentrality",
-            FileType::HyperBallLinCentrality => "HyperBallLinCentrality",
-            FileType::GVELouvain => "Louvain",
+            FileType::General => "Miscelanious",
+            FileType::Edges(_) => "Edges",
+            FileType::Index(_) => "Index",
+            FileType::Fst(_) => "Fst",
+            FileType::EulerPath(_) => "EulerPath",
+            FileType::EulerTmp(_) => "EulerTmp",
+            FileType::KmerTmp(_) => "KmerTmp",
+            FileType::KmerSortedTmp(_) => "KmerSortedTmp",
+            FileType::KCoreBZ(_) => "KCoreBatageljZaversnik",
+            FileType::KCoreLEA(_) => "KCoreLiuEtAl",
+            FileType::KTrussBEA(_) => "KTrussBurkhardtEtAl",
+            FileType::KTrussPKT(_) => "KTrussPKT",
+            FileType::ClusteringCoefficient(_) => "ClusteringCoefficient",
+            FileType::EdgeReciprocal(_) => "EdgeReciprocal",
+            FileType::EdgeOver(_) => "EdgeOver",
+            FileType::HyperBall(_) => "HyperBall",
+            FileType::HyperBallDistances(_) => "HyperBallDistances",
+            FileType::HyperBallInvDistances(_) => "HyperBallInverseDistances",
+            FileType::HyperBallClosenessCentrality(_) => "HyperBallClosenessCentrality",
+            FileType::HyperBallHarmonicCentrality(_) => "HyperBallHarmonicCentrality",
+            FileType::HyperBallLinCentrality(_) => "HyperBallLinCentrality",
+            FileType::GVELouvain(_) => "Louvain",
             #[cfg(test)]
-            FileType::ExactClosenessCentrality => "ExactClosenessCentrality",
+            FileType::ExactClosenessCentrality(_) => "ExactClosenessCentrality",
             #[cfg(test)]
-            FileType::ExactHarmonicCentrality => "ExactHarmonicCentrality",
+            FileType::ExactHarmonicCentrality(_) => "ExactHarmonicCentrality",
             #[cfg(test)]
-            FileType::ExactLinCentrality => "ExactLinCentrality",
+            FileType::ExactLinCentrality(_) => "ExactLinCentrality",
             #[cfg(test)]
-            FileType::Test => "Test",
+            FileType::Test(_) => "Test",
         };
         write!(f, "{}", s)
     }
