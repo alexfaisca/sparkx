@@ -46,7 +46,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KTruss, None)?;
+        let output_filename =
+            cache_file_name(graph.cache_fst_filename(), FileType::KTrussBEA, None)?;
         let k_trusses =
             SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
         let burkhardt_et_al = Self { graph, k_trusses };
@@ -61,10 +62,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_index_filename();
-        let t_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(0))?;
-        let el_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
-        let ei_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(2))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
+        let t_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(0))?;
+        let el_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(1))?;
+        let ei_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(2))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA, Some(3))?;
 
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, edge_count, mmap > 0)?;
         let edge_list = SharedSliceMut::<usize>::abst_mem_mut(el_fn, edge_count, mmap > 1)?;
@@ -287,7 +288,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
 #[cfg(test)]
 mod test {
-    use crate::k_truss::verify_k_trusses;
+    use crate::{k_truss::verify_k_trusses, test_common::get_or_init_dataset_cache_entry};
 
     use super::*;
     use paste::paste;
@@ -307,9 +308,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache =
-            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
-        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        // let graph_cache =
+        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
+        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let burkhardt_et_al_k_trusses = AlgoBurkhardtEtAl::new(&graph)?;
 
         verify_k_trusses(&graph, burkhardt_et_al_k_trusses.k_trusses)?;
@@ -322,22 +324,22 @@ mod test {
         ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
         ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
         ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
-        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
-        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
-        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
-        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
-        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
-        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
-        ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
-        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
-        ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
-        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
-        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
-        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
-        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        // ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        // ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        // ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        // ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
+        // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        // ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
+        // ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        // ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

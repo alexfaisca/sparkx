@@ -1,6 +1,8 @@
 #![feature(int_roundings)]
+#![feature(once_cell_try)]
+
 mod shared_slice;
-#[cfg(test)]
+#[cfg(any(test, bench))]
 mod test_common;
 mod utils;
 

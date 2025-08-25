@@ -12,11 +12,11 @@ mod _verify {
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
         utils::{FileType, cache_file_name},
     };
-    
+
     use crossbeam::thread;
     use num_cpus::get_physical;
     use std::sync::{Arc, Barrier};
-    
+
     #[allow(dead_code)]
     pub(super) fn verify_k_cores<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
         graph: &GraphMemoryMap<EdgeType, Edge>,
@@ -25,7 +25,7 @@ mod _verify {
         let threads = get_physical() * 2;
         let node_count = graph.size() - 1;
         let node_load = node_count.div_ceil(threads);
-    
+
         // coreness length == graph width
         if edge_coreness.len() != graph.width() {
             return Err(format!(
@@ -38,7 +38,7 @@ mod _verify {
         if graph.width() == 0 {
             return Ok(());
         }
-    
+
         let e_coreness = edge_coreness.shared_slice();
         let node_coreness = SharedSliceMut::<u8>::abst_mem_mut(
             cache_file_name("".to_string(), FileType::Test, None)?,
@@ -46,18 +46,18 @@ mod _verify {
             true,
         )?;
         let mut n_coreness = node_coreness.shared_slice();
-    
+
         let synchronize = Arc::new(Barrier::new(threads));
-    
+
         thread::scope(
             |scope| -> Result<(), Box<dyn std::error::Error>> {
                 let mut res = vec![];
                 for tid in 0..threads {
                     let synchronize = synchronize.clone();
-    
+
                     let start = std::cmp::min(tid * node_load, node_count);
                     let end = std::cmp::min(start + node_load, node_count);
-    
+
                     res.push(scope.spawn(
                         move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             for u in start..end {
@@ -80,9 +80,9 @@ mod _verify {
                                 }
                                 *n_coreness.get_mut(u) = n_core;
                             }
-    
+
                             synchronize.wait();
-    
+
                             let mut higher_deg_than_core;
                             for u in start..end {
                                 higher_deg_than_core = 0;

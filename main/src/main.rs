@@ -18,6 +18,7 @@ use tool::k_truss::{burkhardt_et_al::*, clustering_coefficient::*, pkt::*};
 use tool::trails::hierholzer::*;
 
 use clap::Parser;
+#[allow(unused_imports)]
 use hyperloglog_rs::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::Display;
@@ -50,8 +51,8 @@ struct ProgramArgs {
     mmap: bool,
 
     /// program thread number, default is 1
-    #[arg(short, long, default_value_t = 1)]
-    threads: u8,
+    #[arg(short, long)]
+    threads: Option<u8>,
 
     /// enable verbose mode
     #[arg(short, long, default_value_t = false)]
@@ -148,7 +149,7 @@ fn mmapped_suite<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
 #[expect(dead_code)]
 fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     data_path: String,
-    threads: u8,
+    threads: Option<u8>,
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     let graph_cache: GraphCache<EdgeType, Edge> =
         GraphCache::<EdgeType, Edge>::open(data_path, None)?;
@@ -194,7 +195,7 @@ fn parse_bytes_mmaped<
     P: AsRef<Path> + Clone,
 >(
     path: P,
-    threads: u8,
+    threads: Option<u8>,
     id: Option<String>,
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
@@ -259,7 +260,11 @@ fn parse_bytes_mmaped<
         "graph transitivity {:?}",
         conductivity.get_graph_transitivity()
     );
-    println!("clustering coefficient {:?}", time.elapsed());
+    println!(
+        "average clustering coefficient {:?}",
+        conductivity.get_average_clustering_coefficient()
+    );
+    println!("clustering coefficient finished in {:?}", time.elapsed());
     println!();
 
     let time = Instant::now();

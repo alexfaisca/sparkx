@@ -5,11 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(not(test))]
+#[cfg(not(any(test, bench)))]
 pub static CACHE_DIR: &str = "./.cache/";
-#[cfg(test)]
+#[cfg(any(test, bench))]
 pub static CACHE_DIR: &str = "./.test_cache/";
-pub static TEMP_CACHE_DIR: &str = "./cache/tmp/";
 
 fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
@@ -150,8 +149,11 @@ pub enum FileType {
     EulerTmp,
     KmerTmp,
     KmerSortedTmp,
-    KCore,
-    KTruss,
+    KCoreBZ,
+    KCoreLEA,
+    KTrussBEA,
+    KTrussPKT,
+    ClusteringCoefficient,
     EdgeReciprocal,
     EdgeOver,
     HyperBall,
@@ -171,7 +173,16 @@ pub enum FileType {
     Test,
 }
 
-pub fn file_name_from_id_and_sequence_for_type(
+pub fn cache_file_name_from_id(
+    target_type: FileType,
+    id: String,
+    sequence_number: Option<usize>,
+) -> String {
+    CACHE_DIR.to_string()
+        + file_name_from_id_and_sequence_for_type(target_type, id, sequence_number).as_str()
+}
+
+fn file_name_from_id_and_sequence_for_type(
     target_type: FileType,
     id: String,
     sequence_number: Option<usize>,
@@ -193,13 +204,25 @@ pub fn file_name_from_id_and_sequence_for_type(
             Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
             None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
         },
-        FileType::KCore => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kcore_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kcores", id, "mmap"),
+        FileType::KCoreBZ => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "kcorebz_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "kcoresbz", id, "mmap"),
         },
-        FileType::KTruss => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "ktruss_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "ktruss", id, "mmap"),
+        FileType::KCoreLEA => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "kcorelea_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "kcoreslea", id, "mmap"),
+        },
+        FileType::KTrussBEA => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "ktrussbea_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "ktrussbea", id, "mmap"),
+        },
+        FileType::KTrussPKT => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "ktrusspkt_tmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "ktrusspkt", id, "mmap"),
+        },
+        FileType::ClusteringCoefficient => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "clusteringcoefficienttmp", i, id, "tmp"),
+            None => format!("{}_{}.{}", "clusteringcoefficient", id, "mmap"),
         },
         FileType::EdgeReciprocal => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
         FileType::EdgeOver => format!("{}_{}.{}", "edge_over", id, "mmap"),
@@ -254,8 +277,11 @@ impl std::fmt::Display for FileType {
             FileType::EulerTmp => "EulerTmp",
             FileType::KmerTmp => "KmerTmp",
             FileType::KmerSortedTmp => "KmerSortedTmp",
-            FileType::KCore => "KCore",
-            FileType::KTruss => "KTruss",
+            FileType::KCoreBZ => "KCoreBatageljZaversnik",
+            FileType::KCoreLEA => "KCoreLiuEtAl",
+            FileType::KTrussBEA => "KTrussBurkhardtEtAl",
+            FileType::KTrussPKT => "KTrussPKT",
+            FileType::ClusteringCoefficient => "ClusteringCoefficient",
             FileType::EdgeReciprocal => "EdgeReciprocal",
             FileType::EdgeOver => "EdgeOver",
             FileType::HyperBall => "HyperBall",

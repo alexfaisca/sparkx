@@ -3,13 +3,14 @@ use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
 };
 use crate::utils::{
-    CACHE_DIR, FileType, TEMP_CACHE_DIR, cache_file_name, cleanup_cache,
+    CACHE_DIR, FileType, cache_file_name, cache_file_name_from_id, cleanup_cache,
     graph_id_from_cache_file_name, id_for_subgraph_export,
 };
 
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
+use num_cpus::get_physical;
 use ordered_float::OrderedFloat;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
@@ -66,12 +67,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         Ok((
             match target_type {
-                FileType::Edges => format!("{}{}_{}.{}", CACHE_DIR, "edges", id, "mmap"),
-                FileType::Index => format!("{}{}_{}.{}", CACHE_DIR, "index", id, "mmap"),
-                FileType::Fst => format!("{}{}_{}.{}", CACHE_DIR, "fst", id, "fst"),
-                FileType::KmerTmp => format!("{}{}_{}.{}", CACHE_DIR, "kmertmpfile", id, "tmp"),
+                FileType::Edges => cache_file_name_from_id(FileType::Edges, id.clone(), None),
+                FileType::Index => cache_file_name_from_id(FileType::Index, id.clone(), None),
+                FileType::Fst => cache_file_name_from_id(FileType::Fst, id.clone(), None),
+                FileType::KmerTmp => cache_file_name_from_id(FileType::KmerTmp, id.clone(), None),
                 FileType::KmerSortedTmp => {
-                    format!("{}{}_{}.{}", CACHE_DIR, "kmersortedtmpfile", id, "tmp")
+                    cache_file_name_from_id(FileType::KmerSortedTmp, id.clone(), None)
                 }
                 _ => {
                     return Err(format!(
@@ -408,11 +409,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             fs::create_dir_all(CACHE_DIR)?;
         }
 
-        // make sure tmp directory exists, if not attempt to create it
-        if !Path::new(TEMP_CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
-
         // parse optional inputs && fallback to defaults for the Nones found
         // parse extension to decide on decoding
         let ext = path.as_ref().extension();
@@ -466,11 +462,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             fs::create_dir_all(CACHE_DIR)?;
         }
 
-        // make sure tmp directory exists, if not attempt to create it
-        if !Path::new(TEMP_CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
-
         // parse optional inputs && fallback to defaults for the Nones found
         let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
         let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
@@ -521,10 +512,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             fs::create_dir_all(CACHE_DIR)?;
         }
 
-        // make sure tmp directory exists, if not attempt to create it
-        if !Path::new(TEMP_CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
         let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
 
         let (nr, _nc, _nnz_declared) = Self::parse_mtx_header(path.clone())?;
@@ -1568,10 +1555,16 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // make all files read-only and cleanup
-        for file in [&self.index_file, &self.graph_file, &self.kmer_file] {
+        for file in [
+            &mut self.index_file,
+            &mut self.graph_file,
+            &mut self.kmer_file,
+        ] {
             let mut permissions = file.metadata()?.permissions();
             permissions.set_readonly(true);
             file.set_permissions(permissions)?;
+            // flush needed because in multithreaded accesses wihtout it memory is in undefined state
+            file.flush()?;
         }
         self.readonly = true;
         // cleanup_cache()
@@ -1639,9 +1632,10 @@ where
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn init(
         cache: GraphCache<EdgeType, Edge>,
-        thread_count: u8,
+        thread_count: Option<u8>,
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
         if cache.readonly {
+            let thread_count = thread_count.unwrap_or(get_physical() as u8 * 2).max(1);
             let mmap = unsafe { MmapOptions::new().map(&File::open(&cache.kmer_filename)?)? };
             let thread_count = thread_count.max(1);
             return Ok(GraphMemoryMap {
@@ -2122,7 +2116,7 @@ where
         }
         self.cleanup_cache()?;
         let cache: GraphCache<EdgeType, Edge> = GraphCache::open(kmers_fn, None)?;
-        GraphMemoryMap::init(cache, self.thread_count)
+        GraphMemoryMap::init(cache, Some(self.thread_count))
     }
 
     /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].

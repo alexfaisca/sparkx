@@ -528,6 +528,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 mod test {
     use hyperloglog_rs::prelude::*;
 
+    use crate::test_common::get_or_init_dataset_cache_entry;
+
     use super::*;
 
     fn mae(a: &[f64], b: &[f64]) -> f64 {
@@ -569,22 +571,15 @@ mod test {
         1.0 - (6.0 * ssd) / (n * (n * n - 1.0).max(1.0))
     }
 
-    // List of input graphs you want to test
-    const DATASETS: &[&str] = &[
-        "graphs/karate.mtx",
-        "graphs/dolphins.mtx",
-        "graphs/email.mtx",
-        // ...
-    ];
-
     #[test]
     fn validate_hyperball_harmonic() -> Result<(), Box<dyn std::error::Error>> {
         use rustworkx_core::centrality::closeness_centrality;
         let path = "../ggcat/graphs/random_graph_1_5.lz4";
 
-        let graph_cache =
-            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
-        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        // let graph_cache =
+        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
+        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
 
         let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&graph, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;

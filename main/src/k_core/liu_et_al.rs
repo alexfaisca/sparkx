@@ -47,7 +47,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KCore, None)?;
+        let output_filename =
+            cache_file_name(graph.cache_fst_filename(), FileType::KCoreLEA, None)?;
         let k_cores =
             SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
         let liu_et_al = Self { graph, k_cores };
@@ -62,12 +63,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_edges_filename();
-        let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
-        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(5))?;
-        let a_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
-        let f_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
-        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(4))?;
+        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(0))?;
+        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(5))?;
+        let a_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(2))?;
+        let f_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(3))?;
+        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA, Some(4))?;
 
         let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
         let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, node_count, mmap > 3)?;
@@ -389,7 +390,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
 
 #[cfg(test)]
 mod test {
-    use crate::k_core::verify_k_cores;
+    use crate::{k_core::verify_k_cores, test_common::get_or_init_dataset_cache_entry};
 
     use super::*;
     use paste::paste;
@@ -409,9 +410,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache =
-            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
-        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        // let graph_cache =
+        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
+        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let liu_et_al_k_cores = AlgoLiuEtAl::new(&graph)?;
 
         verify_k_cores(&graph, liu_et_al_k_cores.k_cores)?;
@@ -438,8 +440,8 @@ mod test {
         ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
         ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
         ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

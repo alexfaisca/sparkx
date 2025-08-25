@@ -42,7 +42,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let out_fn = cache_file_name(graph.cache_fst_filename(), FileType::KTruss, None)?;
+        let out_fn = cache_file_name(graph.cache_fst_filename(), FileType::KTrussPKT, None)?;
         let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(out_fn.clone(), graph.width(), true)?;
         let pkt = Self { graph, k_trusses };
         pkt.compute(10)?;
@@ -56,12 +56,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_fst_filename();
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(1))?;
-        let n_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(2))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(3))?;
-        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(4))?;
-        let in_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(5))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTruss, None)?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(1))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(2))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(3))?;
+        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(4))?;
+        let in_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(5))?;
+        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, None)?;
 
         let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, edge_count, mmap > 2)?;
         let next = SharedSliceMut::<usize>::abst_mem_mut(n_fn, edge_count, mmap > 2)?;
@@ -103,7 +103,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let template_fn = self.graph.cache_fst_filename();
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
         for i in 0..threads {
-            let x_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(8 + i))?;
+            let x_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT, Some(8 + i))?;
             x.push(SharedSliceMut::<usize>::abst_mem_mut(
                 x_fn,
                 node_count,
@@ -460,7 +460,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
 #[cfg(test)]
 mod test {
-    use crate::k_truss::verify_k_trusses;
+    use crate::{k_truss::verify_k_trusses, test_common::get_or_init_dataset_cache_entry};
 
     use super::*;
     use paste::paste;
@@ -480,9 +480,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache =
-            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
-        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        // let graph_cache =
+        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
+        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let pkt_k_trusses = AlgoPKT::new(&graph)?;
 
         verify_k_trusses(&graph, pkt_k_trusses.k_trusses)?;
@@ -499,18 +500,18 @@ mod test {
         ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
         ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
         ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
-        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
-        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
-        ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
-        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
-        ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
-        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
-        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
-        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
-        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
+        // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        // ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
+        // ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        // ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

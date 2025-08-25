@@ -49,7 +49,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KTruss, None)?;
+        let output_filename = cache_file_name(
+            graph.cache_fst_filename(),
+            FileType::ClusteringCoefficient,
+            None,
+        )?;
         let local =
             SharedSliceMut::<f64>::abst_mem_mut(output_filename.clone(), graph.size() - 1, true)?;
         let mut clustering_coefficient = Self {
@@ -85,7 +89,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let edge_count = self.graph.width();
 
         let template_fn = self.graph.cache_index_filename();
-        let t_fn = cache_file_name(template_fn.clone(), FileType::KTruss, Some(0))?;
+        let t_fn = cache_file_name(
+            template_fn.clone(),
+            FileType::ClusteringCoefficient,
+            Some(0),
+        )?;
 
         let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, edge_count, mmap > 0)?;
 

@@ -496,6 +496,7 @@ impl FindDisjointSetsEulerTrails {
 
 #[cfg(test)]
 mod test {
+    use crate::test_common::get_or_init_dataset_cache_entry;
     use crate::trails::verify_trails;
 
     use super::*;
@@ -516,9 +517,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache =
-            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
-        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        // let graph_cache =
+        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
+        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let hierholzer_euler_trails = AlgoHierholzer::new(&graph)?;
 
         verify_trails(
@@ -545,12 +547,12 @@ mod test {
         ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
         ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
         ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
-        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
-        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
-        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
-        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        // ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

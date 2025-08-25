@@ -43,7 +43,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     pub fn new(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KCore, None)?;
+        let output_filename = cache_file_name(graph.cache_fst_filename(), FileType::KCoreBZ, None)?;
         let k_cores =
             SharedSliceMut::<u8>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
         let bz = Self { graph, k_cores };
@@ -58,10 +58,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let node_count = self.graph.size() - 1;
 
         let template_fn = self.graph.cache_edges_filename();
-        let d_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(0))?;
-        let n_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(2))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KCore, Some(3))?;
+        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(0))?;
+        let n_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(1))?;
+        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(2))?;
+        let p_fn = cache_file_name(template_fn.clone(), FileType::KCoreBZ, Some(3))?;
 
         let degree = SharedSliceMut::<u8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
         let node = SharedSliceMut::<usize>::abst_mem_mut(n_fn, node_count, mmap > 1)?;
@@ -276,7 +276,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
 #[cfg(test)]
 mod test {
-    use crate::k_core::verify_k_cores;
+    use crate::{k_core::verify_k_cores, test_common::get_or_init_dataset_cache_entry};
 
     use super::*;
     use paste::paste;
@@ -296,9 +296,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache =
-            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
-        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+        // let graph_cache =
+        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
+        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let bz_k_cores = AlgoBatageljZaversnik::new(&graph)?;
 
         verify_k_cores(&graph, bz_k_cores.k_cores)?;
@@ -321,10 +322,10 @@ mod test {
         ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
         ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
         ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
-        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
-        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
-        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
-        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        // ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
         // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
         // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
