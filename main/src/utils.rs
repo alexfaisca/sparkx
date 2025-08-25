@@ -5,9 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(not(any(test, bench)))]
+#[cfg(not(any(test, feature = "bench")))]
 pub static CACHE_DIR: &str = "./.cache/";
-#[cfg(any(test, bench))]
+#[cfg(any(test, feature = "bench"))]
 pub static CACHE_DIR: &str = "./.test_cache/";
 
 fn _type_of<T>(_: T) -> &'static str {

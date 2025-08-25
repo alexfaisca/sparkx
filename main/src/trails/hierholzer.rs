@@ -274,7 +274,6 @@ where
         &mut self,
         cycle_offsets: Vec<(usize, usize, usize)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let time = Instant::now();
         let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
         let mmap_fn = cache_file_name(self.graph.cache_index_filename(), FileType::EulerTmp, None)?;
         let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<usize>(mmap_fn)?;
@@ -344,7 +343,6 @@ where
             }
         }
 
-        let euler_time = Instant::now();
         let mut keys_by_trail_size: Vec<(usize, usize)> =
             output_len.values().map(|&(a, b)| (a, b)).collect();
         keys_by_trail_size.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(*s));

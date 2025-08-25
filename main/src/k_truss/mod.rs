@@ -3,7 +3,7 @@ pub mod clustering_coefficient;
 pub mod pkt;
 
 #[cfg(test)]
-pub(self) use _verify::verify_k_trusses;
+use _verify::verify_k_trusses;
 
 #[cfg(test)]
 mod _verify {

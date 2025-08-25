@@ -1,7 +1,7 @@
 pub mod hierholzer;
 
 #[cfg(test)]
-pub(self) use _verify::verify_trails;
+use _verify::verify_trails;
 
 #[cfg(test)]
 mod _verify {

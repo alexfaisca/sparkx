@@ -2,7 +2,7 @@
 #![feature(once_cell_try)]
 
 mod shared_slice;
-#[cfg(any(test, bench))]
+#[cfg(any(test, feature = "bench"))]
 mod test_common;
 mod utils;
 

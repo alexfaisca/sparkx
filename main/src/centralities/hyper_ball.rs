@@ -13,7 +13,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-type ProceduralMemoryHB<P: WordType<B>, const B: usize> = (
+type ProceduralMemoryHB<P, const B: usize> = (
     AbstractedProceduralMemoryMut<HyperLogLog<P, B>>,
     AbstractedProceduralMemoryMut<f64>,
     AbstractedProceduralMemoryMut<f64>,

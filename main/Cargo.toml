@@ -3,8 +3,15 @@ name = "tool"
 version = "0.1.0"
 edition = "2024"
 
-[alias]
-t = "test -- --test-threads=1"
+[features]
+# no extra dependencies, just a switch you to pass on to `cargo`
+bench = []
+
+# [[bench]]
+# name = "bench"
+# # criterion requires this
+# harness = false
+# required-features = ["bench"]
 
 [dependencies]
 graph_derive = { path = "../macros" }

@@ -2,7 +2,7 @@ pub mod batagelj_zaversnik;
 pub mod liu_et_al;
 
 #[cfg(test)]
-pub(self) use _verify::verify_k_cores;
+use _verify::verify_k_cores;
 
 #[cfg(test)]
 mod _verify {
