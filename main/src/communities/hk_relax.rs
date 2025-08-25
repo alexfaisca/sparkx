@@ -192,7 +192,7 @@ where
     ///
     /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
     /// * `t` --- diffusion temperature parameter.
-    /// * `eps`` --- diffusion ε (eps) error parameter.
+    /// * `eps` --- diffusion ε (eps) error parameter.
     /// * `seed` --- seed nodes' ids.
     /// * `target_size` --- partition's target node number.
     /// * `target_volume` --- partition's target edge number.
