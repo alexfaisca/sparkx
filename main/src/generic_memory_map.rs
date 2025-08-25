@@ -1849,12 +1849,10 @@ where
                 }
             };
 
-            if community.contains(u) {
+            if !community.insert(*u) {
                 return Err(
                     format!("error sweepcut diffusion vector: {u} present multiple times").into(),
                 );
-            } else {
-                community.insert(*u);
             }
 
             for v in u_n {

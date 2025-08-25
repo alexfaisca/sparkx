@@ -3,6 +3,9 @@ name = "tool"
 version = "0.1.0"
 edition = "2024"
 
+[alias]
+t = "test -- --test-threads=1"
+
 [dependencies]
 graph_derive = { path = "../macros" }
 bytemuck = { version = "1.23.0", features = ["derive"] }
@@ -27,3 +30,4 @@ sys-info = "0.9.1"
 hyperloglog-rs = "0.1.56"
 atomic_float = "1.1.0"
 paste = "1.0.15"
+sha2 = "0.10.9"

@@ -1,5 +1,7 @@
 #![feature(int_roundings)]
 mod shared_slice;
+#[cfg(test)]
+mod test_common;
 mod utils;
 
 pub mod centralities;

@@ -167,7 +167,7 @@ impl<T> SharedSlice<T> {
         self.len == 0
     }
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
-        if start >= self.len {
+        if start > self.len {
             return None;
         }
         let end = if end > self.len { self.len } else { end };
@@ -276,6 +276,9 @@ impl<T> SharedSliceMut<T> {
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         assert!(start <= end && end <= self.len);
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
+    }
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
     pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
         assert!(start <= end && end <= self.len);

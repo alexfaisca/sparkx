@@ -1,5 +1,7 @@
 */target/
 */cache/
+*/.cache/
+*/.test_cache/
 /thesis_template
 /test
 /proteic_dbgs

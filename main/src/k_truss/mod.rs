@@ -1,4 +1,5 @@
 pub mod burkhardt_et_al;
+pub mod clustering_coefficient;
 pub mod pkt;
 
 #[cfg(test)]

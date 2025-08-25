@@ -327,6 +327,17 @@ mod test {
         ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
         ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
         ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
+        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
+        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

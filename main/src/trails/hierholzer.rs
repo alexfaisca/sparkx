@@ -217,6 +217,16 @@ where
         self.trail_index.len()
     }
 
+    /// Returns the number of (strongly[^1]) connected components on the [`GraphMemoryMap`] instance.
+    ///
+    /// [^1]: Given the topologic properties of de Bruijn graphs, the number of strongly connected
+    /// components always equals the number of weakly connected components.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn count_connected_components(&self) -> usize {
+        self.trail_number()
+    }
+
     /// Returns the starting index of a given euler trail.
     ///
     /// # Arguments
@@ -411,15 +421,15 @@ where
             }
             self.euler_trails.flush_async()?;
         }
-        println!(
-            "euler write {:?} (written {:?} num trails {:?}) {:?} (written - num trails {:?})",
-            euler_time.elapsed(),
-            total,
-            keys_by_trail_size.len(),
-            self.graph.width(),
-            total - keys_by_trail_size.len()
-        );
-        println!("euler trails merge {:?}", time.elapsed());
+        // println!(
+        //     "euler write {:?} (written {:?} num trails {:?}) {:?} (written - num trails {:?})",
+        //     euler_time.elapsed(),
+        //     total,
+        //     keys_by_trail_size.len(),
+        //     self.graph.width(),
+        //     total - keys_by_trail_size.len()
+        // );
+        // println!("euler trails merge {:?}", time.elapsed());
 
         Ok(())
     }
@@ -486,7 +496,7 @@ impl FindDisjointSetsEulerTrails {
 
 #[cfg(test)]
 mod test {
-    use crate::trails::verify_euler_trails;
+    use crate::trails::verify_trails;
 
     use super::*;
     use paste::paste;
@@ -511,7 +521,7 @@ mod test {
         let graph = GraphMemoryMap::init(graph_cache, 16)?;
         let hierholzer_euler_trails = AlgoHierholzer::new(&graph)?;
 
-        verify_euler_trails(
+        verify_trails(
             &graph,
             hierholzer_euler_trails.euler_trails,
             hierholzer_euler_trails.trail_index,
@@ -530,6 +540,17 @@ mod test {
         ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
         ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
         ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
+        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
+        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

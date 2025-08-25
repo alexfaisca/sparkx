@@ -4,6 +4,8 @@ use crate::shared_slice::*;
 use crate::utils::*;
 
 use crossbeam::thread;
+use hyperloglog_rs::prelude::Precision8;
+use hyperloglog_rs::prelude::WordType;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use num_cpus::get_physical;
 use std::sync::{
@@ -11,10 +13,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-type ProceduralMemoryHB = (
-    AbstractedProceduralMemoryMut<
-        hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>,
-    >,
+type ProceduralMemoryHB<P: WordType<B>, const B: usize> = (
+    AbstractedProceduralMemoryMut<HyperLogLog<P, B>>,
     AbstractedProceduralMemoryMut<f64>,
     AbstractedProceduralMemoryMut<f64>,
 );
@@ -40,13 +40,17 @@ enum Centrality {
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct HyperBallInner<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct HyperBallInner<
+    'a,
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
+    P: WordType<B> = Precision8,
+    const B: usize = 6,
+> {
     /// Graph for which node/edge coreness is computed.
     graph: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing each node's *HyperLogLog++* counter.
-    counters: AbstractedProceduralMemoryMut<
-        hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>,
-    >,
+    counters: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
     /// Memmapped slice containing each node's distance accumulator.
     distances: AbstractedProceduralMemoryMut<f64>,
     /// Memmapped slice containing each node's inverse distance accumulator.
@@ -58,8 +62,8 @@ pub struct HyperBallInner<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeT
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    HyperBallInner<'a, EdgeType, Edge>
+impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>, const B: usize>
+    HyperBallInner<'a, EdgeType, Edge, P, B>
 {
     const DEAFULT_PRECISION: u8 = 8;
     const MIN_PRECISION: u8 = 4;
@@ -69,7 +73,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
     fn init_cache(
         graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<ProceduralMemoryHB, Box<dyn std::error::Error>> {
+    ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
         let c_fn = cache_file_name(graph.cache_fst_filename(), FileType::HyperBall, None)?;
         let d_fn = cache_file_name(
             graph.cache_fst_filename(),
@@ -81,9 +85,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             FileType::HyperBallInvDistances,
             None,
         )?;
-        let counters = SharedSliceMut::<
-            hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>,
-        >::abst_mem_mut(c_fn, graph.size() - 1, true)?;
+        let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
+            c_fn,
+            graph.size() - 1,
+            true,
+        )?;
         let distances = SharedSliceMut::<f64>::abst_mem_mut(d_fn, graph.size() - 1, true)?;
         let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(i_fn, graph.size() - 1, true)?;
 
@@ -172,10 +178,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(graph)?;
         // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
         (0..node_count).for_each(|u| {
-            *counters.get_mut(u) = hyperloglog_rs::prelude::HyperLogLog::<
-                hyperloglog_rs::prelude::Precision6,
-                8,
-            >::default();
+            *counters.get_mut(u) = hyperloglog_rs::prelude::HyperLogLog::<P, B>::default();
             counters.get_mut(u).insert(u);
             *distances.get_mut(u) = 0f64;
             *inverse_distances.get_mut(u) = 0f64;
@@ -205,11 +208,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             Centrality::HYPERBALL,
         )?;
         let mut swap =
-            SharedSliceMut::<HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>>::abst_mem_mut(
-                s_fn,
-                self.graph.size() - 1,
-                true,
-            )?;
+            SharedSliceMut::<HyperLogLog<P, B>>::abst_mem_mut(s_fn, self.graph.size() - 1, true)?;
 
         let mut counters = self.counters.shared_slice();
         let mut counters = counters.mut_slice(0, self.graph.size() - 1).ok_or_else(
@@ -221,7 +220,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
         loop {
             for u in 0..self.graph.size() - 1 {
-                let mut a: HyperLogLog<hyperloglog_rs::prelude::Precision6, 8> = counters[u];
+                let mut a: HyperLogLog<P, B> = counters[u];
 
                 let prev_count = a.estimate_cardinality();
 
@@ -270,9 +269,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             self.graph.cache_fst_filename(),
             Centrality::HYPERBALL,
         )?;
-        let swap = SharedSliceMut::<
-            hyperloglog_rs::prelude::HyperLogLog<hyperloglog_rs::prelude::Precision6, 8>,
-        >::abst_mem_mut(s_fn, self.graph.size() - 1, true)?;
+        let swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
+            s_fn,
+            self.graph.size() - 1,
+            true,
+        )?;
 
         let counters = self.counters.shared_slice();
         let swap = swap.shared_slice();
@@ -296,12 +297,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                         move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             loop {
                                 {
-                                    // println!("HyperBall tid {tid} iteration {t_f64}");
+                                    println!("HyperBall tid {tid} iteration {t_f64}");
                                 }
 
                                 for u in begin..end {
-                                    let mut a: HyperLogLog<hyperloglog_rs::prelude::Precision6, 8> =
-                                        *counters.get_mut(u);
+                                    let mut a: HyperLogLog<P, B> = *counters.get_mut(u);
 
                                     let prev_count = a.estimate_cardinality();
 
@@ -521,5 +521,88 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         //     println!("{:?}\n centrality", s);
         // }
         Ok(mem)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use hyperloglog_rs::prelude::*;
+
+    use super::*;
+
+    fn mae(a: &[f64], b: &[f64]) -> f64 {
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / (a.len() as f64)
+    }
+    fn mape(a: &[f64], b: &[f64]) -> f64 {
+        let eps = 1e-12;
+        100.0
+            * a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs() / (y.abs().max(eps)))
+                .sum::<f64>()
+            / (a.len() as f64)
+    }
+
+    fn ranks(v: &[f64]) -> Vec<usize> {
+        // descending rank; stable
+        let mut idx: Vec<usize> = (0..v.len()).collect();
+        idx.sort_by(|&i, &j| v[j].partial_cmp(&v[i]).unwrap_or(std::cmp::Ordering::Equal));
+        let mut r = vec![0; v.len()];
+        for (rank, i) in idx.into_iter().enumerate() {
+            r[i] = rank;
+        }
+        r
+    }
+
+    fn spearman_rho(a: &[f64], b: &[f64]) -> f64 {
+        let ra = ranks(a);
+        let rb = ranks(b);
+        let n = a.len() as f64;
+        let ssd = ra
+            .iter()
+            .zip(rb.iter())
+            .map(|(x, y)| {
+                let d = (*x as f64) - (*y as f64);
+                d * d
+            })
+            .sum::<f64>();
+        1.0 - (6.0 * ssd) / (n * (n * n - 1.0).max(1.0))
+    }
+
+    // List of input graphs you want to test
+    const DATASETS: &[&str] = &[
+        "graphs/karate.mtx",
+        "graphs/dolphins.mtx",
+        "graphs/email.mtx",
+        // ...
+    ];
+
+    #[test]
+    fn validate_hyperball_harmonic() -> Result<(), Box<dyn std::error::Error>> {
+        use rustworkx_core::centrality::closeness_centrality;
+        let path = "../ggcat/graphs/random_graph_1_5.lz4";
+
+        let graph_cache =
+            GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+        let graph = GraphMemoryMap::init(graph_cache, 16)?;
+
+        let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&graph, None, None)?;
+        let approx = hyperball.compute_closeness_centrality(Some(false))?;
+        let graph_petgraph_export = graph.export_petgraph_stripped()?;
+        let exact = closeness_centrality(&graph_petgraph_export, false)
+            .iter()
+            .map(|opt| opt.unwrap_or(0.))
+            .collect::<Vec<f64>>();
+
+        // metrics
+        let e_mae = mae(approx.shared_slice().as_slice(), exact.as_slice());
+        let e_mape = mape(approx.shared_slice().as_slice(), exact.as_slice());
+        let rho = spearman_rho(approx.shared_slice().as_slice(), exact.as_slice());
+
+        eprintln!("dataset={path}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}");
+
+        // guardrails to fail regressions
+        assert!(rho > 0.95, "Spearman too low on {path}");
+        Ok(())
     }
 }

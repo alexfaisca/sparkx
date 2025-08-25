@@ -5,7 +5,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub static CACHE_DIR: &str = "./cache/";
+#[cfg(not(test))]
+pub static CACHE_DIR: &str = "./.cache/";
+#[cfg(test)]
+pub static CACHE_DIR: &str = "./.test_cache/";
 pub static TEMP_CACHE_DIR: &str = "./cache/tmp/";
 
 fn _type_of<T>(_: T) -> &'static str {
@@ -98,6 +101,7 @@ pub fn cache_file_name(
     target_type: FileType,
     sequence_number: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    #[cfg(test)]
     if target_type == FileType::Test {
         return Ok(CACHE_DIR.to_string()
             + file_name_from_id_and_sequence_for_type(
@@ -157,6 +161,13 @@ pub enum FileType {
     HyperBallHarmonicCentrality,
     HyperBallLinCentrality,
     GVELouvain,
+    #[cfg(test)]
+    ExactClosenessCentrality,
+    #[cfg(test)]
+    ExactHarmonicCentrality,
+    #[cfg(test)]
+    ExactLinCentrality,
+    #[cfg(test)]
     Test,
 }
 
@@ -213,6 +224,19 @@ pub fn file_name_from_id_and_sequence_for_type(
             Some(i) => format!("{}_{}_{}.{}", "louvaintmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "louvain", id, "mmap"),
         },
+        #[cfg(test)]
+        FileType::ExactClosenessCentrality => {
+            format!("{}_{}.{}", "exact_closeness_centarlity", id, "mmap")
+        }
+        #[cfg(test)]
+        FileType::ExactHarmonicCentrality => {
+            format!("{}_{}.{}", "exact_harmonic_centarlity", id, "mmap")
+        }
+        #[cfg(test)]
+        FileType::ExactLinCentrality => {
+            format!("{}_{}.{}", "exact_lin_centarlity", id, "mmap")
+        }
+        #[cfg(test)]
         FileType::Test => {
             let random_id = rand::random::<u128>().to_string();
             format!("{}_{}.{}", "test", random_id, "tmp")
@@ -241,6 +265,13 @@ impl std::fmt::Display for FileType {
             FileType::HyperBallHarmonicCentrality => "HyperBallHarmonicCentrality",
             FileType::HyperBallLinCentrality => "HyperBallLinCentrality",
             FileType::GVELouvain => "Louvain",
+            #[cfg(test)]
+            FileType::ExactClosenessCentrality => "ExactClosenessCentrality",
+            #[cfg(test)]
+            FileType::ExactHarmonicCentrality => "ExactHarmonicCentrality",
+            #[cfg(test)]
+            FileType::ExactLinCentrality => "ExactLinCentrality",
+            #[cfg(test)]
             FileType::Test => "Test",
         };
         write!(f, "{}", s)

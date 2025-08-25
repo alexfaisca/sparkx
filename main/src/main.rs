@@ -13,12 +13,12 @@ use tool::generic_memory_map::{GraphCache, GraphMemoryMap};
 #[allow(unused_imports)]
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
-use tool::k_truss::{burkhardt_et_al::*, pkt::*};
+use tool::k_truss::{burkhardt_et_al::*, clustering_coefficient::*, pkt::*};
 #[allow(unused_imports)]
 use tool::trails::hierholzer::*;
 
 use clap::Parser;
-use core::panic;
+use hyperloglog_rs::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::Display;
 use std::io::Write;
@@ -229,19 +229,37 @@ fn parse_bytes_mmaped<
     // End of lookup test
     /* ********************************************************************************* */
     //
-    let mut i = 0;
-    while i < graph_mmaped.size() - 1 {
-        let time = Instant::now();
-        let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
-        let _ = hk_relax.compute()?;
-        println!("HKRelax {:?}", time.elapsed());
-        i += 12346;
-    }
+
+    // let time = Instant::now();
+    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
+    // println!("hyperball {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyperball.compute_harmonic_centrality(None)?;
+    // println!("harmonic centrality {:?}", time.elapsed());
+    // println!();
+
+    // let mut i = 0;
+    // while i < graph_mmaped.size() - 1 {
+    //     let time = Instant::now();
+    //     let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
+    //     let _ = hk_relax.compute()?;
+    //     println!("HKRelax {:?}", time.elapsed());
+    //     i += 12346;
+    // }
     let time = Instant::now();
     let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     println!("found {} communities", _louvain.community_count());
     println!("partition modularity {} ", _louvain.partition_modularity());
     println!("louvain finished in {:?}", time.elapsed());
+    println!();
+
+    let time = Instant::now();
+    let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
+    println!(
+        "graph transitivity {:?}",
+        conductivity.get_graph_transitivity()
+    );
+    println!("clustering coefficient {:?}", time.elapsed());
     println!();
 
     let time = Instant::now();
@@ -254,17 +272,19 @@ fn parse_bytes_mmaped<
     println!("k-truss burkhardt et al {:?}", time.elapsed());
     println!();
 
-    let time = Instant::now();
-    let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    println!("k-truss pkt {:?}", time.elapsed());
-    println!();
-    let time = Instant::now();
-    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    println!("k-core batagelj zaversnik {:?}", time.elapsed());
-    let time = Instant::now();
-    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
+    graph_mmaped.cleanup_cache()?;
+
+    // let time = Instant::now();
+    // let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    // println!("k-truss pkt {:?}", time.elapsed());
+    // println!();
+    // let time = Instant::now();
+    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    // println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    // let time = Instant::now();
+    // let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    // println!("found {} euler trails", _euler_trail.trail_number());
+    // println!("euler trail built {:?}", time.elapsed());
 
     // let time = Instant::now();
     // let _approx_dirichlet_hkpr =
@@ -276,9 +296,9 @@ fn parse_bytes_mmaped<
     //     .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
     // println!("graph even nodes {:?}", b);
 
-    let time = Instant::now();
-    let a = graph_mmaped.export_petgraph_stripped()?;
-    println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
+    // let time = Instant::now();
+    // let a = graph_mmaped.export_petgraph_stripped()?;
+    // println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
     // let time = Instant::now();
     // use rustworkx_core::centrality::betweenness_centrality;
     // println!(

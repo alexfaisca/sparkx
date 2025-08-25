@@ -1,7 +1,7 @@
 pub mod hierholzer;
 
 #[cfg(test)]
-pub(self) use _verify::verify_euler_trails;
+pub(self) use _verify::verify_trails;
 
 #[cfg(test)]
 mod _verify {
@@ -13,7 +13,7 @@ mod _verify {
     };
 
     #[allow(dead_code)]
-    pub(super) fn verify_euler_trails<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
+    pub(super) fn verify_trails<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
         graph: &GraphMemoryMap<EdgeType, Edge>,
         euler_trails: AbstractedProceduralMemoryMut<usize>,
         euler_index: Vec<usize>,
