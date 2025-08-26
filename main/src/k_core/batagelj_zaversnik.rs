@@ -83,9 +83,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             return Ok(());
         }
 
-        let threads = self.g.thread_num().max(get_physical());
-        let thread_load = node_count.div_ceil(threads);
-
         let (degree, mut node, mut core, mut pos) = self.init_procedural_memory_bz(mmap)?;
         // compute out-degrees in parallel
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
@@ -94,14 +91,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // initialize degree and bins count vecs
         let mut bins: Vec<usize> = thread::scope(
             |scope| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
+                // initializations always uses two threads per core
+                let threads = self.g.thread_num().max(get_physical() * 2);
+                let node_load = node_count.div_ceil(threads);
+
                 let mut bins = vec![0usize; u8::MAX as usize];
                 let mut max_vecs = vec![];
 
                 for tid in 0..threads {
                     let mut deg_arr = degree.shared_slice();
 
-                    let start = std::cmp::min(tid * thread_load, node_count);
-                    let end = std::cmp::min(start + thread_load, node_count);
+                    let start = std::cmp::min(tid * node_load, node_count);
+                    let end = std::cmp::min(start + node_load, node_count);
 
                     max_vecs.push(scope.spawn(
                         move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
@@ -212,13 +213,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let out_slice = self.k_cores.shared_slice();
 
         thread::scope(|scope| {
+            // use at least two threads per core to get edgewise results
+            let threads = self.g.thread_num().max(get_physical() * 2);
+            let node_load = node_count.div_ceil(threads);
+
             let mut res = vec![];
+
             for tid in 0..threads {
                 let mut out_ptr = out_slice;
                 let core = core.shared_slice();
 
-                let start = std::cmp::min(tid * thread_load, node_count);
-                let end = std::cmp::min(start + thread_load, node_count);
+                let start = std::cmp::min(tid * node_load, node_count);
+                let end = std::cmp::min(start + node_load, node_count);
 
                 res.push(scope.spawn(move |_| -> Vec<usize> {
                     let mut res = vec![0usize; u8::MAX as usize];
@@ -264,6 +270,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
         // flush output to ensure all data is written to disk
         self.k_cores.flush_async()?;
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::KCoreBZ)?;
 
         Ok(())
     }

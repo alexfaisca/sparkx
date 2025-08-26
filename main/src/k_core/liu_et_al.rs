@@ -378,6 +378,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         // flush output to ensure all data is written to disk
         self.k_cores.flush_async()?;
 
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::KCoreLEA)?;
+
         Ok(())
     }
 }

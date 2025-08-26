@@ -38,7 +38,7 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 pub enum CacheFile {
     /// Only member visible to users
     General,
-    EulerPath,
+    EulerTrail,
     KCoreBZ,
     KCoreLEA,
     KTrussBEA,
@@ -102,49 +102,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    pub(self) fn build_cache_filename(
-        &self,
-        file_type: CacheFile,
-        sequence: Option<usize>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        let target_file_type = match file_type {
-            CacheFile::General => FileType::General,
-            CacheFile::EulerPath => FileType::EulerPath(H::H),
-            CacheFile::KCoreBZ => FileType::KCoreBZ(H::H),
-            CacheFile::KCoreLEA => FileType::KCoreLEA(H::H),
-            CacheFile::KTrussBEA => FileType::KTrussBEA(H::H),
-            CacheFile::KTrussPKT => FileType::KTrussPKT(H::H),
-            CacheFile::ClusteringCoefficient => FileType::ClusteringCoefficient(H::H),
-            CacheFile::EdgeReciprocal => FileType::EdgeReciprocal(H::H),
-            CacheFile::EdgeOver => FileType::EdgeOver(H::H),
-            CacheFile::HyperBall => FileType::HyperBall(H::H),
-            CacheFile::HyperBallDistances => FileType::HyperBallDistances(H::H),
-            CacheFile::HyperBallInvDistances => FileType::HyperBallInvDistances(H::H),
-            CacheFile::HyperBallClosenessCentrality => FileType::HyperBallClosenessCentrality(H::H),
-            CacheFile::HyperBallHarmonicCentrality => FileType::HyperBallHarmonicCentrality(H::H),
-            CacheFile::HyperBallLinCentrality => FileType::HyperBallLinCentrality(H::H),
-            CacheFile::GVELouvain => FileType::GVELouvain(H::H),
-        };
-        cache_file_name(&self.graph_filename, target_file_type, sequence)
-    }
-
     pub(self) fn init_cache_file_from_id_or_random(
         graph_id: &str,
         target_type: FileType,
+        seq: Option<usize>,
     ) -> Result<(String, String), Box<dyn std::error::Error>> {
         let id = id_from_filename(graph_id)?;
 
         Ok((
             match target_type {
-                FileType::Edges(_) => cache_file_name_from_id(FileType::Edges(H::H), &id, None),
-                FileType::Index(H::H) => cache_file_name_from_id(FileType::Index(H::H), &id, None),
-                FileType::Fst(H::H) => cache_file_name_from_id(FileType::Fst(H::H), &id, None),
-                FileType::KmerTmp(H::H) => {
-                    cache_file_name_from_id(FileType::KmerTmp(H::H), &id, None)
+                FileType::Edges(_) => cache_file_name_from_id(FileType::Edges(H::H), &id, seq),
+                FileType::Index(H::H) => cache_file_name_from_id(FileType::Index(H::H), &id, seq),
+                FileType::Metalabel(H::H) => {
+                    cache_file_name_from_id(FileType::Metalabel(H::H), &id, seq)
                 }
-                FileType::KmerSortedTmp(H::H) => {
-                    cache_file_name_from_id(FileType::KmerSortedTmp(H::H), &id, None)
-                }
+                FileType::Helper(H::H) => cache_file_name_from_id(FileType::Helper(H::H), &id, seq),
                 _ => {
                     return Err(format!(
                         "error unsupported file type for GraphCache: {target_type}"
@@ -156,10 +128,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         ))
     }
 
-    fn read_input_file<P: AsRef<Path> + Clone>(
-        path: P,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut reader = BufReader::new(File::open(path.clone())?);
+    fn read_input_file<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut reader = BufReader::new(File::open(path.as_ref())?);
         let ext = path.as_ref().extension();
         let mut contents = Vec::new();
 
@@ -322,11 +292,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         let (graph_filename, _) =
-            Self::init_cache_file_from_id_or_random(id, FileType::Edges(H::H))?;
+            Self::init_cache_file_from_id_or_random(id, FileType::Edges(H::H), None)?;
         let (index_filename, _) =
-            Self::init_cache_file_from_id_or_random(id, FileType::Index(H::H))?;
+            Self::init_cache_file_from_id_or_random(id, FileType::Index(H::H), None)?;
         let (metalabel_filename, _) =
-            Self::init_cache_file_from_id_or_random(id, FileType::KmerTmp(H::H))?;
+            Self::init_cache_file_from_id_or_random(id, FileType::Metalabel(H::H), Some(0))?;
 
         let graph_file = Arc::new(
             OpenOptions::new()
@@ -397,7 +367,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
         let graph_filename = cache_file_name(filename, FileType::Edges(H::H), None)?;
         let index_filename = cache_file_name(filename, FileType::Index(H::H), None)?;
-        let metalabel_filename = cache_file_name(filename, FileType::Fst(H::H), None)?;
+        let metalabel_filename = cache_file_name(filename, FileType::Metalabel(H::H), None)?;
 
         let graph_file = Arc::new(
             OpenOptions::new()
@@ -473,7 +443,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub fn from_file<P: AsRef<Path> + Clone>(
+    pub fn from_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
         batch: Option<usize>,
@@ -483,14 +453,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         // parse optional inputs && fallback to defaults for the Nones found
         // parse extension to decide on decoding
-        let ext = path.as_ref().extension();
+        let p = path.as_ref();
+        let ext = p.extension();
+
         if let Some(ext) = ext {
             match ext.to_str() {
-                Some(Self::EXT_COMPRESSED_LZ4) => {
-                    Ok(Self::from_ggcat_file(path, id, batch, in_fst)?)
-                }
-                Some(Self::EXT_PLAINTEXT) => Ok(Self::from_ggcat_file(path, id, batch, in_fst)?),
-                Some(Self::EXT_MTX) => Ok(Self::from_mtx_file(path, id, batch)?),
+                Some(Self::EXT_COMPRESSED_LZ4) => Ok(Self::from_ggcat_file(p, id, batch, in_fst)?),
+                Some(Self::EXT_PLAINTEXT) => Ok(Self::from_ggcat_file(p, id, batch, in_fst)?),
+                Some(Self::EXT_MTX) => Ok(Self::from_mtx_file(p, id, batch)?),
                 _ => Err(format!(
                     "error ubknown extension {:?}: must be of type .{}, .{} .{}",
                     ext,
@@ -523,7 +493,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [^5]: if `None` is provided defaults to **NOT** storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub fn from_ggcat_file<P: AsRef<Path> + Clone>(
+    pub fn from_ggcat_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
         batch: Option<usize>,
@@ -567,7 +537,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [^5]: if `None` is provided defaults to storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub fn from_mtx_file<P: AsRef<Path> + Clone>(
+    pub fn from_mtx_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
         batch: Option<usize>,
@@ -587,19 +557,18 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 .to_string(),
         );
 
-        let (nr, _nc, _nnz_declared) = Self::parse_mtx_header(path.clone())?;
+        let (nr, _, _) = Self::parse_mtx_header(path.as_ref())?;
 
-        let (e_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H))?;
-        let (i_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H))?;
-        // FIXME: create a FileType for helper vectors such as this one
-        let offsets_fn = cache_file_name(&e_fn, FileType::EulerPath(H::H), Some(20))?;
+        let (e_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
+        let (i_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
+        let offsets_fn = cache_file_name(&e_fn, FileType::Helper(H::H), Some(0))?;
         let mut index = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, nr + 1, true)?;
-        let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(&offsets_fn, nr, true)?;
+        let mut offsets = SharedSliceMut::<usize>::abst_mem_mut(&offsets_fn, nr, true)?;
 
         // accumulate node degrees on index
         let mut edge_count = 0;
         {
-            Self::parse_mtx_with(path.clone(), |u, _v, _w| {
+            Self::parse_mtx_with(path.as_ref(), |u, _v, _w| {
                 edge_count += 1;
                 *index.get_mut(u) += 1;
             })?;
@@ -625,20 +594,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // write edges
         let mut wrote = 0;
         {
-            Self::parse_mtx_with(path.clone(), |u, v, w| {
+            Self::parse_mtx_with(path.as_ref(), |u, v, w| {
                 wrote += 1;
-                *edges.get_mut(*index.get(u) + *index_offset.get(u)) = Edge::new(v, w);
-                *index_offset.get_mut(u) += 1;
+                *edges.get_mut(*index.get(u) + *offsets.get(u)) = Edge::new(v, w);
+                *offsets.get_mut(u) += 1;
             })?;
         }
 
         edges.flush()?;
         index.flush()?;
+
         Self::open(&e_fn, batch)
     }
 
     fn parse_mtx_header<P: AsRef<Path>>(path: P) -> Result<MTXHeader, Box<dyn std::error::Error>> {
-        let f = File::open(path)?;
+        let f = File::open(path.as_ref())?;
         let mut rdr = BufReader::new(f);
 
         // read and parse the header line
@@ -702,7 +672,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     where
         F: FnMut(usize, u64, u64),
     {
-        let f = File::open(path)?;
+        let f = File::open(path.as_ref())?;
         let mut rdr = BufReader::new(f);
 
         // read and parse the header line
@@ -915,7 +885,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(batches)
     }
 
-    fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path> + Clone>(
+    fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path>>(
         &mut self,
         file_path: P,
         batch_size: usize,
@@ -925,7 +895,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         if !self.readonly {
             return Err("error cache must be readonly to build fst in parallel".into());
         }
-        let file = File::open(file_path.clone())?;
+        let file = File::open(file_path.as_ref())?;
         let file_len = file.metadata()?.len(); // Get the size of the file
         let ext = file_path.as_ref().extension();
         if ext.is_none() {
@@ -943,7 +913,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let mut cache = self.clone();
                 let batch_num = Arc::clone(&batch_num);
 
-                let path = file_path.as_ref();
+                let file_path = file_path.as_ref();
                 let r = match ext {
                     Some(Self::EXT_COMPRESSED_LZ4) => 1,
                     Some(Self::EXT_PLAINTEXT) => 2,
@@ -958,7 +928,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
                 let handle = s.spawn(
                     move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
-                        let mut file = File::open(path)?; // Open the file separately in each thread
+                        let mut file = File::open(file_path)?; // Open the file separately in each thread
                         let mut reader = BufReader::new(&mut file);
                         reader.seek(SeekFrom::Start(start))?;
                         let mut input_chunk = reader.take(end - start);
@@ -1274,7 +1244,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [^4]: if `None` is provided defaults to storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path> + Clone>(
+    pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path>>(
         &mut self,
         path: P,
         batch: Option<usize>,
@@ -1371,16 +1341,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     fn build_fst_from_sorted_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Build finite state tranducer for k-mer to node id
-        let fst_filename = cache_file_name(&self.metalabel_filename, FileType::Fst(H::H), None)?;
-        let sorted_file = cache_file_name(
-            &self.metalabel_filename,
-            FileType::KmerSortedTmp(H::H),
-            None,
-        )?;
+        let fst_filename =
+            cache_file_name(&self.metalabel_filename, FileType::Metalabel(H::H), None)?;
+        let sorted_file =
+            cache_file_name(&self.metalabel_filename, FileType::Metalabel(H::H), Some(1))?;
 
-        Self::external_sort_by_content(self.metalabel_filename.as_str(), sorted_file.as_str())?;
+        Self::external_sort_by_content(&self.metalabel_filename, &sorted_file)?;
 
-        self.metalabel_file = match File::create(fst_filename.clone()) {
+        self.metalabel_file = match File::create(&fst_filename) {
             Ok(i) => {
                 self.metalabel_filename = fst_filename;
                 Arc::new(i)
@@ -1502,8 +1470,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch.sort_by(|a, b| a.0.cmp(&b.0));
         let tempfst_fn = cache_file_name(
             &self.metalabel_filename,
-            FileType::KmerSortedTmp(H::H),
-            Some(batch_num),
+            FileType::Metalabel(H::H),
+            Some(batch_num + 1),
         )?;
 
         let mut wtr = OpenOptions::new()
@@ -1530,8 +1498,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch.sort_by(|a, b| a.0.cmp(b.0));
         let tempfst_fn = cache_file_name(
             &self.metalabel_filename,
-            FileType::KmerSortedTmp(H::H),
-            Some(batch_num),
+            FileType::Metalabel(H::H),
+            Some(batch_num + 1),
         )?;
 
         let mut wtr = OpenOptions::new()
@@ -1551,7 +1519,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Merge multiple FST batch files into a final FST.
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
         // open output FST file for writing
-        let out_fn = cache_file_name(&self.metalabel_filename, FileType::Fst(H::H), None)?;
+        let out_fn = cache_file_name(&self.metalabel_filename, FileType::Metalabel(H::H), None)?;
         let out = Arc::new(
             OpenOptions::new()
                 .create(true)
@@ -1641,8 +1609,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             // flush needed because in multithreaded accesses wihtout it memory is in undefined state
             file.flush()?;
         }
+
+        // remove any tmp files that may have been used to build the metalabel fst
+        self.cleanup_cache_by_target(FileType::Metalabel(H::H))?;
+
         self.readonly = true;
-        // cleanup_cache()
+
         Ok(())
     }
 
@@ -1670,9 +1642,74 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         graph_id_from_cache_file_name(self.graph_filename.clone())
     }
 
-    /// Remove all of cache directory's `.tmp` files.
-    pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
-        cleanup_cache()
+    fn convert_cache_file(file_type: CacheFile) -> FileType {
+        match file_type {
+            CacheFile::General => FileType::General,
+            CacheFile::EulerTrail => FileType::EulerTrail(H::H),
+            CacheFile::KCoreBZ => FileType::KCoreBZ(H::H),
+            CacheFile::KCoreLEA => FileType::KCoreLEA(H::H),
+            CacheFile::KTrussBEA => FileType::KTrussBEA(H::H),
+            CacheFile::KTrussPKT => FileType::KTrussPKT(H::H),
+            CacheFile::ClusteringCoefficient => FileType::ClusteringCoefficient(H::H),
+            CacheFile::EdgeReciprocal => FileType::EdgeReciprocal(H::H),
+            CacheFile::EdgeOver => FileType::EdgeOver(H::H),
+            CacheFile::HyperBall => FileType::HyperBall(H::H),
+            CacheFile::HyperBallDistances => FileType::HyperBallDistances(H::H),
+            CacheFile::HyperBallInvDistances => FileType::HyperBallInvDistances(H::H),
+            CacheFile::HyperBallClosenessCentrality => FileType::HyperBallClosenessCentrality(H::H),
+            CacheFile::HyperBallHarmonicCentrality => FileType::HyperBallHarmonicCentrality(H::H),
+            CacheFile::HyperBallLinCentrality => FileType::HyperBallLinCentrality(H::H),
+            CacheFile::GVELouvain => FileType::GVELouvain(H::H),
+        }
+    }
+
+    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphCache`] instance.
+    ///
+    /// [`CacheFile`]: ./enum.CacheFile.html#
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    pub(self) fn build_cache_filename(
+        &self,
+        target: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        cache_file_name(&self.graph_filename, Self::convert_cache_file(target), seq)
+    }
+
+    /// Build a cached `.tmp` file of type [`FileType`]::Helper(_) for the [`GraphCache`] instance.
+    ///
+    /// [`FileType`]: ../utils/enum.FileType.html#
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    pub(self) fn build_helper_filename(
+        &self,
+        seq: usize,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        cache_file_name(&self.graph_filename, FileType::Helper(H::H), Some(seq))
+    }
+
+    /// Remove [`GraphCache`] instance's cached `.tmp` files of type [`FileType`]::Helper(_).
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`FileType`]: ../utils/enum.FileType.html#
+    pub(self) fn cleanup_helpers(&self) -> Result<(), Box<dyn std::error::Error>> {
+        cleanup_cache(&self.cache_id()?, FileType::Helper(H::H))
+    }
+
+    /// Remove [`GraphCache`] instance's cached `.tmp` files for a given [`FileType`].
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`FileType`]: ../utils/enum.FileType.html#
+    pub(self) fn cleanup_cache_by_target(
+        &self,
+        target: FileType,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        cleanup_cache(&self.cache_id()?, target)
+    }
+
+    /// Remove [`GraphCache`] instance's cached `.tmp` files for a given [`CacheFile`] in the cache directory.
+    ///
+    /// [`CacheFile`]: ./enum.CacheFile.html#
+    pub(self) fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
+        cleanup_cache(&self.cache_id()?, Self::convert_cache_file(target))
     }
 }
 
@@ -2154,19 +2191,24 @@ where
         let (e_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             &id,
             FileType::Edges(H::H),
+            None,
         )?;
         let (i_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             &id,
             FileType::Index(H::H),
+            None,
         )?;
         let (ml_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             &id,
-            FileType::Fst(H::H),
+            FileType::Metalabel(H::H),
+            None,
         )?;
 
         if node_count > 1 {
-            let hc_fn = CACHE_DIR.to_string() + "edge_count.tmp";
-            let hi_fn = CACHE_DIR.to_string() + "node_index.tmp";
+            // helper counter
+            let hc_fn = self.build_helper_filename(0)?;
+            // helper indexer
+            let hi_fn = self.build_helper_filename(1)?;
 
             // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
             let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(&hc_fn, node_count, true)?;
@@ -2246,7 +2288,7 @@ where
 
         // finalize by initialozing a GraphCache instance for the subgraph and building it
         let cache: GraphCache<EdgeType, Edge> = GraphCache::open(&ml_fn, None)?;
-        self.cleanup_cache()?;
+        self.cleanup_helpers()?;
         GraphMemoryMap::init(cache, Some(self.thread_count))
     }
 
@@ -2484,18 +2526,34 @@ where
         Ok(eo?)
     }
 
+    fn build_helper_filename(&self, seq: usize) -> Result<String, Box<dyn std::error::Error>> {
+        self.graph_cache.build_helper_filename(seq)
+    }
+
+    fn cleanup_helpers(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.graph_cache.cleanup_helpers()
+    }
+
+    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphMemoryMap`] instance.
+    ///
+    /// [`CacheFile`]: ./enum.CacheFile.html#
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     #[inline(always)]
     pub fn build_cache_filename(
         &self,
         file_type: CacheFile,
-        sequence: Option<usize>,
+        seq: Option<usize>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        self.graph_cache.build_cache_filename(file_type, sequence)
+        self.graph_cache.build_cache_filename(file_type, seq)
     }
 
+    /// Remove [`GraphMemoryMap`] instance's cached `.tmp` files for a given [`CacheFile`] in the cache directory.
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
+    /// [`CacheFile`]: ./enum.CacheFile.html#
     #[inline(always)]
-    pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.graph_cache.cleanup_cache()
+    pub fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
+        self.graph_cache.cleanup_cache(target)
     }
 }
 

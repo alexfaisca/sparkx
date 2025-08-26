@@ -8,7 +8,6 @@ use crossbeam::thread;
 use hyperloglog_rs::prelude::Precision8;
 use hyperloglog_rs::prelude::WordType;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
-use num_cpus::get_physical;
 use std::sync::{
     Arc, Barrier,
     atomic::{AtomicUsize, Ordering},
@@ -118,6 +117,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         };
 
         hyper_ball.compute()?;
+        hyper_ball.g.cleanup_cache(CacheFile::HyperBall)?;
 
         Ok(hyper_ball)
     }
@@ -203,7 +203,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 
     fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.g.size().map_or(0, |s| s);
-        let threads = self.g.thread_num().max(get_physical());
+        let threads = self.g.thread_num();
         let node_load = node_count.div_ceil(threads);
 
         let global_changed = Arc::new(AtomicUsize::new(0));

@@ -246,7 +246,7 @@ fn parse_bytes_mmaped<
         let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
         let _ = hk_relax.compute()?;
         println!("HKRelax {:?}", time.elapsed());
-        i += 12346;
+        i += 1234600;
     }
 
     let time = Instant::now();
@@ -279,8 +279,6 @@ fn parse_bytes_mmaped<
     println!("k-truss burkhardt et al {:?}", time.elapsed());
     println!();
 
-    graph_mmaped.cleanup_cache()?;
-
     let time = Instant::now();
     let _pkt = AlgoPKT::new(&graph_mmaped)?;
     println!("k-truss pkt {:?}", time.elapsed());
@@ -306,17 +304,16 @@ fn parse_bytes_mmaped<
     let b = graph_mmaped.apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes"))?;
     println!("graph even nodes {:?}", b);
 
-    let time = Instant::now();
-    println!("try export stripped");
-    let a = graph_mmaped.export_petgraph_stripped()?;
-    println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
-    let time = Instant::now();
-    use rustworkx_core::centrality::betweenness_centrality;
-    println!(
-        "rustworkx_core export {:?} {:?}",
-        betweenness_centrality(&a, false, true, 50),
-        time.elapsed()
-    );
+    // let time = Instant::now();
+    // let a = graph_mmaped.export_petgraph_stripped()?;
+    // println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
+    // let time = Instant::now();
+    // use rustworkx_core::centrality::betweenness_centrality;
+    // println!(
+    //     "rustworkx_core export {:?} {:?}",
+    //     betweenness_centrality(&a, false, true, 50),
+    //     time.elapsed()
+    // );
     Ok(graph_mmaped)
 }
 

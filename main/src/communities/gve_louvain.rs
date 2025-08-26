@@ -1,7 +1,6 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
-use crate::utils::*;
 
 use atomic_float::AtomicF64;
 use crossbeam::thread;
@@ -573,8 +572,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let node_count = self.g.size().map_or(0, |s| s);
         let edge_count = self.g.width();
 
-        let threads = self.g.thread_num().max(get_physical());
-        let node_load = node_count.div_ceil(threads);
+        let threads = self.g.thread_num();
 
         let (k, sigma, gdi, gde, gddi, gdde, processed, coms, helper) =
             self.init_procedural_memory_gve_louvain(mmap)?;
@@ -584,10 +582,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
-        println!("init");
         // initialize
         thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            // initializations always uses at least two threads per core
+            let threads = threads.max(get_physical());
+            let node_load = node_count.div_ceil(threads);
+
             let mut threads_res = vec![];
+
             for tid in 0..threads {
                 let processed = processed.shared_slice();
 
@@ -659,7 +661,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             Ok(())
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
-        println!("finish init");
 
         let mut tolerance = Self::INITIAL_TOLERANCE;
 
@@ -786,6 +787,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // compute partition modularity
         if m2 == 0. {
             self.modularity = 0.0;
+            self.g.cleanup_cache(CacheFile::GVELouvain)?;
             return Ok(());
         }
 
@@ -822,7 +824,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.modularity = partition_modularity;
         self.community.flush()?;
 
-        cleanup_cache()?;
+        self.g.cleanup_cache(CacheFile::GVELouvain)?;
 
         Ok(())
     }

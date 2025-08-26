@@ -4,6 +4,7 @@ use crate::shared_slice::*;
 
 use crossbeam::thread;
 use memmap2::{Mmap, MmapMut};
+use num_cpus::get_physical;
 use std::{
     collections::HashMap,
     fs::OpenOptions,
@@ -50,7 +51,7 @@ where
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
-        let out_fn = g.build_cache_filename(CacheFile::EulerPath, None)?;
+        let out_fn = g.build_cache_filename(CacheFile::EulerTrail, None)?;
         let mut euler = AlgoHierholzer {
             g,
             euler_trails: SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.width(), true)?,
@@ -71,23 +72,29 @@ where
         Box<dyn std::error::Error>,
     > {
         let node_count = self.g.size().map_or(0, |s| s);
-        let threads = self.g.thread_num();
-        let thread_load = node_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
 
-        let e_fn = self.g.build_cache_filename(CacheFile::EulerPath, Some(0))?;
-        let c_fn = self.g.build_cache_filename(CacheFile::EulerPath, Some(1))?;
+        let e_fn = self
+            .g
+            .build_cache_filename(CacheFile::EulerTrail, Some(0))?;
+        let c_fn = self
+            .g
+            .build_cache_filename(CacheFile::EulerTrail, Some(1))?;
 
         let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&e_fn, node_count, mmap > 0)?;
         let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(&c_fn, node_count, mmap > 1)?;
 
         thread::scope(|scope| {
+            // initializations always uses at least two threads per core
+            let threads = self.g.thread_num().max(get_physical() * 2);
+            let node_load = node_count.div_ceil(threads);
+
             for i in 0..threads {
                 let edges = edges.shared_slice();
                 let count = count.shared_slice();
-                let begin = std::cmp::min(thread_load * i, node_count);
-                let end = std::cmp::min(begin + thread_load, node_count);
+                let begin = std::cmp::min(i * node_load, node_count);
+                let end = std::cmp::min(begin + node_load, node_count);
 
                 scope.spawn(move |_| {
                     for k in begin..end {
@@ -204,6 +211,9 @@ where
 
         self.euler_trails.flush_async()?;
 
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::EulerTrail)?;
+
         println!("euler trails hierholzer's {:?}", time.elapsed());
         Ok(())
     }
@@ -271,7 +281,7 @@ where
         cycle_offsets: Vec<(usize, usize, usize)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-        let mmap_fn = self.g.build_cache_filename(CacheFile::EulerPath, None)?;
+        let mmap_fn = self.g.build_cache_filename(CacheFile::EulerTrail, None)?;
         let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<usize>(mmap_fn)?;
 
         cycle_offsets.iter().for_each(|(idx, begin, _)| {

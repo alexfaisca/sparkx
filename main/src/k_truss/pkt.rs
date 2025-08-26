@@ -84,9 +84,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let node_count = self.g.size().map_or(0, |s| s);
         let edge_count = self.g.width();
 
-        let threads = self.g.thread_num().max(get_physical());
+        let threads = self.g.thread_num();
         let edge_load = edge_count.div_ceil(threads);
-        let node_load = node_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
@@ -114,6 +113,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
         // ParTriangle-AM4
         thread::scope(|scope| {
+            // initializations always uses at least two threads per core
+            let threads = self.g.thread_num().max(get_physical() * 2);
+            let node_load = node_count.div_ceil(threads);
+            let edge_load = node_count.div_ceil(threads);
+
             for tid in 0..threads {
                 // eid is unnecessary as graph + index alwready do the job
                 let mut x = x[tid].shared_slice();
@@ -450,6 +454,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
             }
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::KTrussPKT)?;
 
         Ok(())
     }

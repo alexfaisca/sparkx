@@ -4,7 +4,6 @@ use crate::shared_slice::*;
 
 use atomic_float::AtomicF64;
 use crossbeam::thread;
-use num_cpus::get_physical;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
 use std::{
@@ -107,7 +106,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let node_count = self.g.size().map_or(0, |s| s);
         let edge_count = self.g.width();
 
-        let threads = self.g.thread_num().max(get_physical());
+        let threads = self.g.thread_num();
         let thread_load = node_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
@@ -226,6 +225,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.transitivity = total_triangles.load(Ordering::Relaxed) as f64
             / 2.
             / total_possible_triangles.load(Ordering::Relaxed);
+
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::ClusteringCoefficient)?;
 
         Ok(())
     }

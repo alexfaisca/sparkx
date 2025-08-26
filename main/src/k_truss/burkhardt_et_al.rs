@@ -84,9 +84,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let node_count = self.g.size().map_or(0, |s| s);
         let edge_count = self.g.width();
 
-        let threads = self.g.thread_num().max(get_physical());
-        let thread_load = node_count.div_ceil(threads);
-
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
@@ -98,11 +95,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let edge_reciprocal = self.g.get_edge_reciprocal()?;
         let edge_out = self.g.get_edge_dest_id_over_source()?;
 
-        // Thread syncronization
-        let synchronize = Arc::new(Barrier::new(threads));
-
         // Algorithm 1 - adjusted for directed scheme
         thread::scope(|scope| {
+            // initializations always uses at least two threads per core
+            let threads = self.g.thread_num().max(get_physical() * 2);
+            let node_load = node_count.div_ceil(threads);
+
+            // Thread syncronization
+            let synchronize = Arc::new(Barrier::new(threads));
+
             for tid in 0..threads {
                 let eo = edge_out.shared_slice();
                 let er = edge_reciprocal.shared_slice();
@@ -113,8 +114,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
                 let synchronize = Arc::clone(&synchronize);
 
-                let start = std::cmp::min(tid * thread_load, node_count);
-                let end = std::cmp::min(start + thread_load, node_count);
+                let start = std::cmp::min(tid * node_load, node_count);
+                let end = std::cmp::min(start + node_load, node_count);
 
                 scope.spawn(move |_| {
                     // initialize triangle_count with zeroes
@@ -276,6 +277,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             println!("k-trussness {:?}", test);
         }
         self.k_trusses.flush_async()?;
+
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::KTrussBEA)?;
 
         Ok(())
     }

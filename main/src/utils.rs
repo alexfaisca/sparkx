@@ -93,7 +93,7 @@ fn graph_id_and_dir_from_cache_file_name(
         })?
         .to_str()
         .ok_or_else(|| -> Box<dyn std::error::Error> {
-            "error invalid file path --- empty path".into()
+            "error invalid file path --- path empty".into()
         })?;
 
     let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
@@ -122,7 +122,7 @@ fn graph_id_and_dir_from_cache_file_name(
 }
 
 #[allow(dead_code)]
-pub fn cache_file_name(
+pub(crate) fn cache_file_name(
     original_filename: &str,
     target_type: FileType,
     sequence_number: Option<usize>,
@@ -162,19 +162,42 @@ pub fn id_for_subgraph_export(
 ) -> Result<String, Box<dyn std::error::Error>> {
     // this isn't a filename --- it's an id to be used in filenames
     match sequence_number {
-        Some(i) => Ok(format!("{}_{}_{}", "masked_export", i, id)),
-        None => Ok(format!("{}_{}", "masked_export", id)),
+        Some(i) => Ok(format!("{}<{}>{}", "maskedexport", i, id)),
+        None => Ok(format!("{}{}", "maskedexport", id)),
     }
 }
 
+/// Remove all cached `.tmp` files for a given `id` and [`FileType`] in the cache directory.
+///
+/// [`FileType`]: ./enum.FileType.html#
 #[allow(dead_code)]
-pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn cleanup_cache(
+    id: &str,
+    target_type: FileType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let match_entries_to =
+        CACHE_DIR.to_string() + suffix_for_file_type(target_type) + "*" + id + ".tmp";
+    let cache_entries = glob(&match_entries_to).map_err(|e| -> Box<dyn std::error::Error> {
+        format!("error cleaning up cache for entries with name {match_entries_to}: {e}").into()
+    })?;
+    for entry in cache_entries {
+        std::fs::remove_file(entry.map_err(|e| -> Box<dyn std::error::Error> {
+            format!("error cleaning up cache entry: {e}").into()
+        })?)?;
+    }
+    Ok(())
+}
+
+/// Remove all cached `.tmp` in the cache directory.
+///
+#[allow(dead_code)]
+pub(crate) fn remove_tmp_files_from_cache() -> Result<(), Box<dyn std::error::Error>> {
     let cache_entries = glob((CACHE_DIR.to_string() + "/*.tmp").as_str()).map_err(
         |e| -> Box<dyn std::error::Error> { format!("error cleaning up cache: {e}").into() },
     )?;
     for entry in cache_entries {
-        std::fs::remove_file(entry.map_err(|_e| -> Box<dyn std::error::Error> {
-            format!("error cleaning up cache entry: {_e}").into()
+        std::fs::remove_file(entry.map_err(|e| -> Box<dyn std::error::Error> {
+            format!("error cleaning up cache entry: {e}").into()
         })?)?;
     }
     Ok(())
@@ -189,16 +212,15 @@ pub(crate) enum H {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
+#[allow(dead_code, private_interfaces)]
 pub enum FileType {
     /// Only member visible to users
     General,
     Edges(H),
     Index(H),
-    Fst(H),
-    KmerTmp(H),
-    KmerSortedTmp(H),
-    EulerPath(H),
+    Metalabel(H),
+    Helper(H),
+    EulerTrail(H),
     KCoreBZ(H),
     KCoreLEA(H),
     KTrussBEA(H),
@@ -214,13 +236,13 @@ pub enum FileType {
     HyperBallLinCentrality(H),
     GVELouvain(H),
     #[cfg(any(test, feature = "bench"))]
+    Test(H),
+    #[cfg(any(test, feature = "bench"))]
     ExactClosenessCentrality(H),
     #[cfg(any(test, feature = "bench"))]
     ExactHarmonicCentrality(H),
     #[cfg(any(test, feature = "bench"))]
     ExactLinCentrality(H),
-    #[cfg(any(test, feature = "bench"))]
-    Test(H),
 }
 
 pub fn cache_file_name_from_id(
@@ -233,87 +255,86 @@ pub fn cache_file_name_from_id(
 }
 
 fn file_name_from_id_and_sequence_for_type(
-    target_type: FileType,
+    target: FileType,
     id: &str,
-    sequence_number: Option<usize>,
+    seq: Option<usize>,
 ) -> String {
+    if target == FileType::HyperBallClosenessCentrality(H::H)
+        || target == FileType::HyperBallHarmonicCentrality(H::H)
+        || target == FileType::HyperBallLinCentrality(H::H)
+    {
+        return match seq {
+            None => format!("{}_{}.{}", suffix_for_file_type(target), id, "mmap"),
+            // sequenced files are temporary
+            Some(i) => format!("{}_{}_{}.{}", suffix_for_file_type(target), i, id, "mmap"),
+        };
+    }
+    match seq {
+        None => format!("{}_{}.{}", suffix_for_file_type(target), id, "mmap"),
+        // sequenced files are temporary
+        Some(i) => format!("{}_{}_{}.{}", suffix_for_file_type(target), i, id, "tmp"),
+    }
+}
+
+pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
+    static SUFFIX_FOR_GENERAL: &str = "miscelanious";
+    static SUFFIX_FOR_EDGES: &str = "edges";
+    static SUFFIX_FOR_INDEX: &str = "index";
+    static SUFFIX_FOR_METALABEL: &str = "fst";
+    static SUFFIX_FOR_HELPER: &str = "helper";
+    static SUFFIX_FOR_EULER_TRAIL: &str = "eulertrail";
+    static SUFFIX_FOR_KCORE_BZ: &str = "kcoresbz";
+    static SUFFIX_FOR_KCORE_LEA: &str = "kcoreslea";
+    static SUFFIX_FOR_KTRUSS_BEA: &str = "ktrusslea";
+    static SUFFIX_FOR_KTRUSS_PKT: &str = "ktrusspkt";
+    static SUFFIX_FOR_CLUSTERING_COEFFICIENT: &str = "clusteringcoefficient";
+    static SUFFIX_FOR_EDGE_RECIPROCAL: &str = "edgereciprocal";
+    static SUFFIX_FOR_EDGE_OVER: &str = "edgeover";
+    static SUFFIX_FOR_HYPERBALL: &str = "hyperball";
+    static SUFFIX_FOR_HYPERBALL_DISTANCES: &str = "hyperballdistances";
+    static SUFFIX_FOR_HYPERBALL_INV_DISTANCES: &str = "hyperballinvdistances";
+    static SUFFIX_FOR_HYPERBALL_CLOSENESS_CENTRALITY: &str = "hyperballcloseness";
+    static SUFFIX_FOR_HYPERBALL_HARMONIC_CENTRALITY: &str = "hyperballharmonic";
+    static SUFFIX_FOR_HYPERBALL_LIN_CENTRALITY: &str = "hyperballlin";
+    static SUFFIX_FOR_GVE_LOUVAIN: &str = "louvain";
+    #[cfg(any(test, feature = "bench"))]
+    static SUFFIX_FOR_TEST: &str = "test";
+    #[cfg(any(test, feature = "bench"))]
+    static SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY: &str = "exactclosenesscentrality";
+    #[cfg(any(test, feature = "bench"))]
+    static SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY: &str = "exactharmoniccentrality";
+    #[cfg(any(test, feature = "bench"))]
+    static SUFFIX_FOR_EXACT_LIN_CENTRALITY: &str = "exactlincentrality";
+
     match target_type {
-        FileType::General => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "miscelanious", i, id, "tmp"),
-            None => format!("{}_{}.{}", "miscelanious", id, "mmap"),
-        },
-        FileType::Edges(_) => format!("{}_{}.{}", "edges", id, "mmap"),
-        FileType::Index(_) => format!("{}_{}.{}", "index", id, "mmap"),
-        FileType::Fst(_) => format!("{}_{}.{}", "fst", id, "fst"),
-        FileType::KmerTmp(_) => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
-        FileType::KmerSortedTmp(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
-        },
-        FileType::EulerPath(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "tmp"),
-            None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
-        },
-        FileType::KCoreBZ(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kcorebz_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kcoresbz", id, "mmap"),
-        },
-        FileType::KCoreLEA(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "kcorelea_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "kcoreslea", id, "mmap"),
-        },
-        FileType::KTrussBEA(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "ktrussbea_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "ktrussbea", id, "mmap"),
-        },
-        FileType::KTrussPKT(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "ktrusspkt_tmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "ktrusspkt", id, "mmap"),
-        },
-        FileType::ClusteringCoefficient(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "clusteringcoefficienttmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "clusteringcoefficient", id, "mmap"),
-        },
-        FileType::EdgeReciprocal(_) => format!("{}_{}.{}", "edge_reciprocal", id, "mmap"),
-        FileType::EdgeOver(_) => format!("{}_{}.{}", "edge_over", id, "mmap"),
-        FileType::HyperBall(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "hyperball", i, id, "tmp"),
-            None => format!("{}_{}.{}", "hyperball", id, "mmap"),
-        },
-        FileType::HyperBallDistances(_) => format!("{}_{}.{}", "hypeball_distances", id, "mmap"),
-        FileType::HyperBallInvDistances(_) => {
-            format!("{}_{}.{}", "hyperball_inv_distances", id, "mmap")
-        }
-        FileType::HyperBallClosenessCentrality(_) => {
-            format!("{}_{}.{}", "hyperball_closeness", id, "mmap")
-        }
-        FileType::HyperBallHarmonicCentrality(_) => {
-            format!("{}_{}.{}", "hyperball_harmonic", id, "mmap")
-        }
-        FileType::HyperBallLinCentrality(_) => {
-            format!("{}_{}.{}", "hyperball_inv_lin", id, "mmap")
-        }
-        FileType::GVELouvain(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "louvaintmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "louvain", id, "mmap"),
-        },
+        FileType::General => SUFFIX_FOR_GENERAL,
+        FileType::Edges(_) => SUFFIX_FOR_EDGES,
+        FileType::Index(_) => SUFFIX_FOR_INDEX,
+        FileType::Metalabel(_) => SUFFIX_FOR_METALABEL,
+        FileType::Helper(_) => SUFFIX_FOR_HELPER,
+        FileType::EulerTrail(_) => SUFFIX_FOR_EULER_TRAIL,
+        FileType::KCoreBZ(_) => SUFFIX_FOR_KCORE_BZ,
+        FileType::KCoreLEA(_) => SUFFIX_FOR_KCORE_LEA,
+        FileType::KTrussBEA(_) => SUFFIX_FOR_KTRUSS_BEA,
+        FileType::KTrussPKT(_) => SUFFIX_FOR_KTRUSS_PKT,
+        FileType::ClusteringCoefficient(_) => SUFFIX_FOR_CLUSTERING_COEFFICIENT,
+        FileType::EdgeReciprocal(_) => SUFFIX_FOR_EDGE_RECIPROCAL,
+        FileType::EdgeOver(_) => SUFFIX_FOR_EDGE_OVER,
+        FileType::HyperBall(_) => SUFFIX_FOR_HYPERBALL,
+        FileType::HyperBallDistances(_) => SUFFIX_FOR_HYPERBALL_DISTANCES,
+        FileType::HyperBallInvDistances(_) => SUFFIX_FOR_HYPERBALL_INV_DISTANCES,
+        FileType::HyperBallClosenessCentrality(_) => SUFFIX_FOR_HYPERBALL_CLOSENESS_CENTRALITY,
+        FileType::HyperBallHarmonicCentrality(_) => SUFFIX_FOR_HYPERBALL_HARMONIC_CENTRALITY,
+        FileType::HyperBallLinCentrality(_) => SUFFIX_FOR_HYPERBALL_LIN_CENTRALITY,
+        FileType::GVELouvain(_) => SUFFIX_FOR_GVE_LOUVAIN,
         #[cfg(any(test, feature = "bench"))]
-        FileType::ExactClosenessCentrality(_) => {
-            format!("{}_{}.{}", "exactclosenesscentrality", id, "mmap")
-        }
+        FileType::Test(_) => SUFFIX_FOR_TEST,
         #[cfg(any(test, feature = "bench"))]
-        FileType::ExactHarmonicCentrality(_) => {
-            format!("{}_{}.{}", "exactharmoniccentrality", id, "mmap")
-        }
+        FileType::ExactClosenessCentrality(_) => SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY,
         #[cfg(any(test, feature = "bench"))]
-        FileType::ExactLinCentrality(_) => {
-            format!("{}_{}.{}", "exactlincentrality", id, "mmap")
-        }
+        FileType::ExactHarmonicCentrality(_) => SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY,
         #[cfg(any(test, feature = "bench"))]
-        FileType::Test(_) => {
-            let random_id = rand::random::<u128>().to_string();
-            format!("{}_{}.{}", "test", random_id, "tmp")
-        }
+        FileType::ExactLinCentrality(_) => SUFFIX_FOR_EXACT_LIN_CENTRALITY,
     }
 }
 
@@ -323,10 +344,9 @@ impl std::fmt::Display for FileType {
             FileType::General => "Miscelanious",
             FileType::Edges(_) => "Edges",
             FileType::Index(_) => "Index",
-            FileType::Fst(_) => "Fst",
-            FileType::KmerTmp(_) => "KmerTmp",
-            FileType::KmerSortedTmp(_) => "KmerSortedTmp",
-            FileType::EulerPath(_) => "EulerPath",
+            FileType::Metalabel(_) => "Metalabel",
+            FileType::Helper(_) => "Helper",
+            FileType::EulerTrail(_) => "EulerTrail",
             FileType::KCoreBZ(_) => "KCoreBatageljZaversnik",
             FileType::KCoreLEA(_) => "KCoreLiuEtAl",
             FileType::KTrussBEA(_) => "KTrussBurkhardtEtAl",
@@ -342,15 +362,15 @@ impl std::fmt::Display for FileType {
             FileType::HyperBallLinCentrality(_) => "HyperBallLinCentrality",
             FileType::GVELouvain(_) => "Louvain",
             #[cfg(any(test, feature = "bench"))]
+            FileType::Test(_) => "Test",
+            #[cfg(any(test, feature = "bench"))]
             FileType::ExactClosenessCentrality(_) => "ExactClosenessCentrality",
             #[cfg(any(test, feature = "bench"))]
             FileType::ExactHarmonicCentrality(_) => "ExactHarmonicCentrality",
             #[cfg(any(test, feature = "bench"))]
             FileType::ExactLinCentrality(_) => "ExactLinCentrality",
-            #[cfg(any(test, feature = "bench"))]
-            FileType::Test(_) => "Test",
         };
-        write!(f, "{}", s)
+        write!(f, "FileType {{{}}}", s)
     }
 }
 
@@ -366,7 +386,10 @@ impl std::fmt::Display for FileType {
 /// `Ok(val)` if `val` is normal, or `Err(op_description.into())` if not.
 ///
 #[inline(always)]
-pub fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Box<dyn std::error::Error>> {
+pub(crate) fn f64_is_nomal(
+    val: f64,
+    op_description: &str,
+) -> Result<f64, Box<dyn std::error::Error>> {
     if !val.is_normal() {
         return Err(format!("error hk-relax abnormal value at {op_description} = {val}",).into());
     }
@@ -385,7 +408,7 @@ pub fn f64_is_nomal(val: f64, op_description: &str) -> Result<f64, Box<dyn std::
 ///
 /// `Some(val as usize)` if successful, or None if not.
 ///
-pub fn f64_to_usize_safe(val: f64) -> Option<usize> {
+pub(crate) fn f64_to_usize_safe(val: f64) -> Option<usize> {
     if val.is_normal() && val > 0f64 && val <= usize::MAX as f64 {
         Some(val as usize) // truncates toward zero
     } else {
