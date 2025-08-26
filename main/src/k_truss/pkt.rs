@@ -4,7 +4,6 @@ use crate::shared_slice::*;
 use crate::utils::*;
 
 use crossbeam::thread;
-use num_cpus::get_physical;
 use std::sync::{
     Arc, Barrier,
     atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -113,8 +112,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
         // ParTriangle-AM4
         thread::scope(|scope| {
-            // initializations always uses at least two threads per core
-            let threads = self.g.thread_num().max(get_physical() * 2);
             let node_load = node_count.div_ceil(threads);
             let edge_load = node_count.div_ceil(threads);
 

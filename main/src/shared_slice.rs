@@ -79,6 +79,18 @@ impl<T> AbstractedProceduralMemory<T> {
 
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemoryMut<T> {
+    pub fn from_file(file: &File, len: usize) -> Result<Self, Error> {
+        let mmap_len = (len * std::mem::size_of::<T>()) as u64;
+        file.set_len(mmap_len)?;
+        let (slice, mmap) = SharedSliceMut::<T>::from_file(file)?;
+
+        Ok(AbstractedProceduralMemoryMut {
+            slice,
+            mmap,
+            _vec: Vec::new(),
+            mmapped: true,
+        })
+    }
     pub fn shared_slice(&self) -> SharedSliceMut<T> {
         self.slice.clone()
     }

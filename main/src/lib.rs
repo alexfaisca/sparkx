@@ -1,3 +1,4 @@
+#![feature(seek_stream_len)]
 #![feature(int_roundings)]
 #![feature(once_cell_try)]
 
