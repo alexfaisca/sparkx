@@ -174,7 +174,7 @@ impl<T> SharedSlice<T> {
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
     pub fn abstract_mem(
-        mfn: String,
+        mfn: &str,
         vec: Vec<T>,
         len: usize,
         mmapped: bool,
@@ -327,7 +327,7 @@ impl<T> SharedSliceMut<T> {
         Some(idx + slice.len())
     }
     pub fn abst_mem_mut(
-        mfn: String,
+        mfn: &str,
         len: usize,
         mmapped: bool,
     ) -> Result<AbstractedProceduralMemoryMut<T>, Error> {

@@ -2,24 +2,24 @@ use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
 };
+#[cfg(any(test, feature = "bench"))]
+use crate::utils::EXACT_VALUE_CACHE_DIR;
 use crate::utils::{
     CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id, cleanup_cache,
-    graph_id_from_cache_file_name, id_for_subgraph_export,
+    graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename,
 };
 
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
-use num_cpus::get_physical;
 use ordered_float::OrderedFloat;
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
-use std::io::{Seek, SeekFrom};
 use std::{
     collections::HashSet,
     fmt::Debug,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
     process::Command,
@@ -33,13 +33,35 @@ use zerocopy::*;
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum CacheFile {
+    /// Only member visible to users
+    General,
+    EulerPath,
+    KCoreBZ,
+    KCoreLEA,
+    KTrussBEA,
+    KTrussPKT,
+    ClusteringCoefficient,
+    EdgeReciprocal,
+    EdgeOver,
+    HyperBall,
+    HyperBallDistances,
+    HyperBallInvDistances,
+    HyperBallClosenessCentrality,
+    HyperBallHarmonicCentrality,
+    HyperBallLinCentrality,
+    GVELouvain,
+}
+
 pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub graph_file: Arc<File>,
     pub index_file: Arc<File>,
-    pub kmer_file: Arc<File>,
+    pub metalabel_file: Arc<File>,
     pub graph_filename: String,
     pub index_filename: String,
-    pub kmer_filename: String,
+    pub metalabel_filename: String,
     pub graph_bytes: usize,
     pub index_bytes: usize,
     pub readonly: bool,
@@ -59,28 +81,69 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     const DEFAULT_MAX_EDGES: u16 = 16;
     const DEFAULT_CORRECTION_BUFFER_SIZE: usize = 1024;
 
+    #[cfg(not(any(test, feature = "bench")))]
+    fn guarantee_caching_dir() -> Result<(), Box<dyn std::error::Error>> {
+        if !Path::new(CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "bench"))]
+    fn guarantee_caching_dir() -> Result<(), Box<dyn std::error::Error>> {
+        if !Path::new(CACHE_DIR).exists() {
+            fs::create_dir_all(CACHE_DIR)?;
+        }
+        if !Path::new(CACHE_DIR).join(EXACT_VALUE_CACHE_DIR).exists() {
+            let dir_str = CACHE_DIR.to_string() + EXACT_VALUE_CACHE_DIR;
+            let dir_path = Path::new::<String>(&dir_str);
+            std::fs::create_dir_all(dir_path)?;
+        }
+        Ok(())
+    }
+
+    pub(self) fn build_cache_filename(
+        &self,
+        file_type: CacheFile,
+        sequence: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let target_file_type = match file_type {
+            CacheFile::General => FileType::General,
+            CacheFile::EulerPath => FileType::EulerPath(H::H),
+            CacheFile::KCoreBZ => FileType::KCoreBZ(H::H),
+            CacheFile::KCoreLEA => FileType::KCoreLEA(H::H),
+            CacheFile::KTrussBEA => FileType::KTrussBEA(H::H),
+            CacheFile::KTrussPKT => FileType::KTrussPKT(H::H),
+            CacheFile::ClusteringCoefficient => FileType::ClusteringCoefficient(H::H),
+            CacheFile::EdgeReciprocal => FileType::EdgeReciprocal(H::H),
+            CacheFile::EdgeOver => FileType::EdgeOver(H::H),
+            CacheFile::HyperBall => FileType::HyperBall(H::H),
+            CacheFile::HyperBallDistances => FileType::HyperBallDistances(H::H),
+            CacheFile::HyperBallInvDistances => FileType::HyperBallInvDistances(H::H),
+            CacheFile::HyperBallClosenessCentrality => FileType::HyperBallClosenessCentrality(H::H),
+            CacheFile::HyperBallHarmonicCentrality => FileType::HyperBallHarmonicCentrality(H::H),
+            CacheFile::HyperBallLinCentrality => FileType::HyperBallLinCentrality(H::H),
+            CacheFile::GVELouvain => FileType::GVELouvain(H::H),
+        };
+        cache_file_name(&self.graph_filename, target_file_type, sequence)
+    }
+
     pub(self) fn init_cache_file_from_id_or_random(
-        graph_id: Option<String>,
+        graph_id: &str,
         target_type: FileType,
     ) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let id = graph_id.unwrap_or(rand::random::<u128>().to_string());
+        let id = id_from_filename(graph_id)?;
 
         Ok((
             match target_type {
-                FileType::Edges(_) => {
-                    cache_file_name_from_id(FileType::Edges(H::H), id.clone(), None)
-                }
-                FileType::Index(H::H) => {
-                    cache_file_name_from_id(FileType::Index(H::H), id.clone(), None)
-                }
-                FileType::Fst(H::H) => {
-                    cache_file_name_from_id(FileType::Fst(H::H), id.clone(), None)
-                }
+                FileType::Edges(_) => cache_file_name_from_id(FileType::Edges(H::H), &id, None),
+                FileType::Index(H::H) => cache_file_name_from_id(FileType::Index(H::H), &id, None),
+                FileType::Fst(H::H) => cache_file_name_from_id(FileType::Fst(H::H), &id, None),
                 FileType::KmerTmp(H::H) => {
-                    cache_file_name_from_id(FileType::KmerTmp(H::H), id.clone(), None)
+                    cache_file_name_from_id(FileType::KmerTmp(H::H), &id, None)
                 }
                 FileType::KmerSortedTmp(H::H) => {
-                    cache_file_name_from_id(FileType::KmerSortedTmp(H::H), id.clone(), None)
+                    cache_file_name_from_id(FileType::KmerSortedTmp(H::H), &id, None)
                 }
                 _ => {
                     return Err(format!(
@@ -165,7 +228,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// * `input` - Input bytes.
     /// * `max_edges` - Ascribes a maximum number of edges for a node. If None is provided, defaults to 16.
-    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
+    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// # Returns
     ///
@@ -249,22 +312,21 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
     /// [`GraphCache`]: ./struct.GraphCache.html#
     fn init_with_id(
-        id: String,
+        id: &str,
         batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if !Path::new(CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
+        Self::guarantee_caching_dir()?;
+
         if id.is_empty() {
             return Err("error invalid cache id: id was `None`".into());
         }
 
-        let (graph_filename, id) =
-            Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges(H::H))?;
-        let (index_filename, id) =
-            Self::init_cache_file_from_id_or_random(Some(id), FileType::Index(H::H))?;
-        let (kmer_filename, _) =
-            Self::init_cache_file_from_id_or_random(Some(id), FileType::KmerTmp(H::H))?;
+        let (graph_filename, _) =
+            Self::init_cache_file_from_id_or_random(id, FileType::Edges(H::H))?;
+        let (index_filename, _) =
+            Self::init_cache_file_from_id_or_random(id, FileType::Index(H::H))?;
+        let (metalabel_filename, _) =
+            Self::init_cache_file_from_id_or_random(id, FileType::KmerTmp(H::H))?;
 
         let graph_file = Arc::new(
             OpenOptions::new()
@@ -284,22 +346,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 .open(index_filename.as_str())?,
         );
 
-        let kmer_file = Arc::new(
+        let metalabel_file = Arc::new(
             OpenOptions::new()
                 .read(true)
                 .write(true)
                 .truncate(true)
                 .create(true)
-                .open(kmer_filename.as_str())?,
+                .open(metalabel_filename.as_str())?,
         );
 
         Ok(GraphCache::<EdgeType, Edge> {
             graph_file,
             index_file,
-            kmer_file,
+            metalabel_file,
             graph_filename,
             index_filename,
-            kmer_filename,
+            metalabel_filename,
             graph_bytes: 0,
             index_bytes: 0,
             readonly: false,
@@ -327,13 +389,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
     /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn open(
-        filename: String,
+        filename: &str,
         batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        Self::guarantee_caching_dir()?;
+
         let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
-        let graph_filename = cache_file_name(filename.clone(), FileType::Edges(H::H), None)?;
-        let index_filename = cache_file_name(filename.clone(), FileType::Index(H::H), None)?;
-        let kmer_filename = cache_file_name(filename.clone(), FileType::Fst(H::H), None)?;
+        let graph_filename = cache_file_name(filename, FileType::Edges(H::H), None)?;
+        let index_filename = cache_file_name(filename, FileType::Index(H::H), None)?;
+        let metalabel_filename = cache_file_name(filename, FileType::Fst(H::H), None)?;
 
         let graph_file = Arc::new(
             OpenOptions::new()
@@ -345,7 +409,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 .read(true)
                 .open(index_filename.as_str())?,
         );
-        let kmer_file = match OpenOptions::new().read(true).open(kmer_filename.as_str()) {
+        let metalabel_file = match OpenOptions::new()
+            .read(true)
+            .open(metalabel_filename.as_str())
+        {
             Ok(file) => Arc::new(file),
             Err(_) => {
                 // if graph has no fst in cache no problem, build empty one and proceed
@@ -354,7 +421,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         .create(true)
                         .truncate(true)
                         .write(true)
-                        .open(&kmer_filename)?,
+                        .open(&metalabel_filename)?,
                 );
                 let builder = MapBuilder::new(empty_fst.clone())?;
                 builder.finish()?;
@@ -372,10 +439,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(GraphCache::<EdgeType, Edge> {
             graph_file,
             index_file,
-            kmer_file,
+            metalabel_file,
             graph_filename,
             index_filename,
-            kmer_filename,
+            metalabel_filename,
             graph_bytes: edges,
             index_bytes: nodes,
             readonly: true,
@@ -403,7 +470,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [^3]: if `None` is provided defaults to 10'000.
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
     /// [^5]: if `None` is provided defaults to **NOT** storing any node's label.
-    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
+    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn from_file<P: AsRef<Path> + Clone>(
@@ -412,10 +479,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        // make sure cache directory exists, if not attempt to create it
-        if !Path::new(CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
+        Self::guarantee_caching_dir()?;
 
         // parse optional inputs && fallback to defaults for the Nones found
         // parse extension to decide on decoding
@@ -465,10 +529,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        // make sure cache directory exists, if not attempt to create it
-        if !Path::new(CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
+        Self::guarantee_caching_dir()?;
 
         // parse optional inputs && fallback to defaults for the Nones found
         let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
@@ -477,7 +538,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let input = Self::read_input_file(path)?;
 
         // init cache
-        let mut cache = Self::init_with_id(id, batching)?;
+        let mut cache = Self::init_with_id(&id, batching)?;
 
         // parse and cache input
         cache.parse_ggcat_bytes_mmap(input.as_slice(), in_fst)?;
@@ -511,24 +572,29 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         id: Option<String>,
         batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+        Self::guarantee_caching_dir()?;
+
         if std::mem::size_of::<Edge>() % std::mem::size_of::<usize>() != 0 {
             return Err(format!("Error type `{}` has a  size of {}, which will lead to unaligned memory read/write for graph edges. Currently we don't support this type of memory access for graphs from .matx files. :(", std::any::type_name::<Edge>(), std::mem::size_of::<Edge>()).into());
         }
 
-        // make sure cache directory exists, if not attempt to create it
-        if !Path::new(CACHE_DIR).exists() {
-            fs::create_dir_all(CACHE_DIR)?;
-        }
-
-        let id = id.map_or(rand::random::<u64>().to_string(), |id| id);
+        let id = id.unwrap_or(
+            path.as_ref()
+                .to_str()
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    "error getting path as string".into()
+                })?
+                .to_string(),
+        );
 
         let (nr, _nc, _nnz_declared) = Self::parse_mtx_header(path.clone())?;
 
-        let (e_fn, id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Edges(H::H))?;
-        let (i_fn, _id) = Self::init_cache_file_from_id_or_random(Some(id), FileType::Index(H::H))?;
-        let offset_fn = cache_file_name(e_fn.clone(), FileType::EulerTmp(H::H), Some(20))?;
-        let mut index = SharedSliceMut::<usize>::abst_mem_mut(i_fn, nr + 1, true)?;
-        let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(offset_fn, nr, true)?;
+        let (e_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H))?;
+        let (i_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H))?;
+        // FIXME: create a FileType for helper vectors such as this one
+        let offsets_fn = cache_file_name(&e_fn, FileType::EulerPath(H::H), Some(20))?;
+        let mut index = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, nr + 1, true)?;
+        let mut index_offset = SharedSliceMut::<usize>::abst_mem_mut(&offsets_fn, nr, true)?;
 
         // accumulate node degrees on index
         let mut edge_count = 0;
@@ -538,7 +604,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 *index.get_mut(u) += 1;
             })?;
         }
-        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(e_fn.clone(), edge_count, true)?;
+        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, edge_count, true)?;
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
@@ -568,7 +634,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         edges.flush()?;
         index.flush()?;
-        Self::open(e_fn.clone(), batch)
+        Self::open(&e_fn, batch)
     }
 
     fn parse_mtx_header<P: AsRef<Path>>(path: P) -> Result<MTXHeader, Box<dyn std::error::Error>> {
@@ -761,7 +827,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     #[inline(always)]
     fn process_ggcat_entry(
-        id_line: String,
+        id_line: &str,
         label_line: Vec<u8>,
         in_fst: fn(usize) -> bool,
     ) -> Result<ProcessGGCATEntry, Box<dyn std::error::Error>> {
@@ -807,12 +873,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             // convert each line to str temporarily && cut off ">" char
             let _ = label_line.pop(); // pop '\n'
 
-            if let Some(entry) =
-                Self::process_ggcat_entry(node_str.to_string(), label_line.clone(), in_fst)?
-            {
+            if let Some(entry) = Self::process_ggcat_entry(node_str, label_line.clone(), in_fst)? {
                 current_batch.push(entry);
                 if current_batch.len() >= batch_size {
-                    println!("wrote {}", batch_num.load(Ordering::Relaxed));
+                    // println!("wrote {}", batch_num.load(Ordering::Relaxed));
                     let tmp_fst = self.build_batch_fst_vec(
                         &mut current_batch,
                         batch_num.fetch_add(1, Ordering::Relaxed),
@@ -1010,7 +1074,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 current_batch.push((label_line, id as u64));
 
                 if current_batch.len() >= batch_size {
-                    println!("wrote {}", batch_num.load(Ordering::Relaxed));
+                    // println!("wrote {}", batch_num.load(Ordering::Relaxed));
                     let tmp_fst = self.build_batch_fst(
                         &mut current_batch,
                         batch_num.fetch_add(1, Ordering::Relaxed),
@@ -1099,9 +1163,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
         // if graph cache was used to build a graph then the graph's fst
-        //  holds kmer_filename open, hence, it must be removed so that the new fst may
+        //  holds meatlabel_filename open, hence, it must be removed so that the new fst may
         //  be built
-        std::fs::remove_file(self.kmer_filename.clone())?;
+        std::fs::remove_file(self.metalabel_filename.clone())?;
 
         // Now merge all batch FSTs into option
         self.merge_fsts(&batches)?;
@@ -1122,7 +1186,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// # Arguments
     ///
     /// * `input` - Input bytes.
-    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer / label is not to be included in the graph's fst or true, vice-versa.
+    /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// # Errors
     ///
@@ -1182,9 +1246,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // if graph cache was used to build a graph then the graph's fst
-        // holds kmer_filename open, hence, it must be removed so that the new fst may
+        // holds metalabel_filename open, hence, it must be removed so that the new fst may
         // be built
-        std::fs::remove_file(self.kmer_filename.clone())?;
+        std::fs::remove_file(self.metalabel_filename.clone())?;
         // Now merge all batch FSTs into one
         self.merge_fsts(&batches)?;
 
@@ -1243,7 +1307,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         match node_id == expected_id {
             true => {
                 // write label
-                writeln!(self.kmer_file, "{}\t{}", node_id, label)?;
+                writeln!(self.metalabel_file, "{}\t{}", node_id, label)?;
 
                 self.index_file.write_all(self.graph_bytes.as_bytes()).map_err(
                     |e| -> Box<dyn std::error::Error> {
@@ -1307,22 +1371,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     fn build_fst_from_sorted_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Build finite state tranducer for k-mer to node id
-        let fst_filename = cache_file_name(self.kmer_filename.clone(), FileType::Fst(H::H), None)?;
+        let fst_filename = cache_file_name(&self.metalabel_filename, FileType::Fst(H::H), None)?;
         let sorted_file = cache_file_name(
-            self.kmer_filename.clone(),
+            &self.metalabel_filename,
             FileType::KmerSortedTmp(H::H),
             None,
         )?;
 
-        Self::external_sort_by_content(self.kmer_filename.as_str(), sorted_file.as_str())?;
+        Self::external_sort_by_content(self.metalabel_filename.as_str(), sorted_file.as_str())?;
 
-        self.kmer_file = match File::create(fst_filename.clone()) {
+        self.metalabel_file = match File::create(fst_filename.clone()) {
             Ok(i) => {
-                self.kmer_filename = fst_filename;
+                self.metalabel_filename = fst_filename;
                 Arc::new(i)
             }
             Err(e) => {
-                return Err(format!("error couldn't create mer .fst file: {e}").into());
+                return Err(format!("error couldn't create metalabel fst file: {e}").into());
             }
         };
 
@@ -1332,7 +1396,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             .open(sorted_file)?;
         // As reandonly is false, no clones exist -> safe to take file ownership from Arc
         let mut build =
-            MapBuilder::new(&*self.kmer_file).map_err(|e| -> Box<dyn std::error::Error> {
+            MapBuilder::new(&*self.metalabel_file).map_err(|e| -> Box<dyn std::error::Error> {
                 format!("error couldn't initialize builder: {e}").into()
             })?;
 
@@ -1352,11 +1416,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
             if let Ok(text) = std::str::from_utf8(&line) {
                 let mut parts = text.trim_end().split('\t');
-                if let (Some(id_value), Some(kmer)) = (parts.next(), parts.next()) {
+                if let (Some(id_value), Some(metalabel)) = (parts.next(), parts.next()) {
                     let id = id_value.parse::<u64>()?;
-                    build.insert(kmer, id).map_err(|e| -> Box<dyn std::error::Error> {
+                    build.insert(metalabel, id).map_err(|e| -> Box<dyn std::error::Error> {
                         format!(
-                            "error couldn't insert kmer for node (id: {id_value} label: {kmer}): {e}"
+                            "error couldn't insert metalabel for node (id: {id_value} metalabel: {metalabel}): {e}"
                             ).into()
                     })?;
                 }
@@ -1387,7 +1451,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let input = OpenOptions::new()
             .read(true)
             .create(false)
-            .open(&self.kmer_filename)?;
+            .open(&self.metalabel_filename)?;
         let mut contents = vec![];
         let mut reader = BufReader::new(input);
         reader.read_to_end(&mut contents)?;
@@ -1437,7 +1501,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // Sort lexicographically by key (label)
         batch.sort_by(|a, b| a.0.cmp(&b.0));
         let tempfst_fn = cache_file_name(
-            self.kmer_filename.clone(),
+            &self.metalabel_filename,
             FileType::KmerSortedTmp(H::H),
             Some(batch_num),
         )?;
@@ -1465,7 +1529,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // Sort lexicographically by key (label)
         batch.sort_by(|a, b| a.0.cmp(b.0));
         let tempfst_fn = cache_file_name(
-            self.kmer_filename.clone(),
+            &self.metalabel_filename,
             FileType::KmerSortedTmp(H::H),
             Some(batch_num),
         )?;
@@ -1487,7 +1551,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Merge multiple FST batch files into a final FST.
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
         // open output FST file for writing
-        let out_fn = cache_file_name(self.kmer_filename.clone(), FileType::Fst(H::H), None)?;
+        let out_fn = cache_file_name(&self.metalabel_filename, FileType::Fst(H::H), None)?;
         let out = Arc::new(
             OpenOptions::new()
                 .create(true)
@@ -1533,8 +1597,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         builder.finish()?;
-        self.kmer_file = out;
-        self.kmer_filename = out_fn;
+        self.metalabel_file = out;
+        self.metalabel_filename = out_fn;
         Ok(())
     }
 
@@ -1569,7 +1633,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         for file in [
             &mut self.index_file,
             &mut self.graph_file,
-            &mut self.kmer_file,
+            &mut self.metalabel_file,
         ] {
             let mut permissions = file.metadata()?.permissions();
             permissions.set_readonly(true);
@@ -1616,7 +1680,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 pub struct GraphMemoryMap<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     graph: Arc<Mmap>,
     index: Arc<Mmap>,
-    kmers: Arc<Map<Mmap>>,
+    metalabels: Arc<Map<Mmap>>,
     graph_cache: GraphCache<EdgeType, Edge>,
     edge_size: usize,
     thread_count: u8,
@@ -1636,27 +1700,33 @@ where
     ///
     /// # Arguments
     ///
-    /// * `cache` --- [`GraphCache`] instance to be used.
+    /// * `graph_cache` --- [`GraphCache`] instance to be used.
     /// * `thread_count`--- user suggested number of threads to be used when computing algorithms on the graph.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn init(
-        cache: GraphCache<EdgeType, Edge>,
+        graph_cache: GraphCache<EdgeType, Edge>,
         thread_count: Option<u8>,
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if cache.readonly {
-            let thread_count = thread_count.unwrap_or(get_physical() as u8 * 2).max(1);
-            let mmap = unsafe { MmapOptions::new().map(&File::open(&cache.kmer_filename)?)? };
-            let thread_count = thread_count.max(1);
+        if graph_cache.readonly {
+            let graph = Arc::new(unsafe { Mmap::map(&graph_cache.graph_file)? });
+            let index = Arc::new(unsafe { Mmap::map(&graph_cache.index_file)? });
+            let metalabels = Arc::new(Map::new(unsafe {
+                MmapOptions::new().map(&File::open(&graph_cache.metalabel_filename)?)?
+            })?);
+            let edge_size = std::mem::size_of::<Edge>();
+            let thread_count = thread_count.unwrap_or(1).max(1);
+            let exports = 0u8;
+
             return Ok(GraphMemoryMap {
-                graph: unsafe { Arc::new(Mmap::map(&cache.graph_file)?) },
-                index: unsafe { Arc::new(Mmap::map(&cache.index_file)?) },
-                kmers: Arc::new(Map::new(mmap)?),
-                graph_cache: cache,
-                edge_size: std::mem::size_of::<Edge>(),
+                graph,
+                index,
+                metalabels,
+                graph_cache,
+                edge_size,
                 thread_count,
-                exports: 0,
+                exports,
             });
         }
 
@@ -1706,7 +1776,7 @@ where
     /// Returns the given (by id) node's degree.
     #[inline(always)]
     pub fn node_degree(&self, node_id: usize) -> usize {
-        assert!(node_id < self.size() - 1);
+        assert!(node_id < self.size().map_or(0, |s| s));
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             let begin = ptr.read_unaligned();
@@ -1716,18 +1786,21 @@ where
 
     /// Returns the given (by id) node's metalabel if it exists and was stored in the graph's fst.
     #[inline(always)]
-    pub fn node_id_from_kmer(&self, kmer: &str) -> Result<u64, Box<dyn std::error::Error>> {
-        if let Some(val) = self.kmers.get(kmer) {
+    pub fn node_id_from_metalabel(
+        &self,
+        metalabel: &str,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        if let Some(val) = self.metalabels.get(metalabel) {
             Ok(val)
         } else {
-            Err(format!("error k-mer {kmer} not found").into())
+            Err(format!("error metalabel {metalabel} not found").into())
         }
     }
 
     /// Returns the given (by id) node's edges' offsets.
     #[inline(always)]
     pub fn index_node(&self, node_id: usize) -> std::ops::Range<usize> {
-        assert!(node_id < self.size() - 1);
+        assert!(node_id < self.size().map_or(0, |s| s));
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             ptr.read_unaligned()..ptr.add(1).read_unaligned()
@@ -1741,10 +1814,10 @@ where
         &self,
         node_id: usize,
     ) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if node_id >= self.size() - 1 {
+        if node_id >= self.size().map_or(0, |s| s) {
             return Err(format!(
                 "error {node_id} must be smaller than |V| = {}",
-                self.size() - 1
+                self.size().map_or(0, |s| s)
             )
             .into());
         }
@@ -1764,7 +1837,7 @@ where
             self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
             0,
-            self.size(),
+            self.size().map_or(0, |s| s),
         ))
     }
 
@@ -1784,7 +1857,7 @@ where
         if begin_node > end_node {
             return Err("error invalid range, beginning after end".into());
         }
-        if begin_node > self.size() || end_node > self.size() {
+        if begin_node > self.size()? || end_node > self.size()? {
             return Err("error invalid range".into());
         }
 
@@ -1815,9 +1888,7 @@ where
         target_volume: Option<usize>,
     ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
-        // debug
-        // println!("descending-ordered mass vector {:?}", s);
-        let target_size = target_size.map_or(self.size() - 1, |s| s);
+        let target_size = target_size.map_or(self.size().map_or(0, |s| s), |s| s);
         let target_volume = target_volume.map_or(self.width(), |s| s);
 
         let mut vol_s = 0usize;
@@ -1919,7 +1990,13 @@ where
 
     #[inline(always)]
     fn is_neighbour(&self, u: usize, v: usize) -> Option<usize> {
-        assert!(u < self.size());
+        assert!(
+            u < self.size().map_or(0, |s| s),
+            "{} is not smaller than max node id {} --- node doesn't exist",
+            u,
+            self.size().map_or(0, |s| s)
+        );
+
         let mut floor = unsafe { (self.index.as_ptr() as *const usize).add(u).read() };
         let mut ceil = unsafe { (self.index.as_ptr() as *const usize).add(u + 1).read() };
         // binary search on neighbours w, where w < v
@@ -2010,8 +2087,28 @@ where
     ///
     /// [^1]: this is equivalent to `|V| + 1`, as there is an extrea offset file entry to mark the end of edges' offsets.
     #[inline(always)]
-    pub fn size(&self) -> usize {
+    pub fn offsets_size(&self) -> usize {
         self.graph_cache.index_bytes // num nodes
+    }
+
+    /// Returns number of nodes in the offset file[^1].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if subtracting one to the number of entries in the offset file overflows
+    /// the count to `usize::MAX`.
+    ///
+    /// [^1]: this is equivalent to `|V|`.
+    #[inline(always)]
+    pub fn size(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        match self.graph_cache.index_bytes.overflowing_sub(1) {
+            (r, false) => Ok(r),
+            (_, true) => {
+                Err(
+                    "error overflowed |V| in graph struct: there are 0 recorded entries in the offsets file".into()
+                )
+            }
+        }
     }
 
     /// Returns number of entries in edge file[^1].
@@ -2037,96 +2134,119 @@ where
 
     /// Applies the mask: fn(usize) -> bool function to each node id and returns the resulting subgraph.
     ///
-    /// The resulting subgraph is that wherein only the set of nodes, `S ⊂ V`, of the nods for whose the output of mask is true, as well as, only the set of edges coming from and going to nodes in `S`[^1].
+    /// The resulting subgraph is that wherein only the set of nodes, `S ⊂ V`, of the nodes for whose the output of mask is true, as well as, only the set of edges coming from and going to nodes in `S`[^1].
     ///
     /// [^1]: the node ids of the subgraph may not, and probably will not, correspond to the original node identifiers, efffectively, it will be a whole new graph.
     pub fn apply_mask_to_nodes(
         &self,
         mask: fn(usize) -> bool,
-        identifier: Option<String>,
+        identifier: Option<&str>,
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        let node_count = self.size();
-        if node_count < 2 {
-            return Err("error can't mask empty graph".into());
-        }
-        let c_fn = CACHE_DIR.to_string() + "edge_count.tmp";
-        let i_fn = CACHE_DIR.to_string() + "node_index.tmp";
+        let node_count = self.size().map_or(0, |s| s);
 
-        // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
-        let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(c_fn, node_count, true)?;
-        // allocate |V| usize's to store each node's new id if present in the subgraph
-        let mut node_index = SharedSliceMut::<usize>::abst_mem_mut(i_fn, node_count - 1, true)?;
-
-        let mut curr_node_index: usize = 0;
-        let mut curr_edge_count: usize = 0;
-        *edge_count.get_mut(0) = curr_edge_count;
-        // iterate over |V|
-        for u in 0..node_count - 1 {
-            if mask(u) {
-                *node_index.get_mut(u) = curr_node_index;
-                curr_node_index += 1;
-                let neighbours = self.neighbours(u)?.filter(|x| mask(x.dest())).count();
-                curr_edge_count += neighbours;
-                *edge_count.get_mut(u + 1) = curr_edge_count;
-            } else {
-                *node_index.get_mut(u) = usize::MAX;
-                *edge_count.get_mut(u + 1) = curr_edge_count;
-            }
-        }
-
-        let mut kmer_stream = self.kmers.stream();
+        let identifier = identifier.map(|id| id.to_string());
         let id = identifier.unwrap_or(id_for_subgraph_export(
             self.graph_id()?,
             Some(self.clone().exports_fetch_increment()?),
         )?);
 
-        // prepare files for subgraph
-        let (edges_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
-            Some(id),
+        // build subgraph's cache entries' filenames
+        let (e_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+            &id,
             FileType::Edges(H::H),
         )?;
-        let (index_fn, id) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
-            Some(id),
+        let (i_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+            &id,
             FileType::Index(H::H),
         )?;
-        let (kmers_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
-            Some(id),
+        let (ml_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+            &id,
             FileType::Fst(H::H),
         )?;
-        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(edges_fn, curr_edge_count, true)?;
-        let mut index = SharedSliceMut::<usize>::abst_mem_mut(index_fn, curr_node_index + 1, true)?;
-        let kmer_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(kmers_fn.clone())?;
-        let mut build = MapBuilder::new(&kmer_file)?;
 
-        // write nodes in order of lexicographically ordered kmers to avoid sorting kmers
-        // FIXME: what is more costly random page accesses or sorting build merging kmer fst?
-        *index.get_mut(0) = 0;
-        while let Some((kmer, node_id)) = kmer_stream.next() {
-            let id = node_id as usize;
-            if mask(id) {
-                // write index file for next node (id + 1)
-                let new_id = *node_index.get(id);
-                *index.get_mut(new_id + 1) = *edge_count.get(id + 1);
-                // write edge file node
-                edges
-                    .write_slice(
-                        *edge_count.get(id),
-                        self.neighbours(id)?
-                            .filter(|x| mask(x.dest()))
-                            .collect::<Vec<Edge>>()
-                            .as_slice(),
-                    )
-                    .ok_or("error writing edges for node {id}")?;
-                // write fst for node
-                build.insert(kmer, new_id as u64)?;
+        if node_count > 1 {
+            let hc_fn = CACHE_DIR.to_string() + "edge_count.tmp";
+            let hi_fn = CACHE_DIR.to_string() + "node_index.tmp";
+
+            // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
+            let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(&hc_fn, node_count, true)?;
+            // allocate |V| usize's to store each node's new id if present in the subgraph
+            let mut node_index =
+                SharedSliceMut::<usize>::abst_mem_mut(&hi_fn, node_count - 1, true)?;
+
+            let mut curr_node_index: usize = 0;
+            let mut curr_edge_count: usize = 0;
+            *edge_count.get_mut(0) = curr_edge_count;
+            // iterate over |V|
+            for u in 0..node_count - 1 {
+                if mask(u) {
+                    *node_index.get_mut(u) = curr_node_index;
+                    curr_node_index += 1;
+                    let neighbours = self.neighbours(u)?.filter(|x| mask(x.dest())).count();
+                    curr_edge_count += neighbours;
+                    *edge_count.get_mut(u + 1) = curr_edge_count;
+                } else {
+                    *node_index.get_mut(u) = usize::MAX;
+                    *edge_count.get_mut(u + 1) = curr_edge_count;
+                }
             }
+
+            let mut metalabel_stream = self.metalabels.stream();
+
+            let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, curr_edge_count, true)?;
+            let mut index =
+                SharedSliceMut::<usize>::abst_mem_mut(&i_fn, curr_node_index + 1, true)?;
+            let metalabel_file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(ml_fn.clone())?;
+
+            let mut build = MapBuilder::new(&metalabel_file)?;
+
+            // write nodes in order of lexicographically ordered metalabels to avoid sorting metaabels
+            // FIXME: what is more costly random page accesses or sorting build merging metalabel fst?
+            *index.get_mut(0) = 0;
+            while let Some((metalabel, node_id)) = metalabel_stream.next() {
+                let id = node_id as usize;
+                if mask(id) {
+                    // write index file for next node (id + 1)
+                    let new_id = *node_index.get(id);
+                    *index.get_mut(new_id + 1) = *edge_count.get(id + 1);
+                    // write edge file node
+                    edges
+                        .write_slice(
+                            *edge_count.get(id),
+                            self.neighbours(id)?
+                                .filter(|x| mask(x.dest()))
+                                .collect::<Vec<Edge>>()
+                                .as_slice(),
+                        )
+                        .ok_or("error writing edges for node {id}")?;
+                    // write fst for node
+                    build.insert(metalabel, new_id as u64)?;
+                }
+            }
+            build.finish()?;
+        } else {
+            // if graph is empty allocate empty for its empty subgraph
+            let _ = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, 0, true)?;
+            let mut i = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, 1, true)?;
+            // store end of offsets in index entry at |V| (empty graph --- offsets end at 0)
+            *i.get_mut(0) = 0;
+            let metalabel_file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(ml_fn.clone())?;
+
+            let build = MapBuilder::new(&metalabel_file)?;
+            build.finish()?;
         }
+
+        // finalize by initialozing a GraphCache instance for the subgraph and building it
+        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(&ml_fn, None)?;
         self.cleanup_cache()?;
-        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(kmers_fn, None)?;
         GraphMemoryMap::init(cache, Some(self.thread_count))
     }
 
@@ -2140,7 +2260,7 @@ where
         &self,
     ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
-        let node_count = self.size() - 1;
+        let node_count = self.size().map_or(0, |s| s);
 
         (0..node_count).for_each(|u| {
             graph.add_node(NodeIndex::new(u));
@@ -2167,7 +2287,7 @@ where
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<(), ()>::new();
-        let node_count = self.size() - 1;
+        let node_count = self.size().map_or(0, |s| s);
 
         (0..node_count).for_each(|_| {
             graph.add_node(());
@@ -2198,15 +2318,14 @@ where
         ),
         Box<dyn std::error::Error>,
     > {
+        let node_count = self.size().map_or(0, |s| s);
         let edge_count = self.width();
-        let node_count = self.size() - 1;
 
-        let template_fn = self.graph_cache.graph_filename.clone();
-        let er_fn = cache_file_name(template_fn.clone(), FileType::EdgeReciprocal(H::H), None)?;
-        let eo_fn = cache_file_name(template_fn.clone(), FileType::EdgeOver(H::H), None)?;
+        let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
+        let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
 
-        let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(er_fn, edge_count, true)?;
-        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(eo_fn, node_count, true)?;
+        let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(&er_fn, edge_count, true)?;
+        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(&eo_fn, node_count, true)?;
 
         Ok((edge_reciprocal, edge_out))
     }
@@ -2220,20 +2339,15 @@ where
         ),
         Box<dyn std::error::Error>,
     > {
-        let node_count = self.size() - 1;
+        let node_count = self.size().map_or(0, |s| s);
         let edge_count = self.width();
 
         let threads = self.thread_count.max(1) as usize;
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = Arc::new(SharedSlice::<usize>::new(
-            self.index.as_ptr() as *const usize,
-            node_count + 1,
-        ));
-        let graph_ptr = Arc::new(SharedSlice::<Edge>::new(
-            self.graph.as_ptr() as *const Edge,
-            edge_count,
-        ));
+        let index_ptr =
+            SharedSlice::<usize>::new(self.index.as_ptr() as *const usize, self.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.graph.as_ptr() as *const Edge, edge_count);
 
         let (er, eo) = self.init_procedural_memory_build_reciprocal()?;
 
@@ -2241,9 +2355,6 @@ where
 
         thread::scope(|scope| {
             for tid in 0..threads {
-                let graph_ptr = Arc::clone(&graph_ptr);
-                let index_ptr = Arc::clone(&index_ptr);
-
                 let mut er = er.shared_slice();
                 let mut eo = eo.shared_slice();
 
@@ -2311,12 +2422,11 @@ where
     pub(crate) fn get_edge_reciprocal(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
-        let fn_template = self.graph_cache.graph_filename.clone();
-        let er_fn = cache_file_name(fn_template.clone(), FileType::EdgeReciprocal(H::H), None)?;
+        let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
         let dud = Vec::new();
         let er = match OpenOptions::new().read(true).open(er_fn.as_str()) {
             Ok(i) => SharedSlice::<usize>::abstract_mem(
-                er_fn,
+                &er_fn,
                 dud,
                 i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
                 true,
@@ -2325,7 +2435,7 @@ where
                 self.clone().build_reciprocal_edge_index()?;
                 match OpenOptions::new().read(true).open(er_fn.as_str()) {
                     Ok(i) => SharedSlice::<usize>::abstract_mem(
-                        er_fn,
+                        &er_fn,
                         dud,
                         i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
                         true,
@@ -2345,12 +2455,11 @@ where
     pub(crate) fn get_edge_dest_id_over_source(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
-        let fn_template = self.graph_cache.graph_filename.clone();
-        let eo_fn = cache_file_name(fn_template.clone(), FileType::EdgeOver(H::H), None)?;
+        let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
         let dud = Vec::new();
         let eo = match OpenOptions::new().read(true).open(eo_fn.as_str()) {
             Ok(i) => SharedSlice::<usize>::abstract_mem(
-                eo_fn,
+                &eo_fn,
                 dud,
                 i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
                 true,
@@ -2359,7 +2468,7 @@ where
                 self.clone().build_reciprocal_edge_index()?;
                 match OpenOptions::new().read(true).open(eo_fn.as_str()) {
                     Ok(i) => SharedSlice::<usize>::abstract_mem(
-                        eo_fn,
+                        &eo_fn,
                         dud,
                         i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
                         true,
@@ -2375,6 +2484,16 @@ where
         Ok(eo?)
     }
 
+    #[inline(always)]
+    pub fn build_cache_filename(
+        &self,
+        file_type: CacheFile,
+        sequence: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.graph_cache.build_cache_filename(file_type, sequence)
+    }
+
+    #[inline(always)]
     pub fn cleanup_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.graph_cache.cleanup_cache()
     }
@@ -2556,10 +2675,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std
     type Output = [Edge];
     #[inline]
     fn index(&self, _index: std::ops::RangeFull) -> &[Edge] {
+        // FIXME: replace this ugly '* 8' for something less prone to breaking
         unsafe {
             slice::from_raw_parts(
                 self.graph.as_ptr() as *const Edge,
-                self.size() * 8 / self.edge_size,
+                self.size().map_or(0, |s| s) * 8 / self.edge_size,
             )
         }
     }
@@ -2612,7 +2732,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug
             }}",
             self.graph_cache.graph_filename,
             self.graph_cache.index_filename,
-            self.size(),
+            self.size().map_or(0, |s| s),
             self.width(),
         )
     }
@@ -2622,8 +2742,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug for GraphCach
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{{\n\tgraph filename: {}\n\tindex filename: {}\n\tkmer filename: {}\n}}",
-            self.graph_filename, self.index_filename, self.kmer_filename
+            "{{\n\tgraph filename: {}\n\tindex filename: {}\n\tmetalabel filename: {}\n}}",
+            self.graph_filename, self.index_filename, self.metalabel_filename
         )
     }
 }
@@ -2632,16 +2752,16 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
     fn clone(&self) -> Self {
         if !self.readonly {
             panic!(
-                "can't clone GraphCache before it is readonly, fst needs file ownership to map kmers to node_ids"
+                "can't clone GraphCache before it is readonly, fst needs file ownership to map metalabels to node_ids"
             );
         }
         Self {
             graph_file: self.graph_file.clone(),
             index_file: self.index_file.clone(),
-            kmer_file: self.kmer_file.clone(),
+            metalabel_file: self.metalabel_file.clone(),
             graph_filename: self.graph_filename.clone(),
             index_filename: self.index_filename.clone(),
-            kmer_filename: self.kmer_filename.clone(),
+            metalabel_filename: self.metalabel_filename.clone(),
             graph_bytes: self.graph_bytes,
             index_bytes: self.index_bytes,
             readonly: true,

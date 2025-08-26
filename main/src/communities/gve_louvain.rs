@@ -42,7 +42,7 @@ type ProceduralMemoryGVELouvain = (
 #[derive(Debug)]
 pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which the partition is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped array containing each node's community.
     community: AbstractedProceduralMemoryMut<usize>,
     /// Cardinality of distinct communities in the final partition.
@@ -76,19 +76,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename =
-            cache_file_name(graph.cache_fst_filename(), FileType::GVELouvain(H::H), None)?;
-        let community =
-            SharedSliceMut::<usize>::abst_mem_mut(output_filename.clone(), graph.width(), true)?;
+    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::GVELouvain, None)?;
+        let coms = SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size().map_or(0, |s| s), true)?;
         let mut gve_louvain = Self {
-            graph,
-            community,
+            g,
+            community: coms,
             community_count: 0,
             modularity: 0.,
         };
@@ -106,36 +102,45 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.modularity
     }
 
+    #[inline(always)]
+    fn build_cache_filename(
+        &self,
+        file_type: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.g.build_cache_filename(file_type, seq)
+    }
+
     fn init_procedural_memory_gve_louvain(
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryGVELouvain, Box<dyn std::error::Error>> {
-        let edge_count = self.graph.width();
-        let node_count = self.graph.size() - 1;
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
-        let template_fn = self.graph.cache_index_filename();
-        let k_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(0))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(1))?;
-        let gdi_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(2))?;
-        let gde_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(3))?;
-        let gddi_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(4))?;
-        let gdde_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(5))?;
-        let a_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(6))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(7))?;
-        let nc_fn = cache_file_name(template_fn.clone(), FileType::GVELouvain(H::H), Some(8))?;
+        let k_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(0))?;
+        let s_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(1))?;
+        let gdi_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(2))?;
+        let gde_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(3))?;
+        let gddi_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(4))?;
+        let gdde_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(5))?;
+        let a_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(6))?;
+        let c_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(7))?;
+        let h_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(8))?;
 
-        let k = SharedSliceMut::<AtomicUsize>::abst_mem_mut(k_fn, node_count, mmap > 0)?;
-        let sigma = SharedSliceMut::<AtomicUsize>::abst_mem_mut(s_fn, node_count, mmap > 0)?;
-        let gdi = SharedSliceMut::<usize>::abst_mem_mut(gdi_fn, 2 * node_count, mmap > 0)?;
-        let gde = SharedSliceMut::<(usize, usize)>::abst_mem_mut(gde_fn, edge_count, mmap > 0)?;
-        let gddi = SharedSliceMut::<usize>::abst_mem_mut(gddi_fn, 2 * node_count, mmap > 0)?;
-        let gdde = SharedSliceMut::<(usize, usize)>::abst_mem_mut(gdde_fn, edge_count, mmap > 0)?;
-        let processed = SharedSliceMut::<AtomicBool>::abst_mem_mut(a_fn, node_count, mmap > 0)?;
-        let coms = SharedSliceMut::<usize>::abst_mem_mut(c_fn, node_count, mmap > 0)?;
-        // has to be size |E| as it is used to store the 'holey' CSR
-        let helper = SharedSliceMut::<usize>::abst_mem_mut(nc_fn, edge_count, true)?;
+        let k = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&k_fn, node_count, mmap > 0)?;
+        let sigma = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&s_fn, node_count, mmap > 0)?;
+        let gdi = SharedSliceMut::<usize>::abst_mem_mut(&gdi_fn, 2 * node_count, mmap > 0)?;
+        let gde = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&gde_fn, edge_count, mmap > 0)?;
+        let gddi = SharedSliceMut::<usize>::abst_mem_mut(&gddi_fn, 2 * node_count, mmap > 0)?;
+        let gdde = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&gdde_fn, edge_count, mmap > 0)?;
+        let processed = SharedSliceMut::<AtomicBool>::abst_mem_mut(&a_fn, node_count, mmap > 0)?;
+        let coms = SharedSliceMut::<usize>::abst_mem_mut(&c_fn, node_count, mmap > 0)?;
+        // has to be size max(|V|, |E|) as it is both used to store the 'holey' CSR (O(|E|) space) and
+        // renumbered community memberships (O(|V|) space)
+        let help = SharedSliceMut::<usize>::abst_mem_mut(&h_fn, edge_count.max(node_count), true)?;
 
-        Ok((k, sigma, gdi, gde, gddi, gdde, processed, coms, helper))
+        Ok((k, sigma, gdi, gde, gddi, gdde, processed, coms, help))
     }
 
     /// Computes the differencial modularity[^1], 𝛿𝑄, upon moving a node `u`, from a community `d` to a community `c`.
@@ -565,10 +570,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let edge_count = self.graph.width();
-        let node_count = self.graph.size() - 1;
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
-        let threads = self.graph.thread_num().max(get_physical());
+        let threads = self.g.thread_num().max(get_physical());
         let node_load = node_count.div_ceil(threads);
 
         let (k, sigma, gdi, gde, gddi, gdde, processed, coms, helper) =
@@ -576,9 +581,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
         // C --- the community vector of the original nodes
         let mut communities = self.community.shared_slice();
-        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
+        println!("init");
         // initialize
         thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
             let mut threads_res = vec![];
@@ -653,6 +659,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             Ok(())
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
+        println!("finish init");
 
         let mut tolerance = Self::INITIAL_TOLERANCE;
 
@@ -790,7 +797,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // sum internal degree ---> sigma | sum total degree ---> k
         for u in 0..node_count {
             let comm_u = *communities.get(u);
-            let iter = self.graph.neighbours(u)?;
+            let iter = self.g.neighbours(u)?;
             k.get(*communities.get(u))
                 .fetch_add(iter.remaining_neighbours(), Ordering::Relaxed);
             for e in iter {

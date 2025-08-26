@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Clone)]
 pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// The graph for which the community is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Diffusion depth.
     pub n: usize,
     /// Diffusion temperature.
@@ -38,33 +38,21 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the community is computed.
     /// * `t` --- temperature parameter.
     /// * `eps` --- ε (eps) error parameter.
     /// * `seed` --- seed nodes.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     fn evaluate_params(
-        graph: &GraphMemoryMap<EdgeType, Edge>,
+        g: &GraphMemoryMap<EdgeType, Edge>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = match graph.size().overflowing_sub(1) {
-            (_, true) => {
-                return Err(
-                    "error hk-relax invalid parameters: |V| == 0, the graph is empty".into(),
-                );
-            }
-            (i, _) => {
-                if i == 0 {
-                    return Err(
-                        "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
-                            .into(),
-                    );
-                }
-                i
-            }
+        let node_count = g.size().map_or(0, |s| s);
+        if node_count == 0 {
+            return Err("error hk-relax invalid parameters: |V| == 0, the graph is empty".into());
         };
         if !t.is_normal() || t <= 0f64 {
             return Err(format!(
@@ -190,7 +178,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the community is computed.
     /// * `t` --- diffusion temperature parameter.
     /// * `eps` --- diffusion ε (eps) error parameter.
     /// * `seed` --- seed nodes' ids.
@@ -199,29 +187,30 @@ where
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
         target_size: Option<usize>,
         target_volume: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = Self::evaluate_params(graph, t, eps, seed.clone()).map_err(
+        let () = Self::evaluate_params(g, t, eps, seed.clone()).map_err(
             |e| -> Box<dyn std::error::Error> {
                 format!("error creating HKRelax instance: {e}").into()
             },
         )?;
 
         let n = Self::compute_n(t, eps)?;
+        let psis = Self::compute_psis(n, t)?;
         println!("n computed to be {}", n);
 
         Ok(HKRelax {
-            graph,
+            g,
             n,
             t,
             eps,
             seed,
-            psis: Self::compute_psis(n, t)?,
+            psis,
             target_size,
             target_volume,
         })
@@ -236,21 +225,23 @@ where
         target_size: Option<usize>,
         target_volume: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = Self::evaluate_params(self.graph, t, eps, seed.clone()).map_err(
+        let () = Self::evaluate_params(self.g, t, eps, seed.clone()).map_err(
             |e| -> Box<dyn std::error::Error> {
                 format!("error creating HKRelax instance: {e}").into()
             },
         )?;
 
         let n = Self::compute_n(t, eps)?;
+        let g = self.g;
+        let psis = Self::compute_psis(n, t)?;
 
         Ok(HKRelax {
-            graph: self.graph,
+            g,
             n,
             t,
             eps,
             seed,
-            psis: Self::compute_psis(n, t)?,
+            psis,
             target_size,
             target_volume,
         })
@@ -301,7 +292,7 @@ where
                 })? = 0f64;
 
             //  mass = (t * rvj / (float(j) + 1.)) / len(G[v]) /* calculation validity checked when poppped from queue */
-            let v_n = self.graph.neighbours(v)?;
+            let v_n = self.g.neighbours(v)?;
             let deg_v = v_n.remaining_neighbours() as f64;
 
             let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
@@ -324,7 +315,7 @@ where
                 let r_next = r.entry(next).or_insert(0_f64);
 
                 // thresh = math.exp(t) * eps * len(G[u]) / (N * psis[j + 1])
-                let deg_u = self.graph.node_degree(u) as f64;
+                let deg_u = self.g.node_degree(u) as f64;
                 let threshold = f64_is_nomal(
                     threshold_pre_u_pre_j * deg_u / self.psis[j + 1],
                     "e^t * ε * deg_u / (n * psis[j + 1])",
@@ -341,10 +332,10 @@ where
 
         let mut h: Vec<(usize, f64)> = x
             .keys()
-            .map(|v| (*v, x.get(v).unwrap() / self.graph.node_degree(*v) as f64))
+            .map(|v| (*v, x.get(v).unwrap() / self.g.node_degree(*v) as f64))
             .collect::<Vec<(usize, f64)>>();
 
-        match self.graph.sweep_cut_over_diffusion_vector_by_conductance(
+        match self.g.sweep_cut_over_diffusion_vector_by_conductance(
             h.as_mut(),
             self.target_size,
             self.target_volume,

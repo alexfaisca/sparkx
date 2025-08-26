@@ -1,7 +1,6 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
-use crate::utils::*;
 
 use atomic_float::AtomicF64;
 use crossbeam::thread;
@@ -25,7 +24,7 @@ type ProceduralMemoryClusteringCoefficient = (AbstractedProceduralMemoryMut<Atom
 #[derive(Debug)]
 pub struct ClusteringCoefficient<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which local clustering coefficient, transitivity and average local clustering coefficient.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing each node's local clustering coefficient.
     local: AbstractedProceduralMemoryMut<f64>,
     /// Global clustering coefficient --- graph transitivity.
@@ -43,21 +42,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_filename = cache_file_name(
-            graph.cache_fst_filename(),
-            FileType::ClusteringCoefficient(H::H),
-            None,
-        )?;
-        let local =
-            SharedSliceMut::<f64>::abst_mem_mut(output_filename.clone(), graph.size() - 1, true)?;
+    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::ClusteringCoefficient, None)?;
+        let local = SharedSliceMut::<f64>::abst_mem_mut(&out_fn, g.size().map_or(0, |s| s), true)?;
         let mut clustering_coefficient = Self {
-            graph,
+            g,
             local,
             transitivity: 0.,
             local_average: 0.,
@@ -73,7 +65,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
     /// Getter for individual node's clustering coefficient.
     pub fn get_node_clusteringcoefficient(&self, id: usize) -> f64 {
-        assert!(id < self.graph.size() - 1, "id < |V| --- not met");
+        assert!(id < self.g.size().map_or(0, |s| s), "id < |V| --- not met");
         *self.local.get(id)
     }
 
@@ -82,20 +74,24 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.transitivity
     }
 
+    #[inline(always)]
+    fn build_cache_filename(
+        &self,
+        file_type: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.g.build_cache_filename(file_type, seq)
+    }
+
     fn init_procedural_memory_burkhardt_et_al(
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryClusteringCoefficient, Box<dyn std::error::Error>> {
-        let edge_count = self.graph.width();
+        let edge_count = self.g.width();
 
-        let template_fn = self.graph.cache_index_filename();
-        let t_fn = cache_file_name(
-            template_fn.clone(),
-            FileType::ClusteringCoefficient(H::H),
-            Some(0),
-        )?;
+        let t_fn = self.build_cache_filename(CacheFile::ClusteringCoefficient, Some(0))?;
 
-        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, edge_count, mmap > 0)?;
+        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(&t_fn, edge_count, mmap > 0)?;
 
         Ok((tri_count,))
     }
@@ -108,20 +104,20 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1;
-        let edge_count = self.graph.width();
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
-        let threads = self.graph.thread_num().max(get_physical());
+        let threads = self.g.thread_num().max(get_physical());
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
         // Shared atomic & simple arrays for counts and trussness
         let triangle_count = self.init_procedural_memory_burkhardt_et_al(mmap)?.0;
 
-        let edge_reciprocal = self.graph.get_edge_reciprocal()?;
-        let edge_out = self.graph.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = self.g.get_edge_reciprocal()?;
+        let edge_out = self.g.get_edge_dest_id_over_source()?;
 
         // Thread syncronization
         let synchronize = Arc::new(Barrier::new(threads));

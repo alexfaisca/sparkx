@@ -23,7 +23,7 @@ mod _verify {
         edge_coreness: AbstractedProceduralMemoryMut<u8>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let threads = get_physical() * 2;
-        let node_count = graph.size() - 1;
+        let node_count = graph.size().map_or(0, |s| s);
         let node_load = node_count.div_ceil(threads);
 
         // coreness length == graph width
@@ -40,9 +40,11 @@ mod _verify {
         }
 
         let e_coreness = edge_coreness.shared_slice();
+        // coreness check test filename
+        let cct_fn = cache_file_name("", FileType::Test(H::H), None)?;
         let node_coreness = SharedSliceMut::<u8>::abst_mem_mut(
-            cache_file_name("".to_string(), FileType::Test(H::H), None)?,
-            graph.size() - 1,
+            &cct_fn,
+            node_count,
             true,
         )?;
         let mut n_coreness = node_coreness.shared_slice();

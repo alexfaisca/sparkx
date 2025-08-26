@@ -1,7 +1,6 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
-use crate::utils::*;
 
 use crossbeam::thread;
 use memmap2::{Mmap, MmapMut};
@@ -21,7 +20,7 @@ use std::{
 #[allow(dead_code)]
 pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which the euler trail(s) is(are) computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing the euler trails.
     pub euler_trails: AbstractedProceduralMemoryMut<usize>,
     /// Array containing the starting position of each euler trail.
@@ -47,20 +46,14 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_fn = cache_file_name(
-            graph.cache_index_filename(),
-            FileType::EulerPath(H::H),
-            None,
-        )?;
+    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::EulerPath, None)?;
         let mut euler = AlgoHierholzer {
-            graph,
-            euler_trails: SharedSliceMut::<usize>::abst_mem_mut(output_fn, graph.width(), true)?,
+            g,
+            euler_trails: SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.width(), true)?,
             trail_index: Vec::new(),
         };
         euler.compute(10)?;
@@ -77,18 +70,17 @@ where
         ),
         Box<dyn std::error::Error>,
     > {
-        let node_count = self.graph.size() - 1;
-        let threads = self.graph.thread_num();
+        let node_count = self.g.size().map_or(0, |s| s);
+        let threads = self.g.thread_num();
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), self.graph.size());
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
 
-        let template_fn = self.graph.cache_edges_filename();
-        let e_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp(H::H), Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::EulerTmp(H::H), Some(2))?;
+        let e_fn = self.g.build_cache_filename(CacheFile::EulerPath, Some(0))?;
+        let c_fn = self.g.build_cache_filename(CacheFile::EulerPath, Some(1))?;
 
-        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(e_fn, node_count, mmap > 0)?;
-        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(c_fn, node_count, mmap > 1)?;
+        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&e_fn, node_count, mmap > 0)?;
+        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(&c_fn, node_count, mmap > 1)?;
 
         thread::scope(|scope| {
             for i in 0..threads {
@@ -124,11 +116,11 @@ where
     ///
     pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let time = Instant::now();
-        let node_count = match self.graph.size() - 1 {
+        let node_count = match self.g.size().map_or(0, |s| s) {
             0 => return Ok(()),
             i => i,
         };
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), self.graph.width());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), self.g.width());
 
         // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
         let (edges, edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;
@@ -279,11 +271,7 @@ where
         cycle_offsets: Vec<(usize, usize, usize)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut trail_heads: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-        let mmap_fn = cache_file_name(
-            self.graph.cache_index_filename(),
-            FileType::EulerTmp(H::H),
-            None,
-        )?;
+        let mmap_fn = self.g.build_cache_filename(CacheFile::EulerPath, None)?;
         let (cycles, _mmap) = Self::create_memmapped_slice_from_tmp_file::<usize>(mmap_fn)?;
 
         cycle_offsets.iter().for_each(|(idx, begin, _)| {

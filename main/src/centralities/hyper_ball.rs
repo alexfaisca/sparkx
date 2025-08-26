@@ -1,7 +1,8 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
-use crate::utils::*;
+#[cfg(test)]
+use crate::utils::{FileType::ExactClosenessCentrality, H};
 
 use crossbeam::thread;
 use hyperloglog_rs::prelude::Precision8;
@@ -19,18 +20,17 @@ type ProceduralMemoryHB<P, const B: usize> = (
     AbstractedProceduralMemoryMut<f64>,
 );
 
+/// Enum for centralities' caching filenames' creation manager logic.
 #[allow(dead_code)]
-#[allow(clippy::upper_case_acronyms)]
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Centrality {
-    HYPERBALL,
-    HARMONIC,
-    NHARMONIC,
-    NCHARMONIC,
-    CLOSENESS,
-    NCLOSENESS,
-    NCCLOSENESS,
-    LIN,
+    Harmonic,
+    NHarmonic,
+    NCHarmonic,
+    Closeness,
+    NCloseness,
+    NCCloseness,
+    Lin,
 }
 
 /// For the *HyperBall Algorithm* described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S. on [`GraphMemoryMap`] instances.
@@ -48,7 +48,7 @@ pub struct HyperBallInner<
     const B: usize = 6,
 > {
     /// Graph for which node/edge coreness is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing each node's *HyperLogLog++* counter.
     counters: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
     /// Memmapped slice containing each node's distance accumulator.
@@ -71,97 +71,21 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     const DEAFULT_MAX_DEPTH: usize = 100;
     const MAX_MAX_DEPTH: usize = 1024;
 
-    fn init_cache(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
-        let c_fn = cache_file_name(graph.cache_fst_filename(), FileType::HyperBall(H::H), None)?;
-        let d_fn = cache_file_name(
-            graph.cache_fst_filename(),
-            FileType::HyperBallDistances(H::H),
-            None,
-        )?;
-        let i_fn = cache_file_name(
-            graph.cache_fst_filename(),
-            FileType::HyperBallInvDistances(H::H),
-            None,
-        )?;
-        let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
-            c_fn,
-            graph.size() - 1,
-            true,
-        )?;
-        let distances = SharedSliceMut::<f64>::abst_mem_mut(d_fn, graph.size() - 1, true)?;
-        let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(i_fn, graph.size() - 1, true)?;
-
-        Ok((counters, distances, inverse_distances))
-    }
-
-    fn centrality_cache_file_name(
-        template_fn: String,
-        centrality: Centrality,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        match centrality {
-            Centrality::HYPERBALL => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallHarmonicCentrality(H::H),
-                Some(0),
-            )?),
-            Centrality::CLOSENESS => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallClosenessCentrality(H::H),
-                Some(0),
-            )?),
-            Centrality::NCLOSENESS => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallClosenessCentrality(H::H),
-                Some(1),
-            )?),
-            Centrality::NCCLOSENESS => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallClosenessCentrality(H::H),
-                Some(2),
-            )?),
-            Centrality::HARMONIC => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallHarmonicCentrality(H::H),
-                Some(0),
-            )?),
-            Centrality::NHARMONIC => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallHarmonicCentrality(H::H),
-                Some(1),
-            )?),
-            Centrality::NCHARMONIC => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallHarmonicCentrality(H::H),
-                Some(1),
-            )?),
-            Centrality::LIN => Ok(cache_file_name(
-                template_fn,
-                FileType::HyperBallLinCentrality(H::H),
-                None,
-            )?),
-        }
-    }
-
     /// Performs the *HyperBall Algorithm* as described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S.
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     /// * `precision` --- the precision to be used for each nodes *HyperLogLog++* counter (defaults to 8, equivalent to 2⁸-register bits per node).
     /// * `max_depth` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (node_count, overflow) = graph.size().overflowing_sub(1);
-        if overflow || node_count == 0 {
-            return Err("error initiating hyperball graph is empty".into());
-        }
+        let node_count = g.size().map_or(0, |s| s);
         // make sure presision is within bounds
         let precision =
             precision.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
@@ -175,7 +99,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
             std::cmp::max(HyperBallInner::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
         });
         // init cached vecs for distances and inverse distances accumulation
-        let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(graph)?;
+        let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(g)?;
         // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
         (0..node_count).for_each(|u| {
             *counters.get_mut(u) = hyperloglog_rs::prelude::HyperLogLog::<P, B>::default();
@@ -185,7 +109,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         });
 
         let mut hyper_ball = Self {
-            graph,
+            g,
             counters,
             distances,
             inverse_distances,
@@ -198,33 +122,57 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         Ok(hyper_ball)
     }
 
+    fn init_cache(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
+        let node_count = g.size().map_or(0, |s| s);
+
+        let c_fn = g.build_cache_filename(CacheFile::HyperBall, None)?;
+        let d_fn = g.build_cache_filename(CacheFile::HyperBallDistances, None)?;
+        let i_fn = g.build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
+
+        let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
+            &c_fn, node_count, true,
+        )?;
+        let distances = SharedSliceMut::<f64>::abst_mem_mut(&d_fn, node_count, true)?;
+        let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(&i_fn, node_count, true)?;
+
+        Ok((counters, distances, inverse_distances))
+    }
+
     #[deprecated]
     fn _compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = self.g.size().map_or(0, |s| s);
+
+        let mut counters = self.counters.shared_slice();
+
+        let s_fn = self.g.build_cache_filename(CacheFile::HyperBall, Some(0))?;
+        let mut swap = SharedSliceMut::<HyperLogLog<P, B>>::abst_mem_mut(&s_fn, node_count, true)?;
+
+        let mut counters =
+            counters
+                .mut_slice(0, node_count)
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    "error getting counters mut slice".into()
+                })?;
+
+        let mut swap =
+            swap.mut_slice(0, node_count)
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    "error getting counters swap mut slice".into()
+                })?;
+
         let mut t_f64: f64 = 1.; // first iteration is initialization
         let mut inv_t_f64: f64 = 1.; // first iteration is initialization
         let mut changed = 0;
-        let s_fn = Self::centrality_cache_file_name(
-            self.graph.cache_fst_filename(),
-            Centrality::HYPERBALL,
-        )?;
-        let mut swap =
-            SharedSliceMut::<HyperLogLog<P, B>>::abst_mem_mut(s_fn, self.graph.size() - 1, true)?;
-
-        let mut counters = self.counters.shared_slice();
-        let mut counters = counters.mut_slice(0, self.graph.size() - 1).ok_or_else(
-            || -> Box<dyn std::error::Error> { "error getting counters mut slice".into() },
-        )?;
-        let mut swap = swap.mut_slice(0, self.graph.size() - 1).ok_or_else(
-            || -> Box<dyn std::error::Error> { "error getting counters swap mut slice".into() },
-        )?;
 
         loop {
-            for u in 0..self.graph.size() - 1 {
+            for u in 0..node_count {
                 let mut a: HyperLogLog<P, B> = counters[u];
 
                 let prev_count = a.estimate_cardinality();
 
-                for v in self.graph.neighbours(u)? {
+                for v in self.g.neighbours(u)? {
                     a |= counters[v.dest()];
                 }
 
@@ -254,34 +202,29 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     }
 
     fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1;
-        let threads = self.graph.thread_num().max(get_physical());
+        let node_count = self.g.size().map_or(0, |s| s);
+        let threads = self.g.thread_num().max(get_physical());
         let node_load = node_count.div_ceil(threads);
 
         let global_changed = Arc::new(AtomicUsize::new(0));
         let synchronize = Arc::new(Barrier::new(threads));
 
-        let mut t_f64: f64 = 1.; // first iteration is initialization
-        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
-        let mut changed = 0;
-
-        let s_fn = Self::centrality_cache_file_name(
-            self.graph.cache_fst_filename(),
-            Centrality::HYPERBALL,
-        )?;
+        let s_fn = self.g.build_cache_filename(CacheFile::HyperBall, Some(0))?;
         let swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
-            s_fn,
-            self.graph.size() - 1,
-            true,
+            &s_fn, node_count, true,
         )?;
 
         let counters = self.counters.shared_slice();
         let swap = swap.shared_slice();
 
+        let mut t_f64: f64 = 1.; // first iteration is initialization
+        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
+        let mut changed = 0;
+
         thread::scope(
             |scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 for tid in 0..threads {
-                    let graph = self.graph.clone();
+                    let graph = self.g.clone();
 
                     let mut counters = counters;
                     let mut swap = swap;
@@ -297,7 +240,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             loop {
                                 {
-                                    println!("HyperBall tid {tid} iteration {t_f64}");
+                                    // println!("HyperBall tid {tid} iteration {t_f64}");
                                 }
 
                                 for u in begin..end {
@@ -358,7 +301,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?;
 
         self.counters.flush()?;
-        cleanup_cache()?;
 
         // for i in 0..node_count {
         //     print!("\t|id: {i} ==> counter: {}|", self.counters.get(i).estimate_cardinality());
@@ -366,6 +308,24 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         // println!();
 
         Ok(())
+    }
+
+    /// Manager logic for centralities' caching filenames' creation.
+    fn centrality_cache_file_name(
+        &self,
+        centrality: Centrality,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let (cache_file_type, seq) = match centrality {
+            Centrality::Closeness => (CacheFile::HyperBallClosenessCentrality, Some(0)),
+            Centrality::NCloseness => (CacheFile::HyperBallClosenessCentrality, Some(1)),
+            Centrality::NCCloseness => (CacheFile::HyperBallClosenessCentrality, Some(2)),
+            Centrality::Harmonic => (CacheFile::HyperBallHarmonicCentrality, Some(0)),
+            Centrality::NHarmonic => (CacheFile::HyperBallHarmonicCentrality, Some(1)),
+            Centrality::NCHarmonic => (CacheFile::HyperBallHarmonicCentrality, Some(2)),
+            Centrality::Lin => (CacheFile::HyperBallLinCentrality, Some(0)),
+        };
+
+        self.g.build_cache_filename(cache_file_type, seq)
     }
 
     /// Computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
@@ -381,20 +341,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         &mut self,
         normalize: Option<bool>,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1; // |V|
-        let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
+        let node_count = self.g.size().map_or(0, |s| s); // |V|
 
-        let c_fn = Self::centrality_cache_file_name(
-            self.graph.cache_fst_filename(),
-            normalize.map_or(Centrality::CLOSENESS, |local| {
+        let c_fn =
+            self.centrality_cache_file_name(normalize.map_or(Centrality::Closeness, |local| {
                 if local {
-                    Centrality::NCCLOSENESS
+                    Centrality::NCCloseness
                 } else {
-                    Centrality::NCLOSENESS
+                    Centrality::NCloseness
                 }
-            }),
-        )?;
-        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+            }))?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
 
         // unnormalized
         if normalize.is_none() {
@@ -416,13 +373,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         / *self.distances.get(idx);
                 }
             }
-        // normalized by node count
+        // normalized by node count (|V| - 1)
         } else {
+            let normalize_factor = node_count as f64 - 1.; // |V| - 1
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
                     *mem.get_mut(idx) = 0.;
                 } else {
-                    *mem.get_mut(idx) = node_count_f64 / *self.distances.get(idx);
+                    *mem.get_mut(idx) = normalize_factor / *self.distances.get(idx);
                 }
             }
         }
@@ -445,20 +403,17 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         &mut self,
         normalize: Option<bool>,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1; // |V|
-        let node_count_f64 = self.graph.size() as f64 - 2.; // |V| - 1
+        let node_count = self.g.size().map_or(0, |s| s); // |V|
 
-        let c_fn = Self::centrality_cache_file_name(
-            self.graph.cache_fst_filename(),
-            normalize.map_or(Centrality::HARMONIC, |local| {
+        let c_fn =
+            self.centrality_cache_file_name(normalize.map_or(Centrality::Harmonic, |local| {
                 if local {
-                    Centrality::NCHARMONIC
+                    Centrality::NCHarmonic
                 } else {
-                    Centrality::NHARMONIC
+                    Centrality::NHarmonic
                 }
-            }),
-        )?;
-        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+            }))?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
 
         // unnormalized
         if normalize.is_none() {
@@ -479,13 +434,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         / (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.);
                 }
             }
-        // normalized by node count
+        // normalized by node count (|v| - 1)
         } else {
+            let normalize_factor = node_count as f64 - 1.; // |V| - 1
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
                     *mem.get_mut(idx) = 0.;
                 } else {
-                    *mem.get_mut(idx) = *self.inverse_distances.get(idx) / node_count_f64;
+                    *mem.get_mut(idx) = *self.inverse_distances.get(idx) / normalize_factor;
                 }
             }
         }
@@ -500,11 +456,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     pub fn compute_lins_centrality(
         &mut self,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1; // |V|
+        let node_count = self.g.size().map_or(0, |s| s); // |V|
 
-        let c_fn =
-            Self::centrality_cache_file_name(self.graph.cache_fst_filename(), Centrality::LIN)?;
-        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(c_fn, node_count, true)?;
+        let c_fn = self.centrality_cache_file_name(Centrality::Lin)?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
 
         // lin's centrality is like a closeness centraility doubly normalized by number of
         // reacheable nodes
@@ -528,9 +483,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 mod test {
     use hyperloglog_rs::prelude::*;
 
-    use crate::test_common::get_or_init_dataset_cache_entry;
-
     use super::*;
+    use crate::test_common::{get_or_init_dataset_cache_entry, get_or_init_dataset_exact_value};
+    use paste::paste;
+    use std::path::Path;
 
     fn mae(a: &[f64], b: &[f64]) -> f64 {
         a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / (a.len() as f64)
@@ -571,33 +527,69 @@ mod test {
         1.0 - (6.0 * ssd) / (n * (n * n - 1.0).max(1.0))
     }
 
-    #[test]
-    fn validate_hyperball_harmonic() -> Result<(), Box<dyn std::error::Error>> {
-        use rustworkx_core::centrality::closeness_centrality;
-        let path = "../ggcat/graphs/random_graph_1_5.lz4";
+    macro_rules! graph_tests {
+        ($($name:ident => $path:expr ,)*) => {
+            $(
+                paste! {
+                    #[test]
+                    fn [<hyperball_closeness_centrality_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                        generic_test($path)
+                    }
+                }
+            )*
+        }
+    }
 
-        // let graph_cache =
-        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
         let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
         let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
 
         let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&graph, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
-        let graph_petgraph_export = graph.export_petgraph_stripped()?;
-        let exact = closeness_centrality(&graph_petgraph_export, false)
-            .iter()
-            .map(|opt| opt.unwrap_or(0.))
-            .collect::<Vec<f64>>();
+
+        let e_fn =
+            get_or_init_dataset_exact_value(path.as_ref(), &graph, ExactClosenessCentrality(H::H))?;
+        let exact =
+            SharedSliceMut::<f64>::abst_mem_mut(&e_fn, graph.size().map_or(0, |s| s), true)?;
+        let e = exact.shared_slice();
 
         // metrics
-        let e_mae = mae(approx.shared_slice().as_slice(), exact.as_slice());
-        let e_mape = mape(approx.shared_slice().as_slice(), exact.as_slice());
-        let rho = spearman_rho(approx.shared_slice().as_slice(), exact.as_slice());
+        let e_mae = mae(approx.shared_slice().as_slice(), e.as_slice());
+        let e_mape = mape(approx.shared_slice().as_slice(), e.as_slice());
+        let rho = spearman_rho(approx.shared_slice().as_slice(), e.as_slice());
 
-        eprintln!("dataset={path}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}");
+        eprintln!(
+            "dataset={:?}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}",
+            path.as_ref()
+        );
 
         // guardrails to fail regressions
-        assert!(rho > 0.95, "Spearman too low on {path}");
+        assert!(rho > 0.95, "Spearman too low on {:?}", path.as_ref());
         Ok(())
+    }
+
+    // generate test cases from dataset
+    graph_tests! {
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
+        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
+        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        // … add the rest
     }
 }

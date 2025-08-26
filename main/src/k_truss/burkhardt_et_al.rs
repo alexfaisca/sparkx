@@ -1,7 +1,6 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
-use crate::utils::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
@@ -27,7 +26,7 @@ type ProceduralMemoryBurkhardtEtAl = (
 #[derive(Debug)]
 pub struct AlgoBurkhardtEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which edge trussness is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing the trussness of each edge.
     k_trusses: AbstractedProceduralMemoryMut<u8>,
 }
@@ -40,16 +39,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_fn =
-            cache_file_name(graph.cache_fst_filename(), FileType::KTrussBEA(H::H), None)?;
-        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(output_fn.clone(), graph.width(), true)?;
-        let burkhardt_et_al = Self { graph, k_trusses };
+    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::KTrussBEA, None)?;
+        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
+        let burkhardt_et_al = Self { g, k_trusses };
         burkhardt_et_al.compute(10)?;
         Ok(burkhardt_et_al)
     }
@@ -58,18 +54,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryBurkhardtEtAl, Box<dyn std::error::Error>> {
-        let edge_count = self.graph.width();
+        let edge_count = self.g.width();
+        let edge_count2 = self.g.width() * 2;
 
-        let template_fn = self.graph.cache_index_filename();
-        let t_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(0))?;
-        let el_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(1))?;
-        let ei_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(2))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussBEA(H::H), Some(3))?;
+        let t_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(0))?;
+        let el_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(1))?;
+        let ei_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(2))?;
+        let s_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(3))?;
 
-        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(t_fn, edge_count, mmap > 0)?;
-        let edge_list = SharedSliceMut::<usize>::abst_mem_mut(el_fn, edge_count, mmap > 1)?;
-        let edge_index = SharedSliceMut::<usize>::abst_mem_mut(ei_fn, edge_count, mmap > 1)?;
-        let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(s_fn, edge_count * 2, mmap > 2)?;
+        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(&t_fn, edge_count, mmap > 0)?;
+        let edge_list = SharedSliceMut::<usize>::abst_mem_mut(&el_fn, edge_count, mmap > 1)?;
+        let edge_index = SharedSliceMut::<usize>::abst_mem_mut(&ei_fn, edge_count, mmap > 1)?;
+        let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&s_fn, edge_count2, mmap > 2)?;
 
         Ok((tri_count, edge_list, edge_index, stack))
     }
@@ -85,22 +81,22 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1;
-        let edge_count = self.graph.width();
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
-        let threads = self.graph.thread_num().max(get_physical());
+        let threads = self.g.thread_num().max(get_physical());
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
         // Shared atomic & simple arrays for counts and trussness
         let (triangle_count, edges, edge_index, edge_stack) =
             self.init_procedural_memory_burkhardt_et_al(mmap)?;
         let mut trussness = self.k_trusses.shared_slice();
 
-        let edge_reciprocal = self.graph.get_edge_reciprocal()?;
-        let edge_out = self.graph.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = self.g.get_edge_reciprocal()?;
+        let edge_out = self.g.get_edge_dest_id_over_source()?;
 
         // Thread syncronization
         let synchronize = Arc::new(Barrier::new(threads));

@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use tool::centralities::hyper_ball::*;
+#[allow(unused_imports)]
 use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
@@ -152,13 +153,13 @@ fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     threads: Option<u8>,
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     let graph_cache: GraphCache<EdgeType, Edge> =
-        GraphCache::<EdgeType, Edge>::open(data_path, None)?;
+        GraphCache::<EdgeType, Edge>::open(&data_path, None)?;
     let graph_mmaped = GraphMemoryMap::<EdgeType, Edge>::init(graph_cache, threads)?;
 
     /* ********************************************************************************* */
     // Lookup test
     /* ********************************************************************************* */
-    label_search(&graph_mmaped);
+    metalabel_search(&graph_mmaped);
 
     /* ********************************************************************************* */
     // End of lookup test
@@ -167,7 +168,7 @@ fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     Ok(graph_mmaped)
 }
 
-fn label_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
+fn metalabel_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     graph: &GraphMemoryMap<EdgeType, Edge>,
 ) {
     loop {
@@ -182,7 +183,7 @@ fn label_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
         if input.is_empty() {
             break;
         }
-        match graph.node_id_from_kmer(input) {
+        match graph.node_id_from_metalabel(input) {
             Ok(val) => println!("Value for key {} is {}", input, val),
             Err(e) => println!("Key not found: {e}"),
         }
@@ -206,8 +207,8 @@ fn parse_bytes_mmaped<
     let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
         GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
     println!(
-        "graph initialized (|V| = {}, |E| = {}) {:?}",
-        graph_mmaped.size() - 1,
+        "graph initialized (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
         graph_mmaped.width(),
         time.elapsed()
     );
@@ -224,29 +225,30 @@ fn parse_bytes_mmaped<
     // Lookup test
     /* ********************************************************************************* */
 
-    // label_search(&graph_mmaped);
+    // metalabel_search(&graph_mmaped);
 
     /* ********************************************************************************* */
     // End of lookup test
     /* ********************************************************************************* */
     //
 
-    // let time = Instant::now();
-    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
-    // println!("hyperball {:?}", time.elapsed());
-    // let time = Instant::now();
-    // hyperball.compute_harmonic_centrality(None)?;
-    // println!("harmonic centrality {:?}", time.elapsed());
-    // println!();
+    let time = Instant::now();
+    let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
+    println!("hyperball {:?}", time.elapsed());
+    let time = Instant::now();
+    hyperball.compute_harmonic_centrality(None)?;
+    println!("harmonic centrality {:?}", time.elapsed());
+    println!();
 
-    // let mut i = 0;
-    // while i < graph_mmaped.size() - 1 {
-    //     let time = Instant::now();
-    //     let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
-    //     let _ = hk_relax.compute()?;
-    //     println!("HKRelax {:?}", time.elapsed());
-    //     i += 12346;
-    // }
+    let mut i = 0;
+    while i < graph_mmaped.size().map_or(0, |s| s) {
+        let time = Instant::now();
+        let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
+        let _ = hk_relax.compute()?;
+        println!("HKRelax {:?}", time.elapsed());
+        i += 12346;
+    }
+
     let time = Instant::now();
     let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     println!("found {} communities", _louvain.community_count());
@@ -279,38 +281,42 @@ fn parse_bytes_mmaped<
 
     graph_mmaped.cleanup_cache()?;
 
-    // let time = Instant::now();
-    // let _pkt = AlgoPKT::new(&graph_mmaped)?;
-    // println!("k-truss pkt {:?}", time.elapsed());
-    // println!();
-    // let time = Instant::now();
-    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    // println!("k-core batagelj zaversnik {:?}", time.elapsed());
-    // let time = Instant::now();
-    // let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    // println!("found {} euler trails", _euler_trail.trail_number());
-    // println!("euler trail built {:?}", time.elapsed());
+    let time = Instant::now();
+    let _pkt = AlgoPKT::new(&graph_mmaped)?;
+    println!("k-truss pkt {:?}", time.elapsed());
+    println!();
+    let time = Instant::now();
+    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    let time = Instant::now();
+    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
 
-    // let time = Instant::now();
-    // let _approx_dirichlet_hkpr =
-    //     ApproxDirHKPR::new(&graph_mmaped, 0.008, 8, 100000, 4000000, 0.05)?;
-    // let _ = _approx_dirichlet_hkpr.compute()?;
-    // println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
-    // let _ = graph_mmaped.cleanup_cache();
-    // let b = graph_mmaped
-    //     .apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes".to_string()))?;
-    // println!("graph even nodes {:?}", b);
+    let mut i = 0;
+    while i < graph_mmaped.size().map_or(0, |s| s) {
+        let time = Instant::now();
+        let _approx_dirichlet_hkpr =
+            ApproxDirHKPR::new(&graph_mmaped, 0.008, i, 100000, 4000000, 0.05)?;
+        let _ = _approx_dirichlet_hkpr.compute()?;
+        println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
+        i += 12934600;
+    }
 
-    // let time = Instant::now();
-    // let a = graph_mmaped.export_petgraph_stripped()?;
-    // println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
-    // let time = Instant::now();
-    // use rustworkx_core::centrality::betweenness_centrality;
-    // println!(
-    //     "rustworkx_core export {:?} {:?}",
-    //     betweenness_centrality(&a, false, true, 50),
-    //     time.elapsed()
-    // );
+    let b = graph_mmaped.apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes"))?;
+    println!("graph even nodes {:?}", b);
+
+    let time = Instant::now();
+    println!("try export stripped");
+    let a = graph_mmaped.export_petgraph_stripped()?;
+    println!("rustworkx_core export {:?} {:?}", a, time.elapsed());
+    let time = Instant::now();
+    use rustworkx_core::centrality::betweenness_centrality;
+    println!(
+        "rustworkx_core export {:?} {:?}",
+        betweenness_centrality(&a, false, true, 50),
+        time.elapsed()
+    );
     Ok(graph_mmaped)
 }
 

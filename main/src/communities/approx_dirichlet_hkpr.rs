@@ -13,7 +13,7 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct ApproxDirHKPR<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which the community is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Diffusion temperature.
     pub t: f64,
     /// Diffusion error (ε).
@@ -48,7 +48,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the community is computed.
     /// * `seed_node` --- seed node.
     /// * `eps` --- ε (eps) error parameter.
     /// * `target_conductance` --- target conductance parameter.
@@ -59,30 +59,20 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     fn evaluate_params(
-        graph: GraphMemoryMap<EdgeType, Edge>,
+        g: &GraphMemoryMap<EdgeType, Edge>,
         seed_node: usize,
         eps: f64,
         target_conductance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = match graph.size().overflowing_sub(1) {
-            (_, true) => {
-                return Err(
-                    "error hk-relax invalid parameters: |V| == 0, the graph is empty".into(),
-                );
-            }
-            (i, _) => {
-                if i == 0 {
-                    return Err(
-                        "error hk-relax invalid parameters: actual |V| == 0, the graph is empty"
-                            .into(),
-                    );
-                }
-                i
-            }
+        let node_count = g.size().map_or(0, |s| s);
+        if node_count == 0 {
+            return Err(
+                "error approx-dirichlet-hkpr invalid parameters: actual |V| == 0, the graph is empty".into(),
+            );
         };
         if !eps.is_normal() || eps <= 0f64 || eps >= 1f64 {
             return Err(format!(
-                "error hk-relax invalid parameters: ε == {eps} doesn't satisfy 0.0 < ε 1.0",
+                "error approx-dirichlet-hkpr  invalid parameters: ε == {eps} doesn't satisfy 0.0 < ε 1.0",
             )
             .into());
         }
@@ -91,14 +81,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             || target_conductance >= 1f64
         {
             return Err(format!(
-                "error hk-relax invalid parameters: target_conductance == {} doesn't satisfy 0.0 < target_conductance < 1.0",
+                "error approx-dirichlet-hkpr invalid parameters: target_conductance == {} doesn't satisfy 0.0 < target_conductance < 1.0",
                 target_conductance
             ).into());
         }
         if seed_node > node_count - 1 {
             return Err(format!(
-                "error hk-relax invalid parameters: id(seed_nodes) == {} but max_id(v in V) == {}",
-                seed_node,
+                "error approx-dirichlet-hkpr invalid parameters: id(seed_nodes) == {seed_node} but max_id(v in V) == {}",
                 node_count - 1
             )
             .into());
@@ -110,7 +99,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which the community is computed.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the community is computed.
     /// * `eps` --- ε (eps) error parameter.
     /// * `seed` --- seed node.
     /// * `target_size` --- partition's target node number.
@@ -119,14 +108,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
         eps: f64,
         seed: usize,
         target_size: usize,
         target_vol: usize,
         target_conductance: f64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let () = Self::evaluate_params(graph.clone(), seed, eps, target_conductance)?;
+        let () = Self::evaluate_params(g, seed, eps, target_conductance)?;
         let t_formula = "(1. / target_conductance) * ln((2. * sqrt(target_vol)) / (1. - ε) + 2. * ε * target_size)";
         let t = f64_is_nomal(
             (1. / target_conductance)
@@ -137,7 +126,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             t_formula,
         )?;
         Ok(ApproxDirHKPR {
-            graph,
+            g,
             t,
             eps,
             seed,
@@ -156,7 +145,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             Ok(dist) => dist,
             Err(e) => {
                 return Err(format!(
-                    "error approx-dirchlet-hk couldn't sample poission distribution: {e}",
+                    "error approx-dirchlet-hkpr couldn't sample poission distribution: {e}",
                 )
                 .into());
             }
@@ -183,7 +172,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             }
             idx_plus_one += idx_plus_one;
         }
-        Err("error approx-dirchlet-hk didn't find random neighbour".into())
+        Err("error approx-dirchlet-hkpr didn't find random neighbour".into())
     }
 
     fn random_walk_seed(
@@ -193,11 +182,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ) -> Result<usize, Box<dyn std::error::Error>> {
         let mut curr_node = seed_node;
         for _ in 0..k {
-            let (deg_u, u_n) = match self.graph.neighbours(curr_node) {
+            let (deg_u, u_n) = match self.g.neighbours(curr_node) {
                 Ok(u_n) => (u_n.remaining_neighbours(), u_n),
                 Err(e) => {
                     return Err(format!(
-                        "error approx-dirchlet-hk couldn't get neighbours for {curr_node}: {e}"
+                        "error approx-dirchlet-hkpr couldn't get neighbours for {curr_node}: {e}"
                     )
                     .into());
                 }
@@ -223,10 +212,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         &self,
         big_k: ApproxDirichletHeatKernelK,
     ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
-        let node_count = match self.graph.size().overflowing_sub(1) {
-            (_, true) => return Err("error approx-dirchlet-hk |V| + 1 == 0".into()),
-            (0, _) => return Err("error approx-dirchlet-hk |V| == 0".into()),
-            (i, _) => i as f64,
+        let node_count = match self.g.size().map_or(0, |s| s) {
+            0 => return Err("error approx-dirchlet-hkpr |V| == 0".into()),
+            i => i as f64,
         };
 
         let r = f64_is_nomal(
@@ -245,7 +233,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             ApproxDirichletHeatKernelK::Unlim => f64::INFINITY,
             #[expect(unreachable_patterns)]
             _ => {
-                return Err(format!("error approx-dirchlet-hk unknown K {:?}", big_k).into());
+                return Err(format!("error approx-dirchlet-hkpr unknown K {:?}", big_k).into());
             }
         };
         let k = OrderedFloat(k);
@@ -256,7 +244,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         let num_samples: usize = match f64_to_usize_safe(r) {
             Some(s) => s,
             None => {
-                return Err(format!("error approx-dirchlet-hk couldn't cast {r} to usize").into());
+                return Err(
+                    format!("error approx-dirchlet-hkpr couldn't cast {r} to usize").into(),
+                );
             }
         };
         let steps: Vec<OrderedFloat<f64>> = Self::random_sample_poisson(self.t, num_samples)?;
@@ -268,7 +258,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
                 Some(val) => val,
                 None => {
                     return Err(format!(
-                        "error approx-dirchlet-hk couldn't cast {little_k} to usize"
+                        "error approx-dirchlet-hkpr couldn't cast {little_k} to usize"
                     )
                     .into());
                 }
@@ -288,12 +278,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             .map(|u| {
                 (
                     *u,
-                    *aprox_hkpr_samples.get(u).unwrap() / self.graph.node_degree(*u) as f64,
+                    *aprox_hkpr_samples.get(u).unwrap() / self.g.node_degree(*u) as f64,
                 )
             })
             .collect::<Vec<(usize, f64)>>();
 
-        match self.graph.sweep_cut_over_diffusion_vector_by_conductance(
+        match self.g.sweep_cut_over_diffusion_vector_by_conductance(
             p.as_mut(),
             Some(self.target_size),
             Some(self.target_vol),
@@ -305,19 +295,16 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
                 );
                 Ok(c)
             }
-            Err(e) => Err(format!("error performing sweepcut: {e}").into()),
+            Err(e) => Err(format!("error approx-dirichlet-hkpr performing sweepcut: {e}").into()),
         }
     }
 
     /// Computes the *SolverApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O. with the therein described optimizations.
     ///
     pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
-        let node_count = match self.graph.size().overflowing_sub(1) {
-            (_, true) => {
-                return Err("error approx-dirchlet-hk |V| + 1 == 0".into());
-            }
-            (0, _) => return Err("error approx-dirchlet-hk |V| == 0".into()),
-            (i, _) => i as f64,
+        let node_count = match self.g.size().map_or(0, |s| s) {
+            0 => return Err("error approx-dirchlet-hkpr |V| == 0".into()),
+            i => i as f64,
         };
 
         let r = f64_is_nomal(
@@ -336,7 +323,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         let num_samples: usize = match f64_to_usize_safe(r) {
             Some(s) => s,
             None => {
-                return Err(format!("error approx-dirchlet-hk couldn't cast {r} to usize").into());
+                return Err(
+                    format!("error approx-dirchlet-hkpr couldn't cast {r} to usize").into(),
+                );
             }
         };
         let steps: Vec<OrderedFloat<f64>> = Self::random_sample_poisson(self.t, num_samples)?;
@@ -348,7 +337,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
                 Some(val) => val,
                 None => {
                     return Err(format!(
-                        "error approx-dirchlet-hk couldn't cast {little_k} to usize"
+                        "error approx-dirchlet-hkpr couldn't cast {little_k} to usize"
                     )
                     .into());
                 }
@@ -368,12 +357,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             .map(|u| {
                 (
                     *u,
-                    *aprox_hkpr_samples.get(u).unwrap() / self.graph.node_degree(*u) as f64,
+                    *aprox_hkpr_samples.get(u).unwrap() / self.g.node_degree(*u) as f64,
                 )
             })
             .collect::<Vec<(usize, f64)>>();
 
-        match self.graph.sweep_cut_over_diffusion_vector_by_conductance(
+        match self.g.sweep_cut_over_diffusion_vector_by_conductance(
             p.as_mut(),
             Some(self.target_size),
             Some(self.target_vol),
@@ -385,7 +374,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
                 );
                 Ok(c)
             }
-            Err(e) => Err(format!("error performing sweep cut: {e}").into()),
+            Err(e) => Err(format!("error approx-dirichlet-hkpr performing sweep cut: {e}").into()),
         }
     }
 }

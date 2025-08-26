@@ -1,7 +1,6 @@
 use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
-use crate::utils::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
@@ -26,7 +25,7 @@ type ProceduralMemoryLiuEtAL = (
 #[derive(Debug)]
 pub struct AlgoLiuEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which node/edge coreness is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing the coreness of each edge.
     k_cores: AbstractedProceduralMemoryMut<u8>,
 }
@@ -41,16 +40,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let output_fn =
-            cache_file_name(graph.cache_fst_filename(), FileType::KCoreLEA(H::H), None)?;
-        let k_cores = SharedSliceMut::<u8>::abst_mem_mut(output_fn.clone(), graph.width(), true)?;
-        let liu_et_al = Self { graph, k_cores };
+    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::KCoreLEA, None)?;
+        let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
+        let liu_et_al = Self { g, k_cores };
         liu_et_al.compute(10)?;
         Ok(liu_et_al)
     }
@@ -58,23 +54,22 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryLiuEtAL, Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1;
-        let edge_count = self.graph.width();
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
-        let template_fn = self.graph.cache_edges_filename();
-        let d_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(0))?;
-        let ni_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(5))?;
-        let a_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(1))?;
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(2))?;
-        let f_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(3))?;
-        let fs_fn = cache_file_name(template_fn.clone(), FileType::KCoreLEA(H::H), Some(4))?;
+        let d_fn = self.g.build_cache_filename(CacheFile::KCoreLEA, Some(0))?;
+        let ni_fn = self.g.build_cache_filename(CacheFile::KCoreLEA, Some(1))?;
+        let a_fn = self.g.build_cache_filename(CacheFile::KCoreLEA, Some(2))?;
+        let c_fn = self.g.build_cache_filename(CacheFile::KCoreLEA, Some(3))?;
+        let f_fn = self.g.build_cache_filename(CacheFile::KCoreLEA, Some(4))?;
+        let fs_fn = self.g.build_cache_filename(CacheFile::KCoreLEA, Some(5))?;
 
-        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(d_fn, node_count, mmap > 0)?;
-        let node_index = SharedSliceMut::<usize>::abst_mem_mut(ni_fn, node_count, mmap > 3)?;
-        let alive = SharedSliceMut::<AtomicBool>::abst_mem_mut(a_fn, node_count, mmap > 1)?;
-        let coreness = SharedSliceMut::<u8>::abst_mem_mut(c_fn, node_count, mmap > 2)?;
-        let frontier = SharedSliceMut::<usize>::abst_mem_mut(f_fn, edge_count, mmap > 3)?;
-        let frontier_swap = SharedSliceMut::<usize>::abst_mem_mut(fs_fn, edge_count, mmap > 3)?;
+        let degree = SharedSliceMut::<AtomicU8>::abst_mem_mut(&d_fn, node_count, mmap > 0)?;
+        let node_index = SharedSliceMut::<usize>::abst_mem_mut(&ni_fn, node_count, mmap > 3)?;
+        let alive = SharedSliceMut::<AtomicBool>::abst_mem_mut(&a_fn, node_count, mmap > 1)?;
+        let coreness = SharedSliceMut::<u8>::abst_mem_mut(&c_fn, node_count, mmap > 2)?;
+        let frontier = SharedSliceMut::<usize>::abst_mem_mut(&f_fn, edge_count, mmap > 3)?;
+        let frontier_swap = SharedSliceMut::<usize>::abst_mem_mut(&fs_fn, edge_count, mmap > 3)?;
 
         Ok((degree, node_index, alive, coreness, frontier, frontier_swap))
     }
@@ -91,18 +86,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1;
-        let edge_count = self.graph.width();
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
         if node_count == 0 {
             return Ok(());
         }
 
-        let threads = self.graph.thread_num().max(get_physical());
+        let threads = self.g.thread_num().max(get_physical());
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
         let (degree, _node_index, alive, coreness, frontier, swap) =
             self.init_procedural_memory_liu_et_al(mmap)?;

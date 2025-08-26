@@ -26,7 +26,7 @@ type ProceduralMemoryPKT = (
 #[derive(Debug)]
 pub struct AlgoPKT<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     /// Graph for which edge trussness is computed.
-    graph: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing the trussness of each edge.
     k_trusses: AbstractedProceduralMemoryMut<u8>,
 }
@@ -36,15 +36,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     ///
     /// # Arguments
     ///
-    /// * `graph` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        graph: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let out_fn = cache_file_name(graph.cache_fst_filename(), FileType::KTrussPKT(H::H), None)?;
-        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(out_fn.clone(), graph.width(), true)?;
-        let pkt = Self { graph, k_trusses };
+    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::KTrussPKT, None)?;
+        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
+        let pkt = Self { g, k_trusses };
         pkt.compute(10)?;
         Ok(pkt)
     }
@@ -53,22 +51,21 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryPKT, Box<dyn std::error::Error>> {
-        let edge_count = self.graph.width();
+        let edge_count = self.g.width();
 
-        let template_fn = self.graph.cache_fst_filename();
-        let c_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(1))?;
-        let n_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(2))?;
-        let p_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(3))?;
-        let ic_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(4))?;
-        let in_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(5))?;
-        let s_fn = cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), None)?;
+        let c_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(1))?;
+        let n_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(2))?;
+        let p_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(3))?;
+        let ic_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(4))?;
+        let in_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(5))?;
+        let s_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, None)?;
 
-        let curr = SharedSliceMut::<usize>::abst_mem_mut(c_fn, edge_count, mmap > 2)?;
-        let next = SharedSliceMut::<usize>::abst_mem_mut(n_fn, edge_count, mmap > 2)?;
-        let processed = SharedSliceMut::<bool>::abst_mem_mut(p_fn, edge_count, mmap > 3)?;
-        let in_curr = SharedSliceMut::<bool>::abst_mem_mut(ic_fn, edge_count, mmap > 3)?;
-        let in_next = SharedSliceMut::<bool>::abst_mem_mut(in_fn, edge_count, mmap > 3)?;
-        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(s_fn, edge_count, true)?;
+        let curr = SharedSliceMut::<usize>::abst_mem_mut(&c_fn, edge_count, mmap > 2)?;
+        let next = SharedSliceMut::<usize>::abst_mem_mut(&n_fn, edge_count, mmap > 2)?;
+        let processed = SharedSliceMut::<bool>::abst_mem_mut(&p_fn, edge_count, mmap > 3)?;
+        let in_curr = SharedSliceMut::<bool>::abst_mem_mut(&ic_fn, edge_count, mmap > 3)?;
+        let in_next = SharedSliceMut::<bool>::abst_mem_mut(&in_fn, edge_count, mmap > 3)?;
+        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(&s_fn, edge_count, true)?;
 
         Ok((curr, next, processed, in_curr, in_next, s))
     }
@@ -84,29 +81,28 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.graph.size() - 1;
-        let edge_count = self.graph.width();
+        let node_count = self.g.size().map_or(0, |s| s);
+        let edge_count = self.g.width();
 
-        let threads = self.graph.thread_num().max(get_physical());
+        let threads = self.g.thread_num().max(get_physical());
         let edge_load = edge_count.div_ceil(threads);
         let node_load = node_count.div_ceil(threads);
 
-        let index_ptr = SharedSlice::<usize>::new(self.graph.index_ptr(), node_count + 1);
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.edges_ptr(), edge_count);
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
         // Shared arrays
         let (curr, next, processed, in_curr, in_next, s) = self.init_procedural_memory_pkt(mmap)?;
-        let edge_reciprocal = self.graph.get_edge_reciprocal()?;
-        let edge_out = self.graph.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = self.g.get_edge_reciprocal()?;
+        let edge_out = self.g.get_edge_dest_id_over_source()?;
 
         // Allocate memory for thread local arrays
-        let template_fn = self.graph.cache_fst_filename();
+        let template_fn = self.g.cache_fst_filename();
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
         for i in 0..threads {
-            let x_fn =
-                cache_file_name(template_fn.clone(), FileType::KTrussPKT(H::H), Some(8 + i))?;
+            let x_fn = cache_file_name(&template_fn, FileType::KTrussPKT(H::H), Some(8 + i))?;
             x.push(SharedSliceMut::<usize>::abst_mem_mut(
-                x_fn,
+                &x_fn,
                 node_count,
                 mmap > 0,
             )?)

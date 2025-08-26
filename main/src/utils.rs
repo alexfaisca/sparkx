@@ -1,7 +1,9 @@
 use glob::glob;
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use std::{
     any::type_name,
+    fmt::Write,
     path::{Path, PathBuf},
 };
 
@@ -10,8 +12,33 @@ pub static CACHE_DIR: &str = "./.cache/";
 #[cfg(any(test, feature = "bench"))]
 pub static CACHE_DIR: &str = "./.test_cache/";
 
+#[cfg(any(test, feature = "bench"))]
+pub static EXACT_VALUE_CACHE_DIR: &str = "exact_values/";
+
 fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
+}
+
+/// Create a stable 256-bit hex id from a filename (path & extension are ignored).
+///
+/// - Deterministic across runs and machines.
+/// - Uses SHA-256.
+/// - Returns a 64-char lowercase hex string.
+#[allow(dead_code)]
+pub fn id_from_filename(name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    let digest = hasher.finalize();
+
+    // hex-encode.
+    let mut result = String::with_capacity(digest.len() * 2);
+    digest
+        .iter()
+        .try_for_each(|b| -> Result<(), Box<dyn std::error::Error>> {
+            write!(&mut result, "{:02x}", b)?;
+            Ok(())
+        })?;
+    Ok(result)
 }
 
 #[allow(dead_code)]
@@ -55,9 +82,9 @@ pub fn graph_id_from_cache_file_name(
 
 #[allow(dead_code)]
 fn graph_id_and_dir_from_cache_file_name(
-    cache_filename: String,
-) -> Result<(String, PathBuf), Box<dyn std::error::Error>> {
-    let path = Path::new(cache_filename.as_str());
+    cache_filename: &str,
+) -> Result<(&str, PathBuf), Box<dyn std::error::Error>> {
+    let path = Path::new(cache_filename);
 
     let file_name = path
         .file_name()
@@ -91,16 +118,16 @@ fn graph_id_and_dir_from_cache_file_name(
         })?
         .as_str();
 
-    Ok((id.to_string(), PathBuf::from(parent_dir)))
+    Ok((id, PathBuf::from(parent_dir)))
 }
 
 #[allow(dead_code)]
 pub fn cache_file_name(
-    original_filename: String,
+    original_filename: &str,
     target_type: FileType,
     sequence_number: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     if target_type == FileType::Test(H::H) {
         return Ok(CACHE_DIR.to_string()
             + file_name_from_id_and_sequence_for_type(
@@ -109,6 +136,20 @@ pub fn cache_file_name(
                 sequence_number,
             )
             .as_str());
+    }
+    #[cfg(any(test, feature = "bench"))]
+    if target_type == FileType::ExactClosenessCentrality(H::H)
+        || target_type == FileType::ExactHarmonicCentrality(H::H)
+        || target_type == FileType::ExactLinCentrality(H::H)
+    {
+        let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename)?;
+        let new_filename =
+            file_name_from_id_and_sequence_for_type(target_type, id, sequence_number);
+        return Ok(parent_dir
+            .join(EXACT_VALUE_CACHE_DIR)
+            .join(new_filename)
+            .to_string_lossy()
+            .into_owned());
     }
     let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename)?;
     let new_filename = file_name_from_id_and_sequence_for_type(target_type, id, sequence_number);
@@ -142,12 +183,12 @@ pub fn cleanup_cache() -> Result<(), Box<dyn std::error::Error>> {
 /// Hides file types from users.
 ///
 /// Short for "Hidden".
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum H {
     H,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum FileType {
     /// Only member visible to users
@@ -155,10 +196,9 @@ pub enum FileType {
     Edges(H),
     Index(H),
     Fst(H),
-    EulerPath(H),
-    EulerTmp(H),
     KmerTmp(H),
     KmerSortedTmp(H),
+    EulerPath(H),
     KCoreBZ(H),
     KCoreLEA(H),
     KTrussBEA(H),
@@ -173,19 +213,19 @@ pub enum FileType {
     HyperBallHarmonicCentrality(H),
     HyperBallLinCentrality(H),
     GVELouvain(H),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     ExactClosenessCentrality(H),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     ExactHarmonicCentrality(H),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     ExactLinCentrality(H),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     Test(H),
 }
 
 pub fn cache_file_name_from_id(
     target_type: FileType,
-    id: String,
+    id: &str,
     sequence_number: Option<usize>,
 ) -> String {
     CACHE_DIR.to_string()
@@ -194,7 +234,7 @@ pub fn cache_file_name_from_id(
 
 fn file_name_from_id_and_sequence_for_type(
     target_type: FileType,
-    id: String,
+    id: &str,
     sequence_number: Option<usize>,
 ) -> String {
     match target_type {
@@ -205,18 +245,14 @@ fn file_name_from_id_and_sequence_for_type(
         FileType::Edges(_) => format!("{}_{}.{}", "edges", id, "mmap"),
         FileType::Index(_) => format!("{}_{}.{}", "index", id, "mmap"),
         FileType::Fst(_) => format!("{}_{}.{}", "fst", id, "fst"),
-        FileType::EulerTmp(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulertmp", i, id, "tmp"),
-            None => format!("{}_{}.{}", "eulertmp", id, "tmp"),
-        },
-        FileType::EulerPath(_) => match sequence_number {
-            Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "mmap"),
-            None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
-        },
         FileType::KmerTmp(_) => format!("{}_{}.{}", "kmertmpfile", id, "tmp"),
         FileType::KmerSortedTmp(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kmersortedtmpfile", i, id, "tmp"),
             None => format!("{}_{}.{}", "kmersortedtmpfile", id, "mmap"),
+        },
+        FileType::EulerPath(_) => match sequence_number {
+            Some(i) => format!("{}_{}_{}.{}", "eulerpath", i, id, "tmp"),
+            None => format!("{}_{}.{}", "eulerpath", id, "mmap"),
         },
         FileType::KCoreBZ(_) => match sequence_number {
             Some(i) => format!("{}_{}_{}.{}", "kcorebz_tmp", i, id, "tmp"),
@@ -261,19 +297,19 @@ fn file_name_from_id_and_sequence_for_type(
             Some(i) => format!("{}_{}_{}.{}", "louvaintmp", i, id, "tmp"),
             None => format!("{}_{}.{}", "louvain", id, "mmap"),
         },
-        #[cfg(test)]
+        #[cfg(any(test, feature = "bench"))]
         FileType::ExactClosenessCentrality(_) => {
-            format!("{}_{}.{}", "exact_closeness_centarlity", id, "mmap")
+            format!("{}_{}.{}", "exactclosenesscentrality", id, "mmap")
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "bench"))]
         FileType::ExactHarmonicCentrality(_) => {
-            format!("{}_{}.{}", "exact_harmonic_centarlity", id, "mmap")
+            format!("{}_{}.{}", "exactharmoniccentrality", id, "mmap")
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "bench"))]
         FileType::ExactLinCentrality(_) => {
-            format!("{}_{}.{}", "exact_lin_centarlity", id, "mmap")
+            format!("{}_{}.{}", "exactlincentrality", id, "mmap")
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "bench"))]
         FileType::Test(_) => {
             let random_id = rand::random::<u128>().to_string();
             format!("{}_{}.{}", "test", random_id, "tmp")
@@ -288,10 +324,9 @@ impl std::fmt::Display for FileType {
             FileType::Edges(_) => "Edges",
             FileType::Index(_) => "Index",
             FileType::Fst(_) => "Fst",
-            FileType::EulerPath(_) => "EulerPath",
-            FileType::EulerTmp(_) => "EulerTmp",
             FileType::KmerTmp(_) => "KmerTmp",
             FileType::KmerSortedTmp(_) => "KmerSortedTmp",
+            FileType::EulerPath(_) => "EulerPath",
             FileType::KCoreBZ(_) => "KCoreBatageljZaversnik",
             FileType::KCoreLEA(_) => "KCoreLiuEtAl",
             FileType::KTrussBEA(_) => "KTrussBurkhardtEtAl",
@@ -306,13 +341,13 @@ impl std::fmt::Display for FileType {
             FileType::HyperBallHarmonicCentrality(_) => "HyperBallHarmonicCentrality",
             FileType::HyperBallLinCentrality(_) => "HyperBallLinCentrality",
             FileType::GVELouvain(_) => "Louvain",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "bench"))]
             FileType::ExactClosenessCentrality(_) => "ExactClosenessCentrality",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "bench"))]
             FileType::ExactHarmonicCentrality(_) => "ExactHarmonicCentrality",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "bench"))]
             FileType::ExactLinCentrality(_) => "ExactLinCentrality",
-            #[cfg(test)]
+            #[cfg(any(test, feature = "bench"))]
             FileType::Test(_) => "Test",
         };
         write!(f, "{}", s)

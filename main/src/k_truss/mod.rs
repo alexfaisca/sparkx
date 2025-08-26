@@ -30,7 +30,7 @@ mod _verify {
         edge_trussness: AbstractedProceduralMemoryMut<u8>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let threads = get_physical() * 2;
-        let node_count = graph.size() - 1;
+        let node_count = graph.size().map_or(0, |s| s);
         let edge_count = graph.width();
         let node_load = node_count.div_ceil(threads);
         // trussness length == graph width
@@ -46,16 +46,14 @@ mod _verify {
             return Ok(());
         }
 
-        let trussness = edge_trussness.shared_slice();
-
-        let index_ptr = SharedSlice::<usize>::new(graph.index_ptr(), node_count + 1);
+        let index_ptr = SharedSlice::<usize>::new(graph.index_ptr(), graph.offsets_size());
         let graph_ptr = SharedSlice::<Edge>::new(graph.edges_ptr(), edge_count);
 
-        let support = SharedSliceMut::<AtomicU8>::abst_mem_mut(
-            cache_file_name("".to_string(), FileType::Test(H::H), None)?,
-            edge_count,
-            true,
-        )?;
+        let trussness = edge_trussness.shared_slice();
+        // suport check test filename
+        let sct_fn = cache_file_name("", FileType::Test(H::H), None)?;
+        let support = SharedSliceMut::<AtomicU8>::abst_mem_mut(&sct_fn, edge_count, true)?;
+
         let edge_reciprocal = graph.get_edge_reciprocal()?;
         let edge_out = graph.get_edge_dest_id_over_source()?;
 
