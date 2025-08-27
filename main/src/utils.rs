@@ -24,10 +24,15 @@ fn _type_of<T>(_: T) -> &'static str {
 /// - Deterministic across runs and machines.
 /// - Uses SHA-256.
 /// - Returns a 64-char lowercase hex string.
+///
+/// # Arguments
+///
+/// * `key` --- the key to be hashed in order to obtain the hexadecimal id.
+///
 #[allow(dead_code)]
-pub fn id_from_filename(name: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub fn id_from_filename(key: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut hasher = Sha256::new();
-    hasher.update(name.as_bytes());
+    hasher.update(key.as_bytes());
     let digest = hasher.finalize();
 
     // hex-encode.

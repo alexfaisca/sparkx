@@ -201,7 +201,8 @@ fn parse_bytes_mmaped<
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
-    let graph_cache = GraphCache::<EdgeType, Edge>::from_file(path.clone(), id, None, None)?;
+    let graph_cache =
+        GraphCache::<EdgeType, Edge>::from_file(path.clone(), id, None, Some(|_| true))?;
     println!("cache no fst built {:?}", time.elapsed());
     let time = Instant::now();
     let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
@@ -291,18 +292,18 @@ fn parse_bytes_mmaped<
     println!("found {} euler trails", _euler_trail.trail_number());
     println!("euler trail built {:?}", time.elapsed());
 
-    let mut i = 0;
-    while i < graph_mmaped.size().map_or(0, |s| s) {
-        let time = Instant::now();
-        let _approx_dirichlet_hkpr =
-            ApproxDirHKPR::new(&graph_mmaped, 0.008, i, 100000, 4000000, 0.05)?;
-        let _ = _approx_dirichlet_hkpr.compute()?;
-        println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
-        i += 12934600;
-    }
-
-    let b = graph_mmaped.apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes"))?;
-    println!("graph even nodes {:?}", b);
+    // let mut i = 0;
+    // while i < graph_mmaped.size().map_or(0, |s| s) {
+    //     let time = Instant::now();
+    //     let _approx_dirichlet_hkpr =
+    //         ApproxDirHKPR::new(&graph_mmaped, 0.008, i, 100000, 4000000, 0.05)?;
+    //     let _ = _approx_dirichlet_hkpr.compute()?;
+    //     println!("ApproxDirichletHeatKernelK {:?}", time.elapsed());
+    //     i += 12934600;
+    // }
+    //
+    // let b = graph_mmaped.apply_mask_to_nodes(|u| -> bool { u % 2 == 0 }, Some("evennodes"))?;
+    // println!("graph even nodes {:?}", b);
 
     // let time = Instant::now();
     // let a = graph_mmaped.export_petgraph_stripped()?;

@@ -181,7 +181,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         if let Some(ext) = ext {
             Ok(match ext.to_str() {
                 Some(Self::EXT_COMPRESSED_LZ4) => {
-                    let (h_fn, _) = Self::init_cache_file_from_id_or_random(id, FileType::Helper(H::H), Some(0))?;
+                    // prepare mmaped file to temporarily hold decoded contents
+                    let (h_fn, id) = Self::init_cache_file_from_id_or_random(id, FileType::Helper(H::H), Some(0))?;
+                    println!("temp file fn {h_fn} {id}v");
                     let helper_file = OpenOptions::new().create(true).truncate(true).read(true).write(true).open(&h_fn)?;
                     helper_file.set_len(file_length)?;
                     let mut mmap = unsafe { MmapOptions::new().map_mut(&helper_file)? };
@@ -353,7 +355,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn parallel_parse_ggcat_bytes_mmap(
         &mut self,
         input: &[u8],
-        _in_fst: fn(usize) -> bool,
+        in_fst: fn(usize) -> bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let threads = (get_physical() * 2).max(1);
 
@@ -426,13 +428,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             sum += degree;
         }
         *offsets.get_mut(node_count) = sum;
-
         offsets.flush()?;
 
         let edges = AbstractedProceduralMemoryMut::<Edge>::from_file(&self.graph_file, sum)?;
+        let batch_num = Arc::new(AtomicUsize::new(0));
+        let batch_size = self.batch.map_or(Self::DEFAULT_BATCHING_SIZE, |s| s);
+
 
         // write edges
-        thread::scope(|s| -> Result<(), Box<dyn std::error::Error>> {
+        let batches = thread::scope(|s| -> Result<Box<[PathBuf]>, Box<dyn std::error::Error>> {
             let mut handles = Vec::with_capacity(threads);
             (0..threads).for_each(|tid| {
                 let thread_bounds = bounds[tid];
@@ -440,7 +444,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let offsets = offsets.shared_slice();
                 let mut edges = edges.shared_slice();
 
-                handles.push(s.spawn(move |_|  -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let mut current_batch: Vec<(&[u8], u64)> = Vec::with_capacity(batch_size);
+                let batch_num = batch_num.clone();
+                let mut batches = Vec::new();
+                let cache = &self;
+
+                handles.push(s.spawn(move |_|  -> Result<Box<[PathBuf]>, Box<dyn std::error::Error + Send + Sync>> {
  
                     // this assumes UTF-8 but avoids full conversion
                     let mut lines = input.split(|&b| b == b'\n');
@@ -452,7 +461,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
                         // convert each line to str temporarily -> cut off ">" char
                         let line_str = std::str::from_utf8(&line[1..line.len()])?;
-                        let _sequence_line = lines.next().ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                        let label_line = lines.next().ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
                             format!("error in thread {tid}: no k-mer sequence for node {line_str}").into()
                         })?;
 
@@ -478,37 +487,75 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         }
                         node_edges.sort_unstable_by_key(|e| e.dest());
 
+                        if in_fst(id) {
+                            current_batch.push((label_line, id as u64));
+                            if current_batch.len() >= batch_size {
+                                // println!("wrote {}", batch_num.load(Ordering::Relaxed));
+                                let tmp_fst = cache.build_batch_fst(
+                                    &mut current_batch,
+                                    batch_num.fetch_add(1, Ordering::Relaxed),
+                                    ).map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                        format!("error in thread {tid}: {e}").into()})?;
+                                batches.push(tmp_fst);
+                                current_batch.clear();
+                            }
+                        }
                         edges.write_slice(*offsets.get(id), node_edges.as_slice());
 
                         node_edges.clear();
                     }
-                    Ok(())
+
+                    // process the last batch if not empty
+                    if !current_batch.is_empty() {
+                        let tmp_fst = cache.build_batch_fst(
+                            &mut current_batch,
+                            batch_num.fetch_add(1, Ordering::Relaxed),
+                            ).map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                format!("error in thread {tid}: {e}").into()}
+                            )?;
+                        batches.push(tmp_fst);
+                    }
+
+                    // return slice with all the tmp fst filenames
+                    Ok(batches.into_boxed_slice())
                 }));
             });
+            let mut all_batches = Vec::new();
+
             // check for errors
             for (tid, r) in handles.into_iter().enumerate() {
-                r.join()
+                let thread_batches = r.join()
                     .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
                     .map_err(|e| -> Box<dyn std::error::Error> {
                         format!("error getting node degrees from ggcat file (thread {tid}): {:?}", e).into()
                     })?;
+                all_batches.extend(thread_batches);
             }
-            Ok(())
+            Ok(all_batches.into_boxed_slice())
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
-        edges.flush()?;
+        edges.flush_async()?;
         drop(offsets);
         drop(edges);
 
+        // if graph cache was used to build a graph then the graph's fst
+        //  holds meatlabel_filename open, hence, it must be removed so that the new fst may
+        //  be built
+        std::fs::remove_file(&self.metalabel_filename)?;
+
+        // Now merge all batch FSTs into option
+        self.merge_fsts(&batches)?;
+
+        // Cleanup temp batch files (not necessary because that is done in method finish())
+        // for batch_file in batches {
+        //     let _ = std::fs::remove_file(batch_file);
+        // }
+
         self.graph_bytes = sum;
         self.index_bytes = offsets_size;
-        // set index_file as readonly to signal that end offsets was already written in index |V|
-        let mut permissions = self.index_file.metadata()?.permissions();
-        permissions.set_readonly(true);
-        self.index_file.set_permissions(permissions)?;
 
-        Ok(())
+        self.finish()
     }
 
     /// Parses a ggcat output file input into a [`GraphCache`] instance.
@@ -1451,7 +1498,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // if graph cache was used to build a graph then the graph's fst
         //  holds meatlabel_filename open, hence, it must be removed so that the new fst may
         //  be built
-        std::fs::remove_file(self.metalabel_filename.clone())?;
+        std::fs::remove_file(&self.metalabel_filename)?;
 
         // Now merge all batch FSTs into option
         self.merge_fsts(&batches)?;
@@ -1891,6 +1938,26 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
+    fn finish(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // make all files read-only and cleanup
+        for file in [
+            &mut self.index_file,
+            &mut self.graph_file,
+            &mut self.metalabel_file,
+        ] {
+            let mut permissions = file.metadata()?.permissions();
+            permissions.set_readonly(true);
+            file.set_permissions(permissions)?;
+            // flush needed because in multithreaded accesses wihtout it memory is in undefined state
+            file.flush()?;
+        }
+
+        // remove any tmp files that may have been used to build the metalabel fst
+        self.cleanup_cache_by_target(FileType::Metalabel(H::H))?;
+        self.readonly = true;
+        Ok(())
+    }
+
     /// Make the [`GraphCache`] instance readonly. Allows the user to `Clone` the struct.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
@@ -1920,25 +1987,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             self.build_fst_from_sorted_file()?;
         }
 
-        // make all files read-only and cleanup
-        for file in [
-            &mut self.index_file,
-            &mut self.graph_file,
-            &mut self.metalabel_file,
-        ] {
-            let mut permissions = file.metadata()?.permissions();
-            permissions.set_readonly(true);
-            file.set_permissions(permissions)?;
-            // flush needed because in multithreaded accesses wihtout it memory is in undefined state
-            file.flush()?;
-        }
-
-        // remove any tmp files that may have been used to build the metalabel fst
-        self.cleanup_cache_by_target(FileType::Metalabel(H::H))?;
-
-        self.readonly = true;
-
-        Ok(())
+        self.finish()
     }
 
     /// Returns the edge file's filename.
