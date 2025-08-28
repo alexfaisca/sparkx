@@ -71,7 +71,7 @@ where
         ),
         Box<dyn std::error::Error>,
     > {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
 
@@ -123,7 +123,7 @@ where
     ///
     pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
         let time = Instant::now();
-        let node_count = match self.g.size().map_or(0, |s| s) {
+        let node_count = match self.g.size() {
             0 => return Ok(()),
             i => i,
         };
@@ -520,19 +520,12 @@ mod test {
         }
     }
 
-    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        // let graph_cache =
-        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+    fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
         let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
         let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
-        let hierholzer_euler_trails = AlgoHierholzer::new(&graph)?;
+        let het = AlgoHierholzer::new(&graph)?;
 
-        verify_trails(
-            &graph,
-            hierholzer_euler_trails.euler_trails,
-            hierholzer_euler_trails.trail_index,
-        )?;
-        Ok(())
+        verify_trails(&graph, het.euler_trails, het.trail_index)
     }
 
     // generate test cases from dataset

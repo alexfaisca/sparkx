@@ -80,7 +80,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::GVELouvain, None)?;
-        let coms = SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size().map_or(0, |s| s), true)?;
+        let coms = SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size(), true)?;
         let mut gve_louvain = Self {
             g,
             community: coms,
@@ -114,7 +114,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryGVELouvain, Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let edge_count = self.g.width();
 
         let k_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(0))?;
@@ -315,7 +315,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     let mut nmap: HashMap<usize, usize> = HashMap::new();
 
                     let k = k.clone();
-                    let sigma = sigma.clone();
+                    let s = sigma.clone();
                     let processed = processed.clone();
 
                     let global_delta_q = global_delta_q.clone();
@@ -349,20 +349,20 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                 let c_u = *c.get(u);
                                 // get weight of u k[u]
                                 let k_u = k.get(u).load(Ordering::Relaxed);
+                                let k = k_u as f64;
                                 // gather neighbour communities and edge weight sums using the adjacency list of u
 
                                 nmap.clear();
                                 let nm = &mut nmap;
                                 Self::scan_communities(comm_count, nm, e, idx, c, u, false);
 
-                                let s = sigma.clone();
-                                let (b_c, b_g) = Self::choose_community(nm, s, c_u, k_u as f64, m);
+                                let (b_c, b_g) = Self::choose_community(nm, s.clone(), c_u, k, m);
 
                                 // move u to the best community if it yields positive gain
                                 if b_c != c_u && b_g > 1e-12 {
                                     // atomic updates to community totals --- if node has already
                                     // been moved don't do anything
-                                    if sigma
+                                    if s
                                         .get(c_u)
                                         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |s| {
                                             if s < k_u {
@@ -373,7 +373,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                         })
                                         .is_ok()
                                     {
-                                        sigma.get(b_c).fetch_add(k_u, Ordering::Relaxed);
+                                        s.get(b_c).fetch_add(k_u, Ordering::Relaxed);
                                         // update community assignment of u
                                         *c.get_mut(u) = b_c;
                                         local_delta_q_sum += b_g;
@@ -386,7 +386,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                     } else {
                                         return Err(
                                             format!("error louvain_move(): {} {u} can't be removed from its community {c_u} as node weight is {k_u} but community total weight is only {}",
-                                                    if l_pass == 0 {"node"} else {"super-node"}, sigma.get(c_u).load(Ordering::Relaxed)
+                                                    if l_pass == 0 {"node"} else {"super-node"}, s.get(c_u).load(Ordering::Relaxed)
                                                     ).into()
                                             );
                                     }
@@ -569,7 +569,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let edge_count = self.g.width();
 
         let threads = self.g.thread_num();

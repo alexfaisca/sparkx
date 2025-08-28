@@ -226,7 +226,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 }
                 _ => {
                     return Err(format!(
-                        "error ubknown extension {:?} (must be of type .{} or .{})",
+                        "error ubknown ggcat file extension {:?} (must be of type .{} or .{})",
                         ext,
                         Self::EXT_PLAINTEXT_TXT,
                         Self::EXT_COMPRESSED_LZ4,
@@ -345,7 +345,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// # Errors
     ///
     /// Returns an error if:
-    /// * In the input slice no k-mer / label sequence is found for some node.
+    ///
+    /// * In the input slice no k-mer sequence is found for some node.
     /// * An error occurs parsing a line of the input from UTF-8.
     /// * An error occurs parsing a node's identifier.
     /// * An error occurs parsing an edge's destiny node identifier or direction annototation.
@@ -391,7 +392,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                     let mut lines = input.split(|&b| b == b'\n');
                     while let Some(line) = lines.next() {
                         // skip k-mer line
-                        let _ = lines.next();
+                        lines.next();
                         if line.is_empty() {
                             continue;
                         }
@@ -940,7 +941,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
-        // this works beacause after aloc memmaped files are zeroed (so index[nr] = 0)
+        // this works because after aloc memmaped files are zeroed (so index[nr] = 0)
         for u in 0..=nr {
             let deg_u = *index.get(u);
             if deg_u > max_degree {
@@ -1181,7 +1182,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch_num: Arc<AtomicUsize>,
         batch_size: usize,
         in_fst: fn(usize) -> bool,
-    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    ) -> Result<Box<[PathBuf]>, Box<dyn std::error::Error>> {
         let mut current_batch: Vec<(Vec<u8>, u64)> = Vec::with_capacity(batch_size);
         let mut batches = Vec::new();
 
@@ -1200,11 +1201,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
         let mut read = r_i + r_l;
 
-        let mut node_str = &id_line.clone()[..];
+        let mut node_str = &id_line[..];
         // continue until end of strem or read >= end
         loop {
             // convert each line to str temporarily && cut off ">" char
-            let _ = label_line.pop(); // pop '\n'
+            label_line.pop(); // pop '\n'
 
             if let Some(entry) = Self::process_ggcat_entry(node_str, label_line.clone(), in_fst)? {
                 current_batch.push(entry);
@@ -1245,7 +1246,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             batches.push(tmp_fst);
         }
 
-        Ok(batches)
+        Ok(batches.into_boxed_slice())
     }
 
     fn parallel_fst_from_ggcat_with_reader<P: AsRef<Path>>(
@@ -1269,12 +1270,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let chunk_size = file_len / threads as u64;
         let batch_num = Arc::new(AtomicUsize::new(0));
 
-        let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let batches = thread::scope(|s| -> Result<Box<[PathBuf]>, Box<dyn std::error::Error>> {
             let mut batch_handles = Vec::new();
 
             for i in 0..threads {
                 let mut cache = self.clone();
-                let batch_num = Arc::clone(&batch_num);
+                let batch_num = batch_num.clone();
 
                 let file_path = file_path.as_ref();
                 let r = match ext {
@@ -1290,7 +1291,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 );
 
                 let handle = s.spawn(
-                    move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+                    move |_| -> Result<Box<[PathBuf]>, Box<dyn std::error::Error + Send + Sync>> {
                         let mut file = File::open(file_path)?; // Open the file separately in each thread
                         let mut reader = BufReader::new(&mut file);
                         reader.seek(SeekFrom::Start(start))?;
@@ -1344,7 +1345,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         })?,
                 );
             }
-            Ok(all_batches)
+            Ok(all_batches.into_boxed_slice())
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
@@ -1353,7 +1354,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         // Clean up temporary batch files
         for batch_file in batches {
-            let _ = std::fs::remove_file(batch_file);
+            std::fs::remove_file(batch_file)?;
         }
 
         Ok(())
@@ -1366,7 +1367,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch_num: Arc<AtomicUsize>,
         batch_size: usize,
         in_fst: fn(usize) -> bool,
-    ) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    ) -> Result<Box<[PathBuf]>, Box<dyn std::error::Error>> {
         let mut begin_pos = 0;
         let mut end_pos = 0;
 
@@ -1427,7 +1428,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             batches.push(tmp_fst);
         }
 
-        Ok(batches)
+        Ok(batches.into_boxed_slice())
     }
 
     fn parallel_fst_from_ggcat_bytes(
@@ -1447,12 +1448,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         let shared_slice = SharedSlice::from_slice(input);
 
-        let batches = thread::scope(|s| -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+        let batches = thread::scope(|s| -> Result<Box<[PathBuf]>, Box<dyn std::error::Error>> {
             let mut thread_res = Vec::new();
             for i in 0..threads {
                 let mut cache = self.clone();
 
-                let batch_num = Arc::clone(&batch_num);
+                let batch = batch_num.clone();
 
                 let start = std::cmp::min(i * chunk_size, input_size);
                 let end = std::cmp::min(
@@ -1461,15 +1462,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 );
 
                 thread_res.push(s.spawn(
-                    move |_| -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+                    move |_| -> Result<Box<[PathBuf]>, Box<dyn std::error::Error + Send + Sync>> {
                         let input = shared_slice.slice(start, end).ok_or_else(
                             || -> Box<dyn std::error::Error + Send + Sync> {
                                 "error occured while chunking input in slices".into()
                             },
                         )?;
 
-                        cache
-                            .process_chunk(input, chunk_size, batch_num, batch_size, in_fst)
+                        cache.process_chunk(input, chunk_size, batch, batch_size, in_fst)
                             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                                 format!("error occured while batching fst build in parallel: {e}")
                                     .into()
@@ -1491,7 +1491,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         })?,
                 );
             }
-            Ok(all_batches)
+            Ok(all_batches.into_boxed_slice())
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
@@ -1505,7 +1505,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         // Cleanup temp batch files
         for batch_file in batches {
-            let _ = std::fs::remove_file(batch_file);
+            std::fs::remove_file(batch_file)?;
         }
 
         Ok(())
@@ -1581,13 +1581,13 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // if graph cache was used to build a graph then the graph's fst
         // holds metalabel_filename open, hence, it must be removed so that the new fst may
         // be built
-        std::fs::remove_file(self.metalabel_filename.clone())?;
+        std::fs::remove_file(&self.metalabel_filename)?;
         // Now merge all batch FSTs into one
         self.merge_fsts(&batches)?;
 
         // Cleanup temp batch files
         for batch_file in batches {
-            let _ = std::fs::remove_file(batch_file);
+            std::fs::remove_file(batch_file)?;
         }
 
         Ok(())
@@ -1822,7 +1822,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         // Cleanup temp batch files
         for batch_file in batches {
-            let _ = std::fs::remove_file(batch_file);
+            std::fs::remove_file(batch_file)?;
         }
 
         Ok(())
@@ -2185,7 +2185,7 @@ where
     /// Returns the given (by id) node's degree.
     #[inline(always)]
     pub fn node_degree(&self, node_id: usize) -> usize {
-        assert!(node_id < self.size().map_or(0, |s| s));
+        assert!(node_id < self.size());
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             let begin = ptr.read_unaligned();
@@ -2209,7 +2209,7 @@ where
     /// Returns the given (by id) node's edges' offsets.
     #[inline(always)]
     pub fn index_node(&self, node_id: usize) -> std::ops::Range<usize> {
-        assert!(node_id < self.size().map_or(0, |s| s));
+        assert!(node_id < self.size());
         unsafe {
             let ptr = (self.index.as_ptr() as *const usize).add(node_id);
             ptr.read_unaligned()..ptr.add(1).read_unaligned()
@@ -2223,10 +2223,10 @@ where
         &self,
         node_id: usize,
     ) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if node_id >= self.size().map_or(0, |s| s) {
+        if node_id >= self.size() {
             return Err(format!(
                 "error {node_id} must be smaller than |V| = {}",
-                self.size().map_or(0, |s| s)
+                self.size()
             )
             .into());
         }
@@ -2246,7 +2246,7 @@ where
             self.graph.as_ptr() as *const Edge,
             self.index.as_ptr() as *const usize,
             0,
-            self.size().map_or(0, |s| s),
+            self.size(),
         ))
     }
 
@@ -2266,7 +2266,7 @@ where
         if begin_node > end_node {
             return Err("error invalid range, beginning after end".into());
         }
-        if begin_node > self.size()? || end_node > self.size()? {
+        if begin_node > self.size() || end_node > self.size() {
             return Err("error invalid range".into());
         }
 
@@ -2297,7 +2297,7 @@ where
         target_volume: Option<usize>,
     ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
         diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
-        let target_size = target_size.map_or(self.size().map_or(0, |s| s), |s| s);
+        let target_size = target_size.map_or(self.size(), |s| s);
         let target_volume = target_volume.map_or(self.width(), |s| s);
 
         let mut vol_s = 0usize;
@@ -2400,10 +2400,10 @@ where
     #[inline(always)]
     fn is_neighbour(&self, u: usize, v: usize) -> Option<usize> {
         assert!(
-            u < self.size().map_or(0, |s| s),
+            u < self.size(),
             "{} is not smaller than max node id {} --- node doesn't exist",
             u,
-            self.size().map_or(0, |s| s)
+            self.size()
         );
 
         let mut floor = unsafe { (self.index.as_ptr() as *const usize).add(u).read() };
@@ -2502,22 +2502,12 @@ where
 
     /// Returns number of nodes in the offset file[^1].
     ///
-    /// # Errors
-    ///
-    /// Returns an error if subtracting one to the number of entries in the offset file overflows
-    /// the count to `usize::MAX`.
+    /// Performs a saturating subtraction of 1 to the number of entries in the offset file.
     ///
     /// [^1]: this is equivalent to `|V|`.
     #[inline(always)]
-    pub fn size(&self) -> Result<usize, Box<dyn std::error::Error>> {
-        match self.graph_cache.index_bytes.overflowing_sub(1) {
-            (r, false) => Ok(r),
-            (_, true) => {
-                Err(
-                    "error overflowed |V| in graph struct: there are 0 recorded entries in the offsets file".into()
-                )
-            }
-        }
+    pub fn size(&self) -> usize {
+        self.graph_cache.index_bytes.saturating_sub(1)
     }
 
     /// Returns number of entries in edge file[^1].
@@ -2547,16 +2537,16 @@ where
     ///
     /// [^1]: the node ids of the subgraph may not, and probably will not, correspond to the original node identifiers, efffectively, it will be a whole new graph.
     pub fn apply_mask_to_nodes(
-        &self,
+        &mut self,
         mask: fn(usize) -> bool,
         identifier: Option<&str>,
     ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        let node_count = self.size().map_or(0, |s| s);
+        let node_count = self.size();
 
         let identifier = identifier.map(|id| id.to_string());
         let id = identifier.unwrap_or(id_for_subgraph_export(
             self.graph_id()?,
-            Some(self.clone().exports_fetch_increment()?),
+            Some(self.exports_fetch_increment()?),
         )?);
 
         // build subgraph's cache entries' filenames
@@ -2614,7 +2604,7 @@ where
                 .create(true)
                 .truncate(true)
                 .write(true)
-                .open(ml_fn.clone())?;
+                .open(&ml_fn)?;
 
             let mut build = MapBuilder::new(&metalabel_file)?;
 
@@ -2644,7 +2634,7 @@ where
             build.finish()?;
         } else {
             // if graph is empty allocate empty for its empty subgraph
-            let _ = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, 0, true)?;
+            SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, 0, true)?;
             let mut i = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, 1, true)?;
             // store end of offsets in index entry at |V| (empty graph --- offsets end at 0)
             *i.get_mut(0) = 0;
@@ -2652,7 +2642,7 @@ where
                 .create(true)
                 .truncate(true)
                 .write(true)
-                .open(ml_fn.clone())?;
+                .open(&ml_fn)?;
 
             let build = MapBuilder::new(&metalabel_file)?;
             build.finish()?;
@@ -2674,7 +2664,7 @@ where
         &self,
     ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
-        let node_count = self.size().map_or(0, |s| s);
+        let node_count = self.size();
 
         (0..node_count).for_each(|u| {
             graph.add_node(NodeIndex::new(u));
@@ -2701,7 +2691,7 @@ where
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
         let mut graph = DiGraph::<(), ()>::new();
-        let node_count = self.size().map_or(0, |s| s);
+        let node_count = self.size();
 
         (0..node_count).for_each(|_| {
             graph.add_node(());
@@ -2732,7 +2722,7 @@ where
         ),
         Box<dyn std::error::Error>,
     > {
-        let node_count = self.size().map_or(0, |s| s);
+        let node_count = self.size();
         let edge_count = self.width();
 
         let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
@@ -2745,7 +2735,7 @@ where
     }
 
     fn build_reciprocal_edge_index(
-        self,
+        &self,
     ) -> Result<
         (
             AbstractedProceduralMemoryMut<usize>,
@@ -2753,7 +2743,7 @@ where
         ),
         Box<dyn std::error::Error>,
     > {
-        let node_count = self.size().map_or(0, |s| s);
+        let node_count = self.size();
         let edge_count = self.width();
 
         let threads = self.thread_count.max(1) as usize;
@@ -2772,7 +2762,7 @@ where
                 let mut er = er.shared_slice();
                 let mut eo = eo.shared_slice();
 
-                let synchronize = Arc::clone(&synchronize);
+                let synchronize = synchronize.clone();
 
                 let begin = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(begin + thread_load, node_count);
@@ -2839,26 +2829,19 @@ where
         let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
         let dud = Vec::new();
         let er = match OpenOptions::new().read(true).open(er_fn.as_str()) {
-            Ok(i) => SharedSlice::<usize>::abstract_mem(
-                &er_fn,
-                dud,
-                i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
-                true,
-            ),
+            Ok(i) => {
+                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
+            }
             Err(_) => {
-                self.clone().build_reciprocal_edge_index()?;
+                self.build_reciprocal_edge_index()?;
                 match OpenOptions::new().read(true).open(er_fn.as_str()) {
-                    Ok(i) => SharedSlice::<usize>::abstract_mem(
-                        &er_fn,
-                        dud,
-                        i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
-                        true,
-                    ),
+                    Ok(i) => {
+                        let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                        SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
+                    }
                     Err(e) => {
-                        return Err(format!(
-                            "error creating abstractmemory for edge_reciprocal {e}"
-                        )
-                        .into());
+                        return Err(format!("error can't abst mem for edge_reciprocal {e}").into());
                     }
                 }
             }
@@ -2872,25 +2855,19 @@ where
         let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
         let dud = Vec::new();
         let eo = match OpenOptions::new().read(true).open(eo_fn.as_str()) {
-            Ok(i) => SharedSlice::<usize>::abstract_mem(
-                &eo_fn,
-                dud,
-                i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
-                true,
-            ),
+            Ok(i) => {
+                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
+            }
             Err(_) => {
-                self.clone().build_reciprocal_edge_index()?;
+                self.build_reciprocal_edge_index()?;
                 match OpenOptions::new().read(true).open(eo_fn.as_str()) {
-                    Ok(i) => SharedSlice::<usize>::abstract_mem(
-                        &eo_fn,
-                        dud,
-                        i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>(),
-                        true,
-                    ),
+                    Ok(i) => {
+                        let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                        SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
+                    }
                     Err(e) => {
-                        return Err(
-                            format!("error creating abstractmemory for edge_over {e}").into()
-                        );
+                        return Err(format!("error can't abst mem for edge_over {e}").into());
                     }
                 }
             }
@@ -3109,7 +3086,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std
         unsafe {
             slice::from_raw_parts(
                 self.graph.as_ptr() as *const Edge,
-                self.size().map_or(0, |s| s) * 8 / self.edge_size,
+                self.size() * 8 / self.edge_size,
             )
         }
     }
@@ -3162,7 +3139,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug
             }}",
             self.graph_cache.graph_filename,
             self.graph_cache.index_filename,
-            self.size().map_or(0, |s| s),
+            self.size(),
             self.width(),
         )
     }

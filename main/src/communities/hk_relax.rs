@@ -50,7 +50,7 @@ where
         eps: f64,
         seed: Vec<usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = g.size().map_or(0, |s| s);
+        let node_count = g.size();
         if node_count == 0 {
             return Err("error hk-relax invalid parameters: |V| == 0, the graph is empty".into());
         };

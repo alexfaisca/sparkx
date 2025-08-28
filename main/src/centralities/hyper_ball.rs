@@ -84,7 +84,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let node_count = g.size().map_or(0, |s| s);
+        let node_count = g.size();
         // make sure presision is within bounds
         let precision =
             precision.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
@@ -125,7 +125,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     fn init_cache(
         g: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
-        let node_count = g.size().map_or(0, |s| s);
+        let node_count = g.size();
 
         let c_fn = g.build_cache_filename(CacheFile::HyperBall, None)?;
         let d_fn = g.build_cache_filename(CacheFile::HyperBallDistances, None)?;
@@ -142,7 +142,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 
     #[deprecated]
     fn _compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
 
         let mut counters = self.counters.shared_slice();
 
@@ -202,7 +202,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     }
 
     fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let threads = self.g.thread_num();
         let node_load = node_count.div_ceil(threads);
 
@@ -224,7 +224,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         thread::scope(
             |scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 for tid in 0..threads {
-                    let graph = self.g.clone();
+                    let graph = &self.g;
 
                     let mut counters = counters;
                     let mut swap = swap;
@@ -341,7 +341,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         &mut self,
         normalize: Option<bool>,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s); // |V|
+        let node_count = self.g.size(); // |V|
 
         let c_fn =
             self.centrality_cache_file_name(normalize.map_or(Centrality::Closeness, |local| {
@@ -403,7 +403,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         &mut self,
         normalize: Option<bool>,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s); // |V|
+        let node_count = self.g.size(); // |V|
 
         let c_fn =
             self.centrality_cache_file_name(normalize.map_or(Centrality::Harmonic, |local| {
@@ -456,7 +456,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     pub fn compute_lins_centrality(
         &mut self,
     ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s); // |V|
+        let node_count = self.g.size(); // |V|
 
         let c_fn = self.centrality_cache_file_name(Centrality::Lin)?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
@@ -540,17 +540,15 @@ mod test {
         }
     }
 
-    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
-        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
+    fn generic_test<P: AsRef<Path>>(p: P) -> Result<(), Box<dyn std::error::Error>> {
+        let graph_cache = get_or_init_dataset_cache_entry(p.as_ref())?;
+        let g = GraphMemoryMap::init(graph_cache, Some(16))?;
 
-        let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&graph, None, None)?;
+        let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&g, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
 
-        let e_fn =
-            get_or_init_dataset_exact_value(path.as_ref(), &graph, ExactClosenessCentrality(H::H))?;
-        let exact =
-            SharedSliceMut::<f64>::abst_mem_mut(&e_fn, graph.size().map_or(0, |s| s), true)?;
+        let e_fn = get_or_init_dataset_exact_value(p.as_ref(), &g, ExactClosenessCentrality(H::H))?;
+        let exact = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, g.size(), true)?;
         let e = exact.shared_slice();
 
         // metrics
@@ -560,36 +558,36 @@ mod test {
 
         eprintln!(
             "dataset={:?}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}",
-            path.as_ref()
+            p.as_ref()
         );
 
         // guardrails to fail regressions
-        assert!(rho > 0.95, "Spearman too low on {:?}", path.as_ref());
+        assert!(rho > 0.95, "Spearman too low on {:?}", p.as_ref());
         Ok(())
     }
 
     // generate test cases from dataset
     graph_tests! {
-        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
-        ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
-        ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
-        ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
-        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
-        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
-        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
-        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
-        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
-        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
-        ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
+        // ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        // ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
+        // ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
+        // ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        // ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        // ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        // ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        // ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
+        // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        // ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
         ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
         ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
         ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
         ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
         ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
         ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }

@@ -64,7 +64,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         eps: f64,
         target_conductance: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = g.size().map_or(0, |s| s);
+        let node_count = g.size();
         if node_count == 0 {
             return Err(
                 "error approx-dirichlet-hkpr invalid parameters: actual |V| == 0, the graph is empty".into(),
@@ -212,7 +212,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
         &self,
         big_k: ApproxDirichletHeatKernelK,
     ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
-        let node_count = match self.g.size().map_or(0, |s| s) {
+        let node_count = match self.g.size() {
             0 => return Err("error approx-dirchlet-hkpr |V| == 0".into()),
             i => i as f64,
         };
@@ -302,7 +302,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     /// Computes the *SolverApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O. with the therein described optimizations.
     ///
     pub fn compute(&self) -> Result<Community<usize>, Box<dyn std::error::Error>> {
-        let node_count = match self.g.size().map_or(0, |s| s) {
+        let node_count = match self.g.size() {
             0 => return Err("error approx-dirchlet-hkpr |V| == 0".into()),
             i => i as f64,
         };

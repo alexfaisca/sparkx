@@ -158,7 +158,7 @@ pub(crate) fn get_or_init_dataset_exact_value<
                 match value_type {
                     FileType::ExactClosenessCentrality(H::H) => {
                         use rustworkx_core::centrality::closeness_centrality;
-                        let node_count = graph.size().map_or(0, |s| s);
+                        let node_count = graph.size();
                         let exact = closeness_centrality(&petgraph_export, false)
                             .iter()
                             .map(|opt| opt.unwrap_or(0.))

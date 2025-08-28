@@ -30,7 +30,7 @@ mod _verify {
         edge_trussness: AbstractedProceduralMemoryMut<u8>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let threads = get_physical() * 2;
-        let node_count = graph.size().map_or(0, |s| s);
+        let node_count = graph.size();
         let edge_count = graph.width();
         let node_load = node_count.div_ceil(threads);
         // trussness length == graph width

@@ -80,7 +80,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let edge_count = self.g.width();
 
         let threads = self.g.thread_num();
@@ -480,15 +480,12 @@ mod test {
         }
     }
 
-    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        // let graph_cache =
-        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+    fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
         let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
         let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let pkt_k_trusses = AlgoPKT::new(&graph)?;
 
-        verify_k_trusses(&graph, pkt_k_trusses.k_trusses)?;
-        Ok(())
+        verify_k_trusses(&graph, pkt_k_trusses.k_trusses)
     }
 
     // generate test cases from dataset

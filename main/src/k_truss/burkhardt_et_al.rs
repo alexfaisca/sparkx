@@ -81,14 +81,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let edge_count = self.g.width();
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
         // Shared atomic & simple arrays for counts and trussness
-        let (triangle_count, edges, edge_index, edge_stack) =
+        let (triangle_count, edges, edge_index, e_stack) =
             self.init_procedural_memory_burkhardt_et_al(mmap)?;
         let mut trussness = self.k_trusses.shared_slice();
 
@@ -112,7 +112,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 let mut edges = edges.shared_slice();
                 let mut edge_index = edge_index.shared_slice();
 
-                let synchronize = Arc::clone(&synchronize);
+                let synchronize = synchronize.clone();
 
                 let start = std::cmp::min(tid * node_load, node_count);
                 let end = std::cmp::min(start + node_load, node_count);
@@ -169,7 +169,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
-        let stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(edge_stack.shared_slice());
+        let mut stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(e_stack.shared_slice());
 
         // Algorithm 2 - sentinel value is 0
         // blank (u64, usize) value
@@ -178,7 +178,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let mut edge_count = edge_count;
         let er = edge_reciprocal.shared_slice();
         let tris = triangle_count.shared_slice();
-        let mut stack = stack.clone();
         let mut test = vec![0usize; u8::MAX as usize];
 
         for k in 1..u8::MAX {
@@ -306,15 +305,12 @@ mod test {
         }
     }
 
-    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        // let graph_cache =
-        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+    fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
         let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
         let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let burkhardt_et_al_k_trusses = AlgoBurkhardtEtAl::new(&graph)?;
 
-        verify_k_trusses(&graph, burkhardt_et_al_k_trusses.k_trusses)?;
-        Ok(())
+        verify_k_trusses(&graph, burkhardt_et_al_k_trusses.k_trusses)
     }
 
     // generate test cases from dataset

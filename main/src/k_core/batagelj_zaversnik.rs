@@ -51,7 +51,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         &self,
         mmap: u8,
     ) -> Result<ProceduralMemoryBZ, Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
 
         let d_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(0))?;
         let n_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(1))?;
@@ -76,7 +76,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let edge_count = self.g.width();
 
         if node_count == 0 {
@@ -298,15 +298,12 @@ mod test {
         }
     }
 
-    fn generic_test<P: AsRef<Path> + Clone>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        // let graph_cache =
-        //     GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(path, None, None, None)?;
+    fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
         let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
         let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
         let bz_k_cores = AlgoBatageljZaversnik::new(&graph)?;
 
-        verify_k_cores(&graph, bz_k_cores.k_cores)?;
-        Ok(())
+        verify_k_cores(&graph, bz_k_cores.k_cores)
     }
 
     // generate test cases from dataset

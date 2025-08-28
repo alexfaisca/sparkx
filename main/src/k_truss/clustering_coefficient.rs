@@ -46,7 +46,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::ClusteringCoefficient, None)?;
-        let local = SharedSliceMut::<f64>::abst_mem_mut(&out_fn, g.size().map_or(0, |s| s), true)?;
+        let local = SharedSliceMut::<f64>::abst_mem_mut(&out_fn, g.size(), true)?;
         let mut clustering_coefficient = Self {
             g,
             local,
@@ -64,7 +64,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
     /// Getter for individual node's clustering coefficient.
     pub fn get_node_clusteringcoefficient(&self, id: usize) -> f64 {
-        assert!(id < self.g.size().map_or(0, |s| s), "id < |V| --- not met");
+        assert!(id < self.g.size(), "id < |V| --- not met");
         *self.local.get(id)
     }
 
@@ -103,7 +103,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `mmap` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size().map_or(0, |s| s);
+        let node_count = self.g.size();
         let edge_count = self.g.width();
 
         let threads = self.g.thread_num();
@@ -137,7 +137,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 let total_triangles = total_triangles.clone();
                 let local_clustering_sum = local_clustering_sum.clone();
 
-                let synchronize = Arc::clone(&synchronize);
+                let synchronize = synchronize.clone();
 
                 let start = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(start + thread_load, node_count);

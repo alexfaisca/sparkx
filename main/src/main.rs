@@ -202,7 +202,7 @@ fn parse_bytes_mmaped<
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let graph_cache =
-        GraphCache::<EdgeType, Edge>::from_file(path.clone(), id, None, Some(|_| true))?;
+        GraphCache::<EdgeType, Edge>::from_file(path.clone(), id, None, Some(|_| false))?;
     println!("cache no fst built {:?}", time.elapsed());
     let time = Instant::now();
     let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
@@ -233,42 +233,42 @@ fn parse_bytes_mmaped<
     /* ********************************************************************************* */
     //
 
-    let time = Instant::now();
-    let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
-    println!("hyperball {:?}", time.elapsed());
-    let time = Instant::now();
-    hyperball.compute_harmonic_centrality(None)?;
-    println!("harmonic centrality {:?}", time.elapsed());
-    println!();
-
-    let mut i = 0;
-    while i < graph_mmaped.size().map_or(0, |s| s) {
-        let time = Instant::now();
-        let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
-        let _ = hk_relax.compute()?;
-        println!("HKRelax {:?}", time.elapsed());
-        i += 1234600;
-    }
-
-    let time = Instant::now();
-    let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    println!("found {} communities", _louvain.community_count());
-    println!("partition modularity {} ", _louvain.partition_modularity());
-    println!("louvain finished in {:?}", time.elapsed());
-    println!();
-
-    let time = Instant::now();
-    let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
-    println!(
-        "graph transitivity {:?}",
-        conductivity.get_graph_transitivity()
-    );
-    println!(
-        "average clustering coefficient {:?}",
-        conductivity.get_average_clustering_coefficient()
-    );
-    println!("clustering coefficient finished in {:?}", time.elapsed());
-    println!();
+    // let time = Instant::now();
+    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
+    // println!("hyperball {:?}", time.elapsed());
+    // let time = Instant::now();
+    // hyperball.compute_harmonic_centrality(None)?;
+    // println!("harmonic centrality {:?}", time.elapsed());
+    // println!();
+    //
+    // let mut i = 0;
+    // while i < graph_mmaped.size().map_or(0, |s| s) {
+    //     let time = Instant::now();
+    //     let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
+    //     let _ = hk_relax.compute()?;
+    //     println!("HKRelax {:?}", time.elapsed());
+    //     i += 1234600;
+    // }
+    //
+    // let time = Instant::now();
+    // let _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    // println!("found {} communities", _louvain.community_count());
+    // println!("partition modularity {} ", _louvain.partition_modularity());
+    // println!("louvain finished in {:?}", time.elapsed());
+    // println!();
+    //
+    // let time = Instant::now();
+    // let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
+    // println!(
+    //     "graph transitivity {:?}",
+    //     conductivity.get_graph_transitivity()
+    // );
+    // println!(
+    //     "average clustering coefficient {:?}",
+    //     conductivity.get_average_clustering_coefficient()
+    // );
+    // println!("clustering coefficient finished in {:?}", time.elapsed());
+    // println!();
 
     let time = Instant::now();
     let _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
