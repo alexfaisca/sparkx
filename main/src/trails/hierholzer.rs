@@ -263,15 +263,14 @@ where
             .read(true)
             .open(&filename)?;
         file.set_len((len * std::mem::size_of::<V>()) as u64)?;
-        Ok(SharedSliceMut::<V>::from_file(&file)?)
+        SharedSliceMut::<V>::from_file(&file)
     }
 
     #[deprecated]
     fn create_memmapped_slice_from_tmp_file<V>(
         filename: String,
     ) -> Result<(SharedSlice<V>, Mmap), Box<dyn std::error::Error>> {
-        let file = OpenOptions::new().read(true).open(filename)?;
-        Ok(SharedSlice::<V>::from_file(&file)?)
+        SharedSlice::<V>::from_file(&OpenOptions::new().read(true).open(filename)?)
     }
 
     #[deprecated]

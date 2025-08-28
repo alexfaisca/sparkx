@@ -2,45 +2,12 @@ use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::{Error, ErrorKind},
+    mem::{ManuallyDrop, size_of},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
-
-#[derive(Copy, Debug)]
-pub struct SharedSlice<T> {
-    ptr: *const T,
-    len: usize,
-}
-
-#[derive(Copy, Debug)]
-pub struct SharedSliceMut<T> {
-    pub ptr: *mut T,
-    len: usize,
-}
-
-unsafe impl<T> Send for SharedSliceMut<T> {}
-unsafe impl<T> Sync for SharedSliceMut<T> {}
-
-impl<T> Clone for SharedSlice<T> {
-    fn clone(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            len: self.len,
-        }
-    }
-}
-
-impl<T> Clone for SharedSliceMut<T> {
-    fn clone(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            len: self.len,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct AbstractedProceduralMemory<T> {
@@ -58,20 +25,99 @@ pub struct AbstractedProceduralMemoryMut<T> {
     mmapped: bool,
 }
 
+#[derive(Copy, Debug)]
+pub struct SharedSlice<T> {
+    ptr: *const T,
+    len: usize,
+}
+
+#[derive(Copy, Debug)]
+pub struct SharedSliceMut<T> {
+    pub ptr: *mut T,
+    len: usize,
+}
+
+#[derive(Clone)]
+pub struct SharedQueueMut<T> {
+    pub ptr: *mut T,
+    max: usize,
+    read: Arc<AtomicUsize>,
+    write: Arc<AtomicUsize>,
+    len: Arc<AtomicUsize>,
+}
+
+unsafe impl<T> Send for SharedSlice<T> {}
+unsafe impl<T> Sync for SharedSlice<T> {}
+
+unsafe impl<T> Send for SharedSliceMut<T> {}
+unsafe impl<T> Sync for SharedSliceMut<T> {}
+
+unsafe impl<T> Send for SharedQueueMut<T> {}
+unsafe impl<T> Sync for SharedQueueMut<T> {}
+
+impl<T> Clone for SharedSlice<T> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+        }
+    }
+}
+
+impl<T> Clone for SharedSliceMut<T> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemory<T> {
+    #[inline(always)]
     pub fn shared_slice(&self) -> SharedSlice<T> {
         self.slice.clone()
     }
+
+    #[inline(always)]
     pub fn get(&self, idx: usize) -> &T {
         self.slice.get(idx)
     }
+
+    #[inline(always)]
+    pub fn as_ptr(&self) -> *const T {
+        self.slice.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.slice.ptr, self.slice.len) }
+    }
+
+    #[allow(unused_mut)]
+    #[inline(always)]
+    pub fn into_bodex_slice(mut self) -> Box<[T]> {
+        let this = ManuallyDrop::new(self);
+        let raw: *mut [T] =
+            std::ptr::slice_from_raw_parts_mut(this.slice.ptr as *mut T, this.slice.len);
+        // SAFETY: `raw` points to a uniquely-owned heap allocation of exactly `len` Ts,
+        unsafe { Box::from_raw(raw) }
+    }
+
+    #[inline(always)]
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         self.slice.slice(start, end)
     }
+
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.shared_slice().len()
     }
+
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.shared_slice().len() == 0
     }
@@ -79,8 +125,8 @@ impl<T> AbstractedProceduralMemory<T> {
 
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemoryMut<T> {
-    pub fn from_file(file: &File, len: usize) -> Result<Self, Error> {
-        let mmap_len = (len * std::mem::size_of::<T>()) as u64;
+    pub fn from_file(file: &File, len: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let mmap_len = (len * size_of::<T>()) as u64;
         file.set_len(mmap_len)?;
         let (slice, mmap) = SharedSliceMut::<T>::from_file(file)?;
 
@@ -91,93 +137,164 @@ impl<T> AbstractedProceduralMemoryMut<T> {
             mmapped: true,
         })
     }
+
+    #[inline(always)]
     pub fn shared_slice(&self) -> SharedSliceMut<T> {
         self.slice.clone()
     }
+
+    #[inline(always)]
     pub fn get(&self, idx: usize) -> &T {
         self.slice.get(idx)
     }
+
+    #[inline(always)]
     pub fn get_mut(&mut self, idx: usize) -> &mut T {
         self.slice.get_mut(idx)
     }
+
+    #[inline(always)]
+    pub fn as_ptr(&self) -> *const T {
+        self.slice.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.slice.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.slice.ptr, self.slice.len) }
+    }
+
+    #[inline(always)]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.slice.ptr, self.slice.len) }
+    }
+
+    #[allow(unused_mut)]
+    #[inline(always)]
+    pub fn into_bodex_slice(mut self) -> Box<[T]> {
+        let this = ManuallyDrop::new(self);
+        let raw: *mut [T] = std::ptr::slice_from_raw_parts_mut(this.slice.ptr, this.slice.len);
+        // SAFETY: `raw` points to a uniquely-owned heap allocation of exactly `len` Ts,
+        unsafe { Box::from_raw(raw) }
+    }
+
+    #[inline(always)]
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         self.slice.slice(start, end)
     }
+
+    #[inline(always)]
     pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
         self.slice.mut_slice(start, end)
     }
+
+    #[inline(always)]
     pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
         self.slice.write_slice(idx, slice)
     }
+
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.shared_slice().len()
     }
+
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.shared_slice().len() == 0
     }
-    pub fn flush(&self) -> Result<(), Error> {
+
+    pub fn flush(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.mmapped {
-            self.mmap.flush()
+            Ok(self.mmap.flush()?)
         } else {
             Ok(())
         }
     }
-    pub fn flush_async(&self) -> Result<(), Error> {
+
+    pub fn flush_async(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.mmapped {
-            self.mmap.flush_async()
+            Ok(self.mmap.flush_async()?)
         } else {
             Ok(())
         }
     }
 }
 
-unsafe impl<T> Send for SharedSlice<T> {}
-unsafe impl<T> Sync for SharedSlice<T> {}
-
 #[allow(dead_code)]
 impl<T> SharedSlice<T> {
     pub fn new(ptr: *const T, len: usize) -> Self {
         SharedSlice::<T> { ptr, len }
     }
+
     pub fn from_slice(slice: &[T]) -> Self {
         SharedSlice::<T> {
             ptr: slice.as_ptr(),
             len: slice.len(),
         }
     }
-    pub fn from_file(file: &File) -> Result<(Self, Mmap), Error> {
+
+    pub fn from_file(file: &File) -> Result<(Self, Mmap), Box<dyn std::error::Error>> {
         let mmap = unsafe { MmapOptions::new().map(file)? };
         let mmap_len = mmap.len();
 
         // Ensure the memory is properly aligned
-        if mmap_len % std::mem::size_of::<T>() != 0 {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "file length is not a multiple of u64",
-            ));
+        if mmap_len % size_of::<T>() != 0 {
+            return Err("file length is not a multiple of u64".into());
         }
 
         Ok((
-            Self::new(
-                mmap.as_ptr() as *const T,
-                mmap_len / std::mem::size_of::<T>(),
-            ),
+            Self::new(mmap.as_ptr() as *const T, mmap_len / size_of::<T>()),
             mmap,
         ))
     }
+
+    #[inline(always)]
     pub(self) fn ptr(&self) -> *const T {
         self.ptr
     }
+
+    #[inline(always)]
     pub fn get(&self, idx: usize) -> &T {
         assert!(idx < self.len);
         unsafe { &*self.ptr.add(idx) }
     }
+
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
+
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    #[inline(always)]
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    // FIXME: if `mut` is removed does unique ownership get comprimized? Is it alwready
+    // comprimized?
+    #[allow(unused_mut)]
+    #[inline(always)]
+    pub fn into_bodex_slice(mut self) -> Box<[T]> {
+        let this = ManuallyDrop::new(self);
+        let raw: *mut [T] = std::ptr::slice_from_raw_parts_mut(this.ptr as *mut T, this.len);
+        // SAFETY: `raw` points to a uniquely-owned heap allocation of exactly `len` Ts,
+        unsafe { Box::from_raw(raw) }
+    }
+
+    #[inline(always)]
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         if start > self.len {
             return None;
@@ -185,29 +302,24 @@ impl<T> SharedSlice<T> {
         let end = if end > self.len { self.len } else { end };
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
+
     pub fn abstract_mem(
         mfn: &str,
         vec: Vec<T>,
         len: usize,
         mmapped: bool,
-    ) -> Result<AbstractedProceduralMemory<T>, Error> {
+    ) -> Result<AbstractedProceduralMemory<T>, Box<dyn std::error::Error>> {
         let file = OpenOptions::new().read(true).open(mfn)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
 
         // Ensure the memory is properly aligned
-        if mmapped && mmap.len() < std::mem::size_of::<T>() * len {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "file length is too small for the amount of elements requested",
-            ));
+        if mmapped && mmap.len() < size_of::<T>() * len {
+            return Err("file length is too small for the amount of elements requested".into());
         }
         // Use an in-memory vector for degrees
         // Initialize with 0s
         if !mmapped && vec.len() < len {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "file length is too small for the amount of elements requested",
-            ));
+            return Err("vec length is too small for the amount of elements requested".into());
         }
         let slice: SharedSlice<T> = {
             if mmapped {
@@ -230,40 +342,39 @@ impl<T> SharedSliceMut<T> {
     pub fn new(ptr: *mut T, len: usize) -> Self {
         SharedSliceMut::<T> { ptr, len }
     }
+
     pub fn from_slice(slice: &mut [T]) -> Self {
         SharedSliceMut::<T> {
             ptr: slice.as_mut_ptr(),
             len: slice.len(),
         }
     }
+
     pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
         SharedSliceMut::<T> {
             ptr: slice.ptr,
             len: slice.len,
         }
     }
-    pub fn from_file(file: &File) -> Result<(Self, MmapMut), Error> {
+
+    pub fn from_file(file: &File) -> Result<(Self, MmapMut), Box<dyn std::error::Error>> {
         let mmap = unsafe { MmapOptions::new().map_mut(file)? };
         let mmap_len = mmap.len();
 
         // Ensure the memory is properly aligned
-        if mmap_len % std::mem::size_of::<T>() != 0 {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "file length is not a multiple of u64",
-            ));
+        if mmap_len % size_of::<T>() != 0 {
+            return Err("file length is not a multiple of u64".into());
         }
 
         Ok((
-            Self::new(mmap.as_ptr() as *mut T, mmap_len / std::mem::size_of::<T>()),
+            Self::new(mmap.as_ptr() as *mut T, mmap_len / size_of::<T>()),
             mmap,
         ))
     }
-    pub(self) fn ptr(&self) -> *const T {
-        self.ptr
-    }
+
+    #[inline(always)]
     pub unsafe fn cast<U>(&self) -> Option<SharedSliceMut<U>> {
-        if std::mem::size_of::<T>() != std::mem::size_of::<U>() {
+        if size_of::<T>() != size_of::<U>() {
             return None;
         }
         Some(SharedSliceMut {
@@ -271,27 +382,70 @@ impl<T> SharedSliceMut<T> {
             len: self.len,
         })
     }
+
+    #[inline(always)]
+    pub(self) fn ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    #[inline(always)]
     pub fn get_mut(&mut self, idx: usize) -> &mut T {
         assert!(idx < self.len, "index {} >= len {}", idx, self.len);
         unsafe { &mut *self.ptr.add(idx) }
     }
+
+    #[inline(always)]
     pub fn get(&self, idx: usize) -> &T {
         assert!(idx < self.len, "index {} >= len {}", idx, self.len);
         unsafe { &*self.ptr.add(idx) }
     }
+
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
+
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    #[inline(always)]
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    #[inline(always)]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+
+    #[allow(unused_mut)]
+    #[inline(always)]
+    pub fn into_bodex_slice(mut self) -> Box<[T]> {
+        let this = ManuallyDrop::new(self);
+        let raw: *mut [T] = std::ptr::slice_from_raw_parts_mut(this.ptr, this.len);
+        // SAFETY: `raw` points to a uniquely-owned heap allocation of exactly `len` Ts,
+        unsafe { Box::from_raw(raw) }
+    }
+
+    #[inline(always)]
     pub fn slice(&self, start: usize, end: usize) -> Option<&[T]> {
         assert!(start <= end && end <= self.len);
         unsafe { Some(std::slice::from_raw_parts(self.ptr.add(start), end - start)) }
     }
-    pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
+
+    #[inline(always)]
     pub fn mut_slice(&mut self, start: usize, end: usize) -> Option<&mut [T]> {
         assert!(start <= end && end <= self.len);
         unsafe {
@@ -302,6 +456,7 @@ impl<T> SharedSliceMut<T> {
         }
     }
 
+    #[inline(always)]
     pub fn write_shared_slice(
         &mut self,
         slice: SharedSlice<T>,
@@ -316,6 +471,7 @@ impl<T> SharedSliceMut<T> {
         Some(idx + slice.len())
     }
 
+    #[inline(always)]
     pub fn write_shared_slice_mut(
         &mut self,
         slice: SharedSliceMut<T>,
@@ -330,6 +486,7 @@ impl<T> SharedSliceMut<T> {
         Some(idx + slice.len())
     }
 
+    #[inline(always)]
     pub fn write_slice(&mut self, idx: usize, slice: &[T]) -> Option<usize> {
         // if idx == len but slice.len() == 0, the write should be valid
         assert!(idx + slice.len() <= self.len);
@@ -338,23 +495,28 @@ impl<T> SharedSliceMut<T> {
         };
         Some(idx + slice.len())
     }
+
     pub fn abst_mem_mut(
         mfn: &str,
         len: usize,
         mmapped: bool,
-    ) -> Result<AbstractedProceduralMemoryMut<T>, Error> {
+    ) -> Result<AbstractedProceduralMemoryMut<T>, Box<dyn std::error::Error>> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .read(true)
             .write(true)
             .open(mfn)?;
-        file.set_len((if mmapped { len } else { 1 } * std::mem::size_of::<T>()) as u64)?;
+        file.set_len((if mmapped { len } else { 1 } * size_of::<T>()) as u64)?;
+
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+
         let mut vec: Vec<T> = Vec::new();
+
         if !mmapped {
             vec.reserve_exact(len);
         }
+
         let slice: SharedSliceMut<T> = {
             if mmapped {
                 SharedSliceMut::<T>::new(mmap.as_mut_ptr() as *mut T, len)
@@ -362,6 +524,7 @@ impl<T> SharedSliceMut<T> {
                 SharedSliceMut::<T>::new(vec.as_mut_ptr(), len)
             }
         };
+
         Ok(AbstractedProceduralMemoryMut {
             slice,
             _vec: vec,
@@ -371,18 +534,7 @@ impl<T> SharedSliceMut<T> {
     }
 }
 
-#[derive(Clone)]
-pub struct SharedQueueMut<T> {
-    pub ptr: *mut T,
-    max: usize,
-    read: Arc<AtomicUsize>,
-    write: Arc<AtomicUsize>,
-    len: Arc<AtomicUsize>,
-}
-
-unsafe impl<T> Send for SharedQueueMut<T> {}
-unsafe impl<T> Sync for SharedQueueMut<T> {}
-
+#[allow(dead_code)]
 impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
     pub fn from_shared_slice(slice: SharedSliceMut<T>) -> Self {
         SharedQueueMut::<T> {
@@ -393,13 +545,14 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
             len: Arc::new(AtomicUsize::new(0)),
         }
     }
+
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
     }
     pub fn is_empty(&self) -> bool {
         self.len.load(Ordering::Relaxed) == 0
     }
-    // FIXME: In concurrent push pops reads and writes may give undefined behaviour? push_async?
+
     pub fn push_slice(&mut self, slice: &[T]) -> Option<usize> {
         let write_idx = self.write.fetch_add(slice.len(), Ordering::SeqCst);
         if write_idx + slice.len() < self.max {
@@ -418,6 +571,7 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
             None
         }
     }
+
     pub fn push(&mut self, el: T) -> Option<usize> {
         let write_idx = self.write.fetch_add(1, Ordering::SeqCst);
         if write_idx < self.max {
@@ -429,6 +583,7 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
             None
         }
     }
+
     pub fn pop(&mut self) -> Option<T> {
         let idx = self
             .read
@@ -436,12 +591,6 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
                 if x < self.len.load(Ordering::SeqCst) {
                     Some(x + 1)
                 } else {
-                    // print!(
-                    //     "FAIL (read: {} len: {} max: {}) ",
-                    //     x,
-                    //     self.len.load(Ordering::SeqCst),
-                    //     self.max
-                    // );
                     None
                 }
             })
@@ -452,6 +601,40 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
             None
         }
     }
+
+    #[inline(always)]
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len()) }
+    }
+
+    #[inline(always)]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len()) }
+    }
+
+    #[allow(unused_mut)]
+    #[inline(always)]
+    /// Returns a boxed slice over the entirity of the allocated memory[^1].
+    ///
+    /// [^1]: naturally, if any uninitialized memory cells remain at the time of this method's calling,
+    /// behavioiur upon their reading is undefined.
+    pub fn into_bodex_slice(mut self) -> Box<[T]> {
+        let this = ManuallyDrop::new(self);
+        let raw: *mut [T] = std::ptr::slice_from_raw_parts_mut(this.ptr, this.max);
+        // SAFETY: `raw` points to a uniquely-owned heap allocation of exactly `len` Ts,
+        unsafe { Box::from_raw(raw) }
+    }
+
     pub fn slice(&self, start: usize, end: usize) -> Option<SharedSliceMut<T>> {
         let start = if start < self.read.load(Ordering::Relaxed) {
             self.read.load(Ordering::Relaxed)
@@ -468,9 +651,11 @@ impl<T: Debug + Copy + Clone + Eq> SharedQueueMut<T> {
         };
         unsafe { Some(SharedSliceMut::new(self.ptr.add(start), end - start)) }
     }
-    pub unsafe fn _raw_slice(&self) -> SharedSliceMut<T> {
+
+    pub unsafe fn raw_slice(&self) -> SharedSliceMut<T> {
         SharedSliceMut::new(self.ptr, self.max)
     }
+
     pub fn clear(self) -> Self {
         self.read.store(0, Ordering::SeqCst);
         self.write.store(0, Ordering::SeqCst);

@@ -2,12 +2,13 @@ use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
     AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
 };
-#[cfg(any(test, feature = "bench"))]
-use crate::utils::EXACT_VALUE_CACHE_DIR;
 use crate::utils::{
     CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id, cleanup_cache,
     graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename,
 };
+
+#[cfg(any(test, feature = "bench"))]
+use crate::utils::EXACT_VALUE_CACHE_DIR;
 
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
@@ -37,7 +38,7 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum CacheFile {
-    /// Only member visible to users
+    /// FIXME: Only member that should be visible to users
     General,
     EulerTrail,
     KCoreBZ,
@@ -414,7 +415,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 r.join()
                     .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
                     .map_err(|e| -> Box<dyn std::error::Error> {
-                        format!("error getting node degrees from ggcat file (thread {tid}): {:?}", e).into()
+                        format!("error getting ggcat input file's node degrees (thread {tid}): {:?}", e).into()
                     })?;
             }
             Ok(())
@@ -1619,7 +1620,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // self.parallel_fst_from_ggcat_with_reader(path, batching, in_fst, get_physical())?;
         let (input, tmp) = Self::read_input_file(path)?;
 
-        // FIXME: Out Of Memory
         self.parallel_fst_from_ggcat_bytes(
             &input[..],
             batching,
@@ -2494,7 +2494,7 @@ where
 
     /// Returns number of entries in the offset file[^1].
     ///
-    /// [^1]: this is equivalent to `|V| + 1`, as there is an extrea offset file entry to mark the end of edges' offsets.
+    /// [^1]: this is equivalent to `|V| + 1`, as there is an extra offset file entry to mark the end of edges' offsets.
     #[inline(always)]
     pub fn offsets_size(&self) -> usize {
         self.graph_cache.index_bytes // num nodes
@@ -2828,7 +2828,7 @@ where
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
         let dud = Vec::new();
-        let er = match OpenOptions::new().read(true).open(er_fn.as_str()) {
+        match OpenOptions::new().read(true).open(er_fn.as_str()) {
             Ok(i) => {
                 let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
                 SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
@@ -2841,12 +2841,11 @@ where
                         SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
                     }
                     Err(e) => {
-                        return Err(format!("error can't abst mem for edge_reciprocal {e}").into());
+                        Err(format!("error can't abst mem for edge_reciprocal {e}").into())
                     }
                 }
             }
-        };
-        Ok(er?)
+        }
     }
 
     pub(crate) fn get_edge_dest_id_over_source(
@@ -2854,7 +2853,7 @@ where
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
         let dud = Vec::new();
-        let eo = match OpenOptions::new().read(true).open(eo_fn.as_str()) {
+        match OpenOptions::new().read(true).open(eo_fn.as_str()) {
             Ok(i) => {
                 let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
                 SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
@@ -2867,12 +2866,11 @@ where
                         SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
                     }
                     Err(e) => {
-                        return Err(format!("error can't abst mem for edge_over {e}").into());
+                        Err(format!("error can't abst mem for edge_over {e}").into())
                     }
                 }
             }
-        };
-        Ok(eo?)
+        }
     }
 
     fn build_helper_filename(&self, seq: usize) -> Result<String, Box<dyn std::error::Error>> {
@@ -3082,7 +3080,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std
     type Output = [Edge];
     #[inline]
     fn index(&self, _index: std::ops::RangeFull) -> &[Edge] {
-        // FIXME: replace this ugly '* 8' for something less prone to breaking
+        // FIXME: this is really weird, most probably it is WRONG!!! Don't turn this in without replacing this ugly '* 8' for something that you understand and guarantee is right!!!
         unsafe {
             slice::from_raw_parts(
                 self.graph.as_ptr() as *const Edge,
