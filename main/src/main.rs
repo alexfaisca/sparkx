@@ -18,7 +18,7 @@ use tool::k_truss::{burkhardt_et_al::*, clustering_coefficient::*, pkt::*};
 #[allow(unused_imports)]
 use tool::trails::hierholzer::*;
 
-use clap::Parser;
+use clap::{ArgAction, Parser};
 #[allow(unused_imports)]
 use hyperloglog_rs::prelude::*;
 use static_assertions::const_assert;
@@ -43,27 +43,33 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
     long_about = "Very pretentious name. I know... ('~') but a man has to make an impression for his dissertation. (T.T)\n The contents of this crate should be a good start though. :)"
 )]
 struct ProgramArgs {
-    /// enable debugging mode
+    /// Enable debugging mode
     #[arg(short, long)]
     debug: bool,
 
-    /// enable graph memory mapping mode
+    /// Enable graph memory mapping mode
     #[arg(short, long, default_value_t = true)]
     mmap: bool,
 
-    /// program thread number, default is 1
+    /// Program thread number, default is 1
     #[arg(short, long)]
     threads: Option<u8>,
 
-    /// enable verbose mode
-    #[arg(short, long, default_value_t = false)]
+    /// Enable or disable verbose output.
+    ///
+    /// Examples:
+    ///   (not provided)   -> false
+    ///   -v / --verbose   -> true
+    ///   -v=true          -> true
+    ///   -v=false         -> false
+    #[arg(short, long, num_args(0..=1), default_value_t = false, default_missing_value = "true", action = ArgAction::Set)]
     verbose: bool,
 
-    /// output file(s) identifier (filenames are generated using this as the graph id)
+    /// Output file(s) identifier (filenames are generated using this as the graph id)
     #[arg(short, long)]
     output_id: Option<String>,
 
-    /// required — input file (.txt, .lz4, .mmap are accepted)
+    /// Required — input file (.txt, .lz4, .mmap are accepted)
     #[arg(short, long, required = true)]
     file: String,
 }
@@ -73,6 +79,10 @@ fn main() {
     let _mmap: bool = args.mmap;
     let _verbose: bool = args.verbose;
     let _debug: bool = args.debug;
+
+    // Set BRUIJNX_VERBOSE environment varioble (if = "1" then program operates in verbose mode
+    // else program operates in non-verbose mode).
+    unsafe { std::env::set_var("BRUIJNX_VERBOSE", if args.verbose { "1" } else { "0" }) };
 
     if BITS < BITS_U64 {
         panic!("error program can't operate on <64-bit systems");
@@ -213,9 +223,12 @@ fn parse_bytes_mmaped<
         graph_mmaped.width(),
         time.elapsed()
     );
+    println!();
+
     // let time = Instant::now();
     // graph_cache.rebuild_fst_from_ggcat_file(path, None, None)?;
-    // println!("cache fst built {:?}", time.elapsed());
+    // println!("cache fst rebuilt {:?}", time.elapsed());
+
     // let time = Instant::now();
     // let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
     //     GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
@@ -232,6 +245,12 @@ fn parse_bytes_mmaped<
     // End of lookup test
     /* ********************************************************************************* */
     //
+
+    let time = Instant::now();
+    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
+    println!();
 
     // let time = Instant::now();
     // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
@@ -284,13 +303,10 @@ fn parse_bytes_mmaped<
     let _pkt = AlgoPKT::new(&graph_mmaped)?;
     println!("k-truss pkt {:?}", time.elapsed());
     println!();
-    let time = Instant::now();
-    let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    println!("k-core batagelj zaversnik {:?}", time.elapsed());
-    let time = Instant::now();
-    let _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
+
+    // let time = Instant::now();
+    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    // println!("k-core batagelj zaversnik {:?}", time.elapsed());
 
     // let mut i = 0;
     // while i < graph_mmaped.size().map_or(0, |s| s) {

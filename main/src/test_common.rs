@@ -85,24 +85,35 @@ pub(crate) fn get_or_init_dataset_cache_entry(
 
     // Get or create the per-key OnceLock
     let test_entry = mem_cache()
-        .entry(cache_id.clone())
+        .entry(cache_id)
         .or_try_insert_with(|| -> Result<OnceLock<GraphCache<TinyEdgeType, TinyLabelStandardEdge>>, Box<dyn std::error::Error>> {
             let lock = OnceLock::new();
             Ok(lock)
         })?;
     let cache = test_entry.get_or_try_init(|| -> Result<GraphCache<TinyEdgeType, TinyLabelStandardEdge>, Box<dyn std::error::Error>> {
             let cache_filename = cache_file_for(graph_path)?;
+            eprintln!("check if file with fn {cache_filename} exists");
             if Path::new(&cache_filename).exists() {
-                eprintln!("found it {:?}", graph_path);
+                eprintln!("yes, found it {:?}", graph_path);
                 GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::open(&cache_filename, None)
                     .map_err(|e| -> Box<dyn std::error::Error> {
                         format!("error getting `GraphCache` instance for path {:?}: {:?}", graph_path, e).into()
                     })
             } else {
-                eprintln!("built it {:?}", graph_path);
+                eprintln!("no, built it {:?}", graph_path);
+                let file_name = graph_path
+                    .file_name()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "error invalid file path --- path not found".into()
+                    })?
+                .to_str()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "error invalid file path --- empty path".into()
+                    })?;
+
                 GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(
                     graph_path,
-                    Some(cache_id),
+                    Some(file_name.to_string()),
                     None,
                     None,
                     )
@@ -184,3 +195,42 @@ pub(crate) fn get_or_init_dataset_exact_value<
         })
         .cloned()
 }
+
+#[allow(dead_code)]
+#[cfg(feature = "bench")]
+/// Build (or open) a graph for a given dataset path. For synthetic graphs, generate here deterministically instead.
+pub fn load_graph<EdgeType, Edge, P: AsRef<Path>>(
+    dataset: P,
+) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>>
+where
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
+{
+    let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
+    GraphMemoryMap::init(cache, Some(16))
+}
+
+#[allow(dead_code)]
+#[cfg(feature = "bench")]
+pub static DATASETS: &[(&str, &str)] = &[
+    ("ggcat_1_5", "../ggcat/graphs/random_graph_1_5.lz4"),
+    // ("ggcat_2_5", "../ggcat/graphs/random_graph_2_5.lz4"),
+    // ("ggcat_3_5", "../ggcat/graphs/random_graph_3_5.lz4"),
+    // ("ggcat_4_5", "../ggcat/graphs/random_graph_4_5.lz4"),
+    // ("ggcat_5_5", "../ggcat/graphs/random_graph_5_5.lz4"),
+    // ("ggcat_6_5", "../ggcat/graphs/random_graph_6_5.lz4"),
+    // ("ggcat_7_5", "../ggcat/graphs/random_graph_7_5.lz4"),
+    // ("ggcat_8_5", "../ggcat/graphs/random_graph_8_5.lz4"),
+    // ("ggcat_9_5", "../ggcat/graphs/random_graph_9_5.lz4"),
+    // ("ggcat_1_10", "../ggcat/graphs/random_graph_1_10.lz4"),
+    // ("ggcat_2_10", "../ggcat/graphs/random_graph_2_10.lz4"),
+    // ("ggcat_3_10", "../ggcat/graphs/random_graph_3_10.lz4"),
+    // ("ggcat_4_10", "../ggcat/graphs/random_graph_4_10.lz4"),
+    // ("ggcat_5_10", "../ggcat/graphs/random_graph_5_10.lz4"),
+    // ("ggcat_6_10", "../ggcat/graphs/random_graph_6_10.lz4"),
+    // ("ggcat_7_10", "../ggcat/graphs/random_graph_7_10.lz4"),
+    // ("ggcat_8_10", "../ggcat/graphs/random_graph_8_10.lz4"),
+    // ("ggcat_9_10", "../ggcat/graphs/random_graph_9_10.lz4"),
+    // ("ggcat_8_15", "../ggcat/graphs/random_graph_8_15.lz4"),
+    // ("ggcat_9_15", "../ggcat/graphs/random_graph_9_15.lz4"),
+];

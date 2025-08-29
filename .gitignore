@@ -2,6 +2,7 @@
 */cache/
 */.cache/
 */.test_cache/
+/exact_values_backup
 /thesis_template
 /test
 /proteic_dbgs

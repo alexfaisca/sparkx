@@ -35,8 +35,54 @@ tempfile = "3.20.0"
 num_cpus = "1.17.0"
 sys-info = "0.9.1"
 hyperloglog-rs = "0.1.56"
-atomic_float = "1.1.0"
 paste = "1.0.15"
 sha2 = "0.10.9"
 dashmap = "6.1.0"
-criterion = "0.7.0"
+portable-atomic = { version = "1.11.1", features = ["float"] }
+
+[dev-dependencies]
+criterion-benches = { path = "./criterion-benches/" }
+criterion = "0.5.0"
+criterion-perf-events = "0.4.0"
+perf-event = "0.4.8"
+perfcnt = "0.8.0"
+
+[[bench]]
+name = "algo_batagelj_zaversnik" # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_burkhardt_et_al" # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_gve_louvain"     # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_hierholzer"      # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_hk_relax"        # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_hyperball"       # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_liu_et_al"       # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "algo_pkt"             # matches benches/algo_hierholzer.rs
+harness = false
+required-features = ["bench"]

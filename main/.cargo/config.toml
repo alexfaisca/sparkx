@@ -1,2 +1,3 @@
 [alias]
 t = "test -- --test-threads=1"
+b = "bench --features bench"

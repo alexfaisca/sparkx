@@ -2,16 +2,11 @@ use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
 
-use atomic_float::AtomicF64;
 use crossbeam::thread;
-use std::collections::HashSet;
-use std::sync::atomic::AtomicUsize;
+use portable_atomic::{AtomicF64, AtomicU8, AtomicUsize, Ordering};
 use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Barrier,
-        atomic::{AtomicU8, Ordering},
-    },
+    collections::{HashMap, HashSet},
+    sync::{Arc, Barrier},
 };
 
 type ProceduralMemoryClusteringCoefficient = (AbstractedProceduralMemoryMut<AtomicU8>,);

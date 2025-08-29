@@ -1,0 +1,10 @@
+[package]
+name = "criterion-benches"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+criterion = "0.5"
+criterion-perf-events = "0.4.0"
+paste = "1.0.15"
+perfcnt = "0.8.0"

@@ -249,22 +249,27 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked"))
                 .collect();
-            let mut r = vec![0usize; u8::MAX as usize];
-            for i in 0..u8::MAX as usize {
-                for v in joined_res.clone() {
-                    r[i] += v[i];
+            let env_verbose_val =
+                std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());
+            let verbose: bool = env_verbose_val == "1";
+            if verbose {
+                let mut r = vec![0usize; u8::MAX as usize];
+                for i in 0..u8::MAX as usize {
+                    for v in joined_res.clone() {
+                        r[i] += v[i];
+                    }
                 }
+                // safe because max_degree is at least 0
+                r[0] += dead_nodes;
+                let mut max = 0;
+                r.iter().enumerate().for_each(|(i, v)| {
+                    if *v != 0 && i > max {
+                        max = i;
+                    }
+                });
+                r.resize(max + 1, 0);
+                println!("k-cores {:?}", r);
             }
-            // safe because max_degree is at least 0
-            r[0] += dead_nodes;
-            let mut max = 0;
-            r.iter().enumerate().for_each(|(i, v)| {
-                if *v != 0 && i > max {
-                    max = i;
-                }
-            });
-            r.resize(max + 1, 0);
-            println!("k-cores {:?}", r);
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
@@ -299,8 +304,8 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
-        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
+        let graph =
+            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
         let bz_k_cores = AlgoBatageljZaversnik::new(&graph)?;
 
         verify_k_cores(&graph, bz_k_cores.k_cores)

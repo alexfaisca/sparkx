@@ -4,12 +4,10 @@ use crate::shared_slice::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
+use portable_atomic::{AtomicU8, Ordering};
 use std::{
     collections::HashMap,
-    sync::{
-        Arc, Barrier,
-        atomic::{AtomicU8, Ordering},
-    },
+    sync::{Arc, Barrier},
 };
 
 type ProceduralMemoryBurkhardtEtAl = (
@@ -265,7 +263,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 neighbours.clear();
             }
         }
-        {
+        let env_verbose_val = std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());
+        let verbose: bool = env_verbose_val == "1";
+        if verbose {
             let mut max = 0;
             test.iter().enumerate().for_each(|(i, v)| {
                 if *v != 0 && i > max {
@@ -306,8 +306,8 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
-        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
+        let graph =
+            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
         let burkhardt_et_al_k_trusses = AlgoBurkhardtEtAl::new(&graph)?;
 
         verify_k_trusses(&graph, burkhardt_et_al_k_trusses.k_trusses)

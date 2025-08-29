@@ -4,10 +4,8 @@ use crate::shared_slice::*;
 use crate::utils::*;
 
 use crossbeam::thread;
-use std::sync::{
-    Arc, Barrier,
-    atomic::{AtomicU8, AtomicUsize, Ordering},
-};
+use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 
 type ProceduralMemoryPKT = (
     AbstractedProceduralMemoryMut<usize>,
@@ -431,8 +429,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked").expect("error ??1"))
                 .collect();
-
-            {
+            let env_verbose_val =
+                std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());
+            let verbose: bool = env_verbose_val == "1";
+            if verbose {
                 let mut r = vec![0usize; u8::MAX as usize];
                 for i in 0..u8::MAX as usize {
                     for v in joined_res.clone() {
@@ -481,8 +481,8 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
-        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
+        let graph =
+            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
         let pkt_k_trusses = AlgoPKT::new(&graph)?;
 
         verify_k_trusses(&graph, pkt_k_trusses.k_trusses)

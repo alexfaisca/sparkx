@@ -15,6 +15,7 @@ use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
 use num_cpus::get_physical;
 use ordered_float::OrderedFloat;
+use portable_atomic::{AtomicUsize, Ordering};
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
 use std::{
@@ -26,10 +27,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     slice,
-    sync::{
-        Arc, Barrier,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Barrier},
 };
 use zerocopy::*;
 
@@ -114,10 +112,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         graph_id: &str,
         target_type: FileType,
         seq: Option<usize>,
-    ) -> Result<(String, String), Box<dyn std::error::Error>> {
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let id = id_from_filename(graph_id)?;
 
-        Ok((
+        Ok(
             match target_type {
                 FileType::Edges(_) => cache_file_name_from_id(FileType::Edges(H::H), &id, seq),
                 FileType::Index(H::H) => cache_file_name_from_id(FileType::Index(H::H), &id, seq),
@@ -131,9 +129,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                     )
                     .into());
                 }
-            },
-            id,
-        ))
+            }
+        )
     }
 
     fn evaluate_input_file_type<P: AsRef<Path>>(
@@ -175,7 +172,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 format!("error couldn't get file name from path {:?}", path.as_ref()).into()
             })?.to_str()
             .ok_or_else(|| -> Box<dyn std::error::Error> {
-                format!("error couldn't file name str from path {:?}", path.as_ref()).into()
+                format!("error couldn't get file name str from path {:?}", path.as_ref()).into()
             })?;
 
         // parse extension to decide on decoding
@@ -183,8 +180,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             Ok(match ext.to_str() {
                 Some(Self::EXT_COMPRESSED_LZ4) => {
                     // prepare mmaped file to temporarily hold decoded contents
-                    let (h_fn, id) = Self::init_cache_file_from_id_or_random(id, FileType::Helper(H::H), Some(0))?;
-                    println!("temp file fn {h_fn} {id}v");
+                    let h_fn = Self::init_cache_file_from_id_or_random(id, FileType::Helper(H::H), Some(0))?;
                     let helper_file = OpenOptions::new().create(true).truncate(true).read(true).write(true).open(&h_fn)?;
                     helper_file.set_len(file_length)?;
                     let mut mmap = unsafe { MmapOptions::new().map_mut(&helper_file)? };
@@ -205,8 +201,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                             break;
                         }
                         let n = decoder.read(buf)?;
+                         // check if EOF was reached
                         if n == 0 {
-                            break; // EOF
+                            break;
                         }
                         offset += n;
                     }
@@ -662,11 +659,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             return Err("error invalid cache id: id was `None`".into());
         }
 
-        let (graph_filename, _) =
+        let graph_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::Edges(H::H), None)?;
-        let (index_filename, _) =
+        let index_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::Index(H::H), None)?;
-        let (metalabel_filename, _) =
+        let metalabel_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::Metalabel(H::H), Some(0))?;
 
         let graph_file = Arc::new(
@@ -753,7 +750,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             Ok(file) => Arc::new(file),
             Err(_) => {
                 // if graph has no fst in cache no problem, build empty one and proceed
-                let empty_fst = Arc::new(
+                let mut empty_fst = Arc::new(
                     OpenOptions::new()
                         .create(true)
                         .truncate(true)
@@ -763,9 +760,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let builder = MapBuilder::new(empty_fst.clone())?;
                 builder.finish()?;
                 // make it readonly :)
-                let mut permissions = empty_fst.metadata()?.permissions();
-                permissions.set_readonly(true);
-                empty_fst.set_permissions(permissions)?;
+                Self::set_file_readonly(&empty_fst)?;
+                empty_fst.flush()?;
                 empty_fst
             }
         };
@@ -924,46 +920,51 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         let (nr, _, _) = Self::parse_mtx_header(path.as_ref())?;
 
-        let (e_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
-        let (i_fn, _) = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
+        let e_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
+        let i_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
         let offsets_fn = cache_file_name(&e_fn, FileType::Helper(H::H), Some(0))?;
-        let mut index = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, nr + 1, true)?;
-        let mut offsets = SharedSliceMut::<usize>::abst_mem_mut(&offsets_fn, nr, true)?;
+        let index = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&i_fn, nr + 1, true)?;
+        let offsets = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&offsets_fn, nr, true)?;
 
         // accumulate node degrees on index
-        let mut edge_count = 0;
+        let edge_count = Arc::new(AtomicUsize::new(0));
         {
-            Self::parse_mtx_with(path.as_ref(), |u, _v, _w| {
-                edge_count += 1;
-                *index.get_mut(u) += 1;
-            })?;
+            Self::parallel_parse_mtx_with(path.as_ref(), {
+                let edge_count = edge_count.clone();
+                let index = index.shared_slice().clone();
+                move |u, _v, _w| {
+                    edge_count.add(1, Ordering::Relaxed);
+                    index.get(u).add(1, Ordering::Relaxed);
+            }})?;
         }
-        let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, edge_count, true)?;
+        let edges = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, edge_count.load(Ordering::Relaxed), true)?;
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
         // this works because after aloc memmaped files are zeroed (so index[nr] = 0)
         for u in 0..=nr {
-            let deg_u = *index.get(u);
+            let deg_u = index.get(u).load(Ordering::Relaxed);
             if deg_u > max_degree {
                 max_degree = deg_u;
             }
-            *index.get_mut(u) = sum;
+            index.get(u).store(sum, Ordering::Relaxed);
             sum += deg_u;
         }
+        println!("|V| == {}, |E| == {}", nr, index.get(nr).load(Ordering::Relaxed));
 
         if max_degree >= u8::MAX as usize {
             return Err(format!("Error graph has a max_degree of {max_degree} which, unforturnately, is bigger than {}, our current maximum supported size. If you feel a mistake has been made or really need this feature, please contact the developer team. We sincerely apologize.", u8::MAX).into());
         }
 
         // write edges
-        let mut wrote = 0;
         {
-            Self::parse_mtx_with(path.as_ref(), |u, v, w| {
-                wrote += 1;
-                *edges.get_mut(*index.get(u) + *offsets.get(u)) = Edge::new(v, w);
-                *offsets.get_mut(u) += 1;
-            })?;
+            Self::parallel_parse_mtx_with(path.as_ref(), {
+                let mut edges = edges.shared_slice();
+                let index = index.shared_slice();
+                let offsets = offsets.shared_slice();
+                move |u, v, w| {
+                *edges.get_mut(index.get(u).load(Ordering::Relaxed) + offsets.get(u).fetch_add(1, Ordering::Relaxed)) = Edge::new(v, w);
+            }})?;
         }
 
         edges.flush()?;
@@ -1028,6 +1029,192 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
         };
         Ok((nrows, ncols, nnz_declared))
+    }
+
+    fn parallel_parse_mtx_with<F, P: AsRef<Path>>(
+        path: P,
+        emit: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnMut(usize, u64, u64) + Send + Sync + Clone,
+    {
+        let threads = (get_physical() * 2).max(1);
+        let f = File::open(path.as_ref())?;
+        let file_len = f.metadata()?.len();
+        let mut rdr = BufReader::new(f);
+
+        // read and parse the header line
+        let mut header = String::new();
+        rdr.read_line(&mut header)?;
+        if !header.starts_with("%%MatrixMarket") {
+            return Err("Invalid MatrixMarket header".into());
+        }
+        // tokens: 0=%%MatrixMarket, 1=matrix, 2=coordinate, 3=field, 4=symmetry
+        let toks: Vec<_> = header.split_whitespace().collect();
+        if toks.len() < 5 {
+            return Err("Malformed MatrixMarket header".into());
+        }
+        if !toks[1].eq_ignore_ascii_case("matrix")
+            || !toks[2].eq_ignore_ascii_case("coordinate")
+            || !(toks[3].eq_ignore_ascii_case("pattern") || toks[3].eq_ignore_ascii_case("integer"))
+            || !(toks[4].eq_ignore_ascii_case("symmetric")
+                || toks[4].eq_ignore_ascii_case("skew-symmetric")
+                || toks[4].eq_ignore_ascii_case("general"))
+        {
+            return Err(
+                "Only 'matrix coordinate pattern/integer symmetric' format is supported".into(),
+            );
+        }
+        let pattern = toks[3].eq_ignore_ascii_case("pattern");
+        let symmetric = !toks[4].eq_ignore_ascii_case("general");
+
+        // skip comment lines (%) to find the size line: "nrows ncols nnz"
+        let (nrows, ncols, nnz_declared) = {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let n = rdr.read_line(&mut line)?;
+                if n == 0 {
+                    return Err("Unexpected EOF before reading size line".into());
+                }
+                // ignore comment lines
+                let line_trim = line.trim();
+                if line_trim.is_empty() || line_trim.starts_with('%') {
+                    continue;
+                }
+                // parse sizes
+                let mut it = line_trim.split_whitespace();
+                let nr: usize = it.next().ok_or("Missing nrows")?.parse()?;
+                let nc: usize = it.next().ok_or("Missing ncols")?.parse()?;
+                let nnz: usize = it.next().ok_or("Missing nnz")?.parse()?;
+                if nr != nc {
+                    return Err(format!(
+                        "Only symmetric matrices are supported but {{nr = {nr}}} != {{nc = {nc}}}"
+                    )
+                    .into());
+                }
+                break (nr, nc, nnz);
+            }
+        };
+
+        let header_offset = rdr.stream_position()?;
+        let thread_load = file_len.saturating_sub(header_offset).div_ceil(threads as u64);
+
+        let seen = Arc::new(AtomicUsize::new(0));
+        thread::scope(|s| -> Result<(), Box<dyn std::error::Error>> {
+            let mut handles = Vec::new();
+
+            for tid in 0..threads {
+                    let begin_pos = std::cmp::min(header_offset + tid as u64 * thread_load, file_len);
+                    let end_pos = std::cmp::min(header_offset + (tid + 1) as u64 * thread_load, file_len) as usize;
+                    let p = path.as_ref();
+
+                    let seen = seen.clone();
+                    let mut emit = emit.clone();
+
+                    let handle = s.spawn(
+                    move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        // open the file separately for each thread
+                        let file = File::open(p)?;
+                        let mut cur_pos = begin_pos as usize;
+
+                        // line up bufreader to next line start
+                        let mut rdr = BufReader::new(file);
+                        if tid == 0 {
+                            rdr.seek(SeekFrom::Start(begin_pos))?;
+                        } else {
+                            // this way we avoid the case where thread's bufreader startsoff
+                            // aligned and the first edge is skipped
+                            rdr.seek(SeekFrom::Start(begin_pos.saturating_sub(1)))?;
+                            cur_pos += rdr.skip_until(b'\n')?.saturating_sub(1);
+                        }
+
+                        let mut line = String::new();
+                        while seen.load(Ordering::Relaxed) < nnz_declared && end_pos > cur_pos {
+                            line.clear();
+
+                            let n = rdr.read_line(&mut line)?;
+                            if n == 0 {
+                                // Some files under-report nnz in the header; we stop if EOF reached
+                                break;
+                            } else {
+                                cur_pos += n;
+                            }
+
+                            let t = line.trim();
+                            if t.is_empty() || t.starts_with('%') {
+                                continue;
+                            }
+
+                            let mut it = t.split_whitespace();
+
+                            // 1st two tokens must be i j (1-based)
+                            let i1: usize = match it.next() {
+                                Some(s) => s.parse()?,
+                                None => continue, // malformed line; skip
+                            };
+
+                            let j1: u64 = match it.next() {
+                                Some(s) => s.parse()?,
+                                None => continue, // malformed line; skip
+                            };
+
+                            // Convert to 0-based, also ensure in-bounds
+                            if i1 == 0 || j1 == 0 {
+                                return Err(format!("MatrixMarket indices are 1-based; found 0 ({line})").into());
+                            }
+
+                            let i = i1 - 1;
+                            let j = j1 - 1;
+
+                            let w: u64 = if pattern {
+                                0
+                            } else {
+                                match it.next() {
+                                    Some(s) => s.parse()?,
+                                    None => 0, // malformed line; skip
+                                }
+                            };
+
+                            if i >= nrows || j as usize >= ncols {
+                                return Err(
+                                    format!("Entry out of bounds: ({i},{j}) not in [{nrows}x{ncols}]").into(),
+                                    );
+                            }
+
+                            // Emit edges:
+                            // first directed edge i --(w)--> j
+                            emit(i, j, w);
+
+                            // second directed edge (if symmetrical) j --(w)--> i
+                            if symmetric && i != j as usize {
+                                emit(j as usize, i as u64, w);
+                            }
+
+                            seen.add(1, Ordering::Relaxed);
+                        }
+                        Ok(())
+                    },
+                );
+
+                handles.push(handle);
+            }
+
+            for (idx, handle) in handles.into_iter().enumerate() {
+                handle
+                    .join()
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("error joining thread {idx}: {:?}", e).into()
+                    })?
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("error in thread {idx}: {:?}", e).into()
+                    })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
+
+        Ok(())
     }
 
     fn parse_mtx_with<F, P: AsRef<Path>>(
@@ -1631,7 +1818,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             std::fs::remove_file(p)?;
         }
         // self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
-        //
+
+        self.finish()?;
+
         Ok(())
     }
 
@@ -1935,7 +2124,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         builder.finish()?;
         self.metalabel_file = out;
         self.metalabel_filename = out_fn;
+
         Ok(())
+    }
+
+    fn set_file_readonly(file: &File)  -> Result<(), Box<dyn std::error::Error>> {
+        let mut permissions = file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        Ok(file.set_permissions(permissions)?)
     }
 
     fn finish(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -1945,14 +2141,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             &mut self.graph_file,
             &mut self.metalabel_file,
         ] {
-            let mut permissions = file.metadata()?.permissions();
-            permissions.set_readonly(true);
-            file.set_permissions(permissions)?;
+            Self::set_file_readonly(file)?;
             // flush needed because in multithreaded accesses wihtout it memory is in undefined state
             file.flush()?;
         }
 
-        // remove any tmp files that may have been used to build the metalabel fst
+        // remove any tmp files that may have been used to (re)build `GraphCache` instance
         self.cleanup_cache_by_target(FileType::Metalabel(H::H))?;
         self.readonly = true;
         Ok(())
@@ -2550,17 +2744,17 @@ where
         )?);
 
         // build subgraph's cache entries' filenames
-        let (e_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+        let e_fn = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             &id,
             FileType::Edges(H::H),
             None,
         )?;
-        let (i_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+        let i_fn = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             &id,
             FileType::Index(H::H),
             None,
         )?;
-        let (ml_fn, _) = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
+        let ml_fn = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
             &id,
             FileType::Metalabel(H::H),
             None,

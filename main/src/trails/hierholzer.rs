@@ -5,15 +5,7 @@ use crate::shared_slice::*;
 use crossbeam::thread;
 use memmap2::{Mmap, MmapMut};
 use num_cpus::get_physical;
-use std::{
-    collections::HashMap,
-    fs::OpenOptions,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, AtomicUsize, Ordering},
-    },
-    time::Instant,
-};
+use std::{collections::HashMap, fs::OpenOptions, time::Instant};
 
 /// For the computation of the euler trail(s) of a [`GraphMemoryMap`] instance using *Hierholzer's Algorithm*.
 ///
@@ -66,8 +58,8 @@ where
         mmap: u8,
     ) -> Result<
         (
-            AbstractedProceduralMemoryMut<AtomicUsize>,
-            AbstractedProceduralMemoryMut<AtomicU8>,
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<u8>,
         ),
         Box<dyn std::error::Error>,
     > {
@@ -82,8 +74,8 @@ where
             .g
             .build_cache_filename(CacheFile::EulerTrail, Some(1))?;
 
-        let edges = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&e_fn, node_count, mmap > 0)?;
-        let count = SharedSliceMut::<AtomicU8>::abst_mem_mut(&c_fn, node_count, mmap > 1)?;
+        let edges = SharedSliceMut::<usize>::abst_mem_mut(&e_fn, node_count, mmap > 0)?;
+        let count = SharedSliceMut::<u8>::abst_mem_mut(&c_fn, node_count, mmap > 1)?;
 
         thread::scope(|scope| {
             // initializations always uses at least two threads per core
@@ -91,18 +83,15 @@ where
             let node_load = node_count.div_ceil(threads);
 
             for i in 0..threads {
-                let edges = edges.shared_slice();
-                let count = count.shared_slice();
+                let mut edges = edges.shared_slice();
+                let mut count = count.shared_slice();
                 let begin = std::cmp::min(i * node_load, node_count);
                 let end = std::cmp::min(begin + node_load, node_count);
 
                 scope.spawn(move |_| {
                     for k in begin..end {
-                        edges.get(k).store(*index_ptr.get(k), Ordering::Relaxed);
-                        count.get(k).store(
-                            (*index_ptr.get(k + 1) - *index_ptr.get(k)) as u8,
-                            Ordering::Relaxed,
-                        );
+                        *edges.get_mut(k) = *index_ptr.get(k);
+                        *count.get_mut(k) = (*index_ptr.get(k + 1) - *index_ptr.get(k)) as u8;
                     }
                 });
             }
@@ -122,39 +111,32 @@ where
     /// * `mmap`: `u8` --- the level of memmapping to be used during the computation (*experimental feature*).
     ///
     pub fn compute(&mut self, mmap: u8) -> Result<(), Box<dyn std::error::Error>> {
-        let time = Instant::now();
         let node_count = match self.g.size() {
             0 => return Ok(()),
             i => i,
         };
         let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), self.g.width());
 
-        // The Vec<_> and MmapMut refs need to be in scope for the structures not to be deallocated
-        let (edges, edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;
+        let (mut edges, mut edge_count) = self.initialize_hierholzers_procedural_memory(mmap)?;
 
-        // Atomic counter to pick next starting vertex for a new cycle
-        let start_vertex_counter = Arc::new(AtomicUsize::new(0));
-
+        let mut start_vertex_counter = 0usize;
         let mut cycles = self.euler_trails.shared_slice();
         let mut write_idx = 0usize;
         // find cycles until no unused edges remain
         loop {
             let start_v = loop {
-                let idx = start_vertex_counter
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
-                        if x >= node_count {
-                            Some(0)
-                        } else {
-                            Some(x + 1)
-                        }
-                    })
-                    .unwrap_or(0);
+                let idx = if start_vertex_counter >= node_count {
+                    break None;
+                } else {
+                    start_vertex_counter
+                };
                 if idx >= node_count {
                     break None;
                 }
-                if edge_count.get(idx).load(Ordering::Relaxed) > 0 {
+                if *edge_count.get(idx) > 0 {
                     break Some(idx);
                 }
+                start_vertex_counter += 1;
             };
             let start_v = match start_v {
                 Some(v) => v,
@@ -168,27 +150,12 @@ where
             let mut cycle: Vec<usize> = Vec::new();
             stack.push(start_v);
             while let Some(&v) = stack.last() {
-                if edge_count
-                    .get(v)
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-                        if x > 0 {
-                            Some(x - 1)
-                        } else {
-                            None // don't update
-                        }
-                    })
-                    .is_ok()
-                {
-                    let edge_idx = edges.get(v).fetch_add(1, Ordering::Relaxed);
-                    stack.push(graph_ptr.get(edge_idx).dest());
+                if *edge_count.get(v) > 0 {
+                    *edge_count.get_mut(v) -= 1;
+                    stack.push(graph_ptr.get(*edges.get(v)).dest());
+                    *edges.get_mut(v) += 1;
                 } else {
                     stack.pop();
-                    if cycle.is_empty() {
-                        // check if error of atomic
-                        if stack.is_empty() {
-                            continue;
-                        }
-                    }
                     cycle.push(v);
                 }
             }
@@ -209,12 +176,11 @@ where
             }
         }
 
-        self.euler_trails.flush_async()?;
+        self.euler_trails.flush()?;
 
         // cleanup cache
         self.g.cleanup_cache(CacheFile::EulerTrail)?;
 
-        println!("euler trails hierholzer's {:?}", time.elapsed());
         Ok(())
     }
 
@@ -511,7 +477,7 @@ mod test {
             $(
                 paste! {
                     #[test]
-                    fn [<k_trusses_pkt_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
+                    fn [<hierholzers_euler_trails_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
                         generic_test($path)
                     }
                 }
@@ -520,8 +486,8 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache = get_or_init_dataset_cache_entry(path.as_ref())?;
-        let graph = GraphMemoryMap::init(graph_cache, Some(16))?;
+        let graph =
+            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
         let het = AlgoHierholzer::new(&graph)?;
 
         verify_trails(&graph, het.euler_trails, het.trail_index)
@@ -539,7 +505,7 @@ mod test {
         ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
         ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
         ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
-        ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
+        // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
         ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
         ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
         ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",

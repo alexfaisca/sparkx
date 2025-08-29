@@ -2,15 +2,12 @@ use crate::generic_edge::*;
 use crate::generic_memory_map::*;
 use crate::shared_slice::*;
 
-use atomic_float::AtomicF64;
 use crossbeam::thread;
 use num_cpus::get_physical;
+use portable_atomic::{AtomicBool, AtomicF64, AtomicUsize, Ordering};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Barrier;
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
 type ProceduralMemoryGVELouvain = (
     // K' --- renamed to k
     AbstractedProceduralMemoryMut<AtomicUsize>,

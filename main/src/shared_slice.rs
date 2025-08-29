@@ -237,6 +237,11 @@ impl<T> SharedSlice<T> {
         }
     }
 
+    #[allow(clippy::ptr_arg)]
+    pub fn from_vec(vec: &Vec<T>) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self::new(vec.as_ptr(), vec.len()))
+    }
+
     pub fn from_file(file: &File) -> Result<(Self, Mmap), Box<dyn std::error::Error>> {
         let mmap = unsafe { MmapOptions::new().map(file)? };
         let mmap_len = mmap.len();
@@ -355,6 +360,10 @@ impl<T> SharedSliceMut<T> {
             ptr: slice.ptr,
             len: slice.len,
         }
+    }
+
+    pub fn from_vec(vec: &mut Vec<T>) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self::new(vec.as_mut_ptr(), vec.len()))
     }
 
     pub fn from_file(file: &File) -> Result<(Self, MmapMut), Box<dyn std::error::Error>> {

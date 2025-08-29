@@ -8,10 +8,8 @@ use crossbeam::thread;
 use hyperloglog_rs::prelude::Precision8;
 use hyperloglog_rs::prelude::WordType;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
-use std::sync::{
-    Arc, Barrier,
-    atomic::{AtomicUsize, Ordering},
-};
+use portable_atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 
 type ProceduralMemoryHB<P, const B: usize> = (
     AbstractedProceduralMemoryMut<HyperLogLog<P, B>>,
@@ -480,6 +478,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod test {
     use hyperloglog_rs::prelude::*;
 
@@ -541,8 +540,7 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(p: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph_cache = get_or_init_dataset_cache_entry(p.as_ref())?;
-        let g = GraphMemoryMap::init(graph_cache, Some(16))?;
+        let g = GraphMemoryMap::init(get_or_init_dataset_cache_entry(p.as_ref())?, Some(16))?;
 
         let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&g, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
@@ -568,7 +566,7 @@ mod test {
 
     // generate test cases from dataset
     graph_tests! {
-        // ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
         // ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
         // ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
         // ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
@@ -580,14 +578,14 @@ mod test {
         // ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
         // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
         // ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
-        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
-        ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
-        ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
-        ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
-        ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
-        ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
+        // ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
+        // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
+        // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
+        // ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
+        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
+        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
         // … add the rest
     }
 }
