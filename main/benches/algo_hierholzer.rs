@@ -8,12 +8,7 @@ use tool::{
     trails::hierholzer::AlgoHierholzer,
 };
 
-emit_criterion_bench!(
-    time_throughput,
-    branch_missprediction_rate,
-    cache_miss_rate,
-    fault_rate,
-);
+emit_criterion_bench!(ipc, branch_missprediction_rate, cache_miss_rate, fault_rate,);
 
 /// Run Hierholzer on an existing graph, writing its outputs into a per-iteration temporary cache directory (so runs don’t step on each other).
 fn run_once<'a, EdgeType, Edge>(g: &'a GraphMemoryMap<EdgeType, Edge>)

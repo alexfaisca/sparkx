@@ -11,13 +11,7 @@ use tool::{
 
 use criterion_benches::{self, PerfRatio, emit_criterion_bench};
 
-emit_criterion_bench!(
-    ipc,
-    time_throughput,
-    // branch_missprediction_rate,
-    // cache_miss_rate,
-    fault_rate,
-);
+emit_criterion_bench!(ipc, branch_missprediction_rate, cache_miss_rate, fault_rate,);
 
 /// Run Liu et al. on an existing graph, writing its outputs into a per-iteration temporary cache directory (so runs don’t step on each other).
 fn run_once<'a, EdgeType, Edge>(g: &'a GraphMemoryMap<EdgeType, Edge>)

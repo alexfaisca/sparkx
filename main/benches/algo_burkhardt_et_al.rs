@@ -10,12 +10,7 @@ use tool::{
     test_common::{DATASETS, load_graph},
 };
 
-emit_criterion_bench!(
-    time_throughput,
-    branch_missprediction_rate,
-    cache_miss_rate,
-    fault_rate,
-);
+emit_criterion_bench!(ipc, branch_missprediction_rate, cache_miss_rate, fault_rate,);
 
 fn run_once<'a, EdgeType, Edge>(g: &'a GraphMemoryMap<EdgeType, Edge>)
 where
@@ -31,7 +26,7 @@ where
     EdgeType: GenericEdgeType + Send + Sync + 'static,
     Edge: GenericEdge<EdgeType> + Send + Sync + 'static,
 {
-    let mut group = c.benchmark_group("time_and_edges_throughput_burkhardt_et_al");
+    let mut group = c.benchmark_group("time_and_edges_throughput_bea");
     // Optional: tighten stats for paper-quality numbers
     group
         // .measurement_time(Duration::from_secs(1540))

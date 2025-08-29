@@ -198,7 +198,7 @@ pub(crate) fn get_or_init_dataset_exact_value<
 
 #[allow(dead_code)]
 #[cfg(feature = "bench")]
-/// Build (or open) a graph for a given dataset path. For synthetic graphs, generate here deterministically instead.
+/// Build (or open) a graph for a given dataset path.
 pub fn load_graph<EdgeType, Edge, P: AsRef<Path>>(
     dataset: P,
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>>
@@ -212,25 +212,40 @@ where
 
 #[allow(dead_code)]
 #[cfg(feature = "bench")]
+/// Build (or open) a graph for a given dataset path with a given `suggested threads` number.
+pub fn load_graph_with_threads<EdgeType, Edge, P: AsRef<Path>>(
+    dataset: P,
+    threads: u8,
+) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>>
+where
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
+{
+    let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
+    GraphMemoryMap::init(cache, Some(threads))
+}
+
+#[allow(dead_code)]
+#[cfg(feature = "bench")]
 pub static DATASETS: &[(&str, &str)] = &[
     ("ggcat_1_5", "../ggcat/graphs/random_graph_1_5.lz4"),
-    // ("ggcat_2_5", "../ggcat/graphs/random_graph_2_5.lz4"),
-    // ("ggcat_3_5", "../ggcat/graphs/random_graph_3_5.lz4"),
-    // ("ggcat_4_5", "../ggcat/graphs/random_graph_4_5.lz4"),
-    // ("ggcat_5_5", "../ggcat/graphs/random_graph_5_5.lz4"),
-    // ("ggcat_6_5", "../ggcat/graphs/random_graph_6_5.lz4"),
-    // ("ggcat_7_5", "../ggcat/graphs/random_graph_7_5.lz4"),
-    // ("ggcat_8_5", "../ggcat/graphs/random_graph_8_5.lz4"),
-    // ("ggcat_9_5", "../ggcat/graphs/random_graph_9_5.lz4"),
-    // ("ggcat_1_10", "../ggcat/graphs/random_graph_1_10.lz4"),
-    // ("ggcat_2_10", "../ggcat/graphs/random_graph_2_10.lz4"),
-    // ("ggcat_3_10", "../ggcat/graphs/random_graph_3_10.lz4"),
-    // ("ggcat_4_10", "../ggcat/graphs/random_graph_4_10.lz4"),
-    // ("ggcat_5_10", "../ggcat/graphs/random_graph_5_10.lz4"),
-    // ("ggcat_6_10", "../ggcat/graphs/random_graph_6_10.lz4"),
-    // ("ggcat_7_10", "../ggcat/graphs/random_graph_7_10.lz4"),
-    // ("ggcat_8_10", "../ggcat/graphs/random_graph_8_10.lz4"),
-    // ("ggcat_9_10", "../ggcat/graphs/random_graph_9_10.lz4"),
+    ("ggcat_2_5", "../ggcat/graphs/random_graph_2_5.lz4"),
+    ("ggcat_3_5", "../ggcat/graphs/random_graph_3_5.lz4"),
+    ("ggcat_4_5", "../ggcat/graphs/random_graph_4_5.lz4"),
+    ("ggcat_5_5", "../ggcat/graphs/random_graph_5_5.lz4"),
+    ("ggcat_6_5", "../ggcat/graphs/random_graph_6_5.lz4"),
+    ("ggcat_7_5", "../ggcat/graphs/random_graph_7_5.lz4"),
+    ("ggcat_8_5", "../ggcat/graphs/random_graph_8_5.lz4"),
+    ("ggcat_9_5", "../ggcat/graphs/random_graph_9_5.lz4"),
+    ("ggcat_1_10", "../ggcat/graphs/random_graph_1_10.lz4"),
+    ("ggcat_2_10", "../ggcat/graphs/random_graph_2_10.lz4"),
+    ("ggcat_3_10", "../ggcat/graphs/random_graph_3_10.lz4"),
+    ("ggcat_4_10", "../ggcat/graphs/random_graph_4_10.lz4"),
+    ("ggcat_5_10", "../ggcat/graphs/random_graph_5_10.lz4"),
+    ("ggcat_6_10", "../ggcat/graphs/random_graph_6_10.lz4"),
+    ("ggcat_7_10", "../ggcat/graphs/random_graph_7_10.lz4"),
+    ("ggcat_8_10", "../ggcat/graphs/random_graph_8_10.lz4"),
+    ("ggcat_9_10", "../ggcat/graphs/random_graph_9_10.lz4"),
     // ("ggcat_8_15", "../ggcat/graphs/random_graph_8_15.lz4"),
     // ("ggcat_9_15", "../ggcat/graphs/random_graph_9_15.lz4"),
 ];

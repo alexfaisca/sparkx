@@ -10,12 +10,7 @@ use tool::{
     test_common::{DATASETS, load_graph},
 };
 
-emit_criterion_bench!(
-    time_throughput,
-    branch_missprediction_rate,
-    cache_miss_rate,
-    fault_rate,
-);
+emit_criterion_bench!(ipc, branch_missprediction_rate, cache_miss_rate, fault_rate,);
 
 fn run_once<'a, EdgeType, Edge>(g: &'a GraphMemoryMap<EdgeType, Edge>)
 where
