@@ -2834,16 +2834,15 @@ where
             let hi_fn = self.build_helper_filename(1)?;
 
             // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
-            let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(&hc_fn, node_count, true)?;
+            let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(&hc_fn, self.offsets_size(), true)?;
             // allocate |V| usize's to store each node's new id if present in the subgraph
-            let mut node_index =
-                SharedSliceMut::<usize>::abst_mem_mut(&hi_fn, node_count - 1, true)?;
+            let mut node_index = SharedSliceMut::<usize>::abst_mem_mut(&hi_fn, self.size(), true)?;
 
             let mut curr_node_index: usize = 0;
             let mut curr_edge_count: usize = 0;
             *edge_count.get_mut(0) = curr_edge_count;
             // iterate over |V|
-            for u in 0..node_count - 1 {
+            for u in 0..self.size() {
                 if mask(u) {
                     *node_index.get_mut(u) = curr_node_index;
                     curr_node_index += 1;
