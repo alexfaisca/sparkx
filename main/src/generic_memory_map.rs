@@ -2662,7 +2662,7 @@ where
     fn is_neighbour(&self, u: usize, v: usize) -> Option<usize> {
         assert!(
             u < self.size(),
-            "{} is not smaller than max node id {} --- node doesn't exist",
+            "{} is not smaller than max node id |V| = {} --- node doesn't exist",
             u,
             self.size()
         );

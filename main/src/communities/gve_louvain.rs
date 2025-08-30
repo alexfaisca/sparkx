@@ -52,13 +52,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     AlgoGVELouvain<'a, EdgeType, Edge>
 {
     /// Constants set according to the optimizeds parameters described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876).
-    /// Described in 4.1.2 Limiting the number of iterations per pass
+    /// Described in 4.1.2 Limiting the number of iterations per pass.
     const MAX_ITERATIONS: usize = 20;
-    /// Described in 4.1.3 Adjusting tolerance drop rate (threshold scaling)
+    /// Described in 4.1.3 Adjusting tolerance drop rate (threshold scaling).
     const TOLERANCE_DROP: f64 = 10.;
-    /// Described in 4.1.4 Adjusting initial tolerance
+    /// Described in 4.1.4 Adjusting initial tolerance.
     const INITIAL_TOLERANCE: f64 = 0.01;
-    /// Described in 4.1.4 Adjusting aggregation tolerance
+    /// Described in 4.1.4 Adjusting aggregation tolerance.
     const AGGREGATION_TOLERANCE: f64 = 0.8;
     /// Maximum number of passes to be performed (a pass is an iteration of the Louvain() function described in "GVE-Louvain: Fast Louvain Algorithm for
     /// Community Detection in Shared Memory Setting" p. 5).

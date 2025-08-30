@@ -283,7 +283,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                 let end = std::cmp::min(begin + edge_load, edge_count);
 
                 res.push(scope.spawn(
-                    move |_| -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync>> {
+                    move |_| -> Result<Box<[usize]>, Box<dyn std::error::Error + Send + Sync>> {
                         let mut res = vec![0usize; u8::MAX as usize];
                         let mut buff = vec![0; buff_size];
                         let mut i = 0;
@@ -493,11 +493,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                             };
                             synchronize.wait();
                         }
-                        Ok(res)
+                        Ok(res.into_boxed_slice())
                     },
                 ));
             }
-            let joined_res: Vec<Vec<usize>> = res
+            let joined_res: Vec<Box<[usize]>> = res
                 .into_iter()
                 .map(|v| v.join().expect("error thread panicked").expect("error ??1"))
                 .collect();

@@ -59,6 +59,9 @@ pub struct HyperBallInner<
     max_t: usize,
     #[cfg(feature = "bench")]
     iters: usize,
+    closeness: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
+    harmonic: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
+    lin: Option<AbstractedProceduralMemoryMut<f64>>,
 }
 
 #[allow(dead_code)]
@@ -113,7 +116,37 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         self.g.build_cache_filename(cache_file_type, seq)
     }
 
-    /// Computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
+    fn index_by_normalization(normalization: Option<bool>) -> usize {
+        match normalization {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        }
+    }
+
+    /// Gets (from a previously cached result) the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - `None` --- no normalization.
+    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///
+    pub fn get_closeness_centrality(
+        &self,
+        normalization: Option<bool>,
+    ) -> Result<&[f64], Box<dyn std::error::Error>> {
+        let idx = Self::index_by_normalization(normalization);
+        let mem = self.closeness[idx]
+            .as_ref() // borrow Option, do not move it
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                "error lin's centrality isn't yet in cache".into()
+            })?;
+        Ok(mem.as_slice())
+    }
+
+    /// Gets (from a previously cached result) or computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
     ///
     /// # Arguments
     ///
@@ -122,10 +155,31 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
     ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
     ///
+    pub fn get_or_compute_closeness_centrality(
+        &'a mut self,
+        normalization: Option<bool>,
+    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+        let idx = Self::index_by_normalization(normalization);
+        if self.harmonic[idx].is_none() {
+            self.compute_closeness_centrality(normalization)
+        } else {
+            self.get_closeness_centrality(normalization)
+        }
+    }
+
+    /// Computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalization` --- tri-state flag determining the type of normalization to be used for the computation.
+    ///     - `None` --- no normalization.
+    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///
     pub fn compute_closeness_centrality(
         &mut self,
         normalize: Option<bool>,
-    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+    ) -> Result<&[f64], Box<dyn std::error::Error>> {
         let node_count = self.g.size(); // |V|
 
         let c_fn =
@@ -147,6 +201,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     *mem.get_mut(idx) = 1. / *self.distances.get(idx);
                 }
             }
+            self.closeness[0] = Some(mem);
         // normalized by number of reacheable nodes
         } else if normalize.unwrap() {
             for idx in 0..node_count {
@@ -158,6 +213,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         / *self.distances.get(idx);
                 }
             }
+            self.closeness[1] = Some(mem);
         // normalized by node count (|V| - 1)
         } else {
             let normalize_factor = node_count as f64 - 1.; // |V| - 1
@@ -168,11 +224,55 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     *mem.get_mut(idx) = normalize_factor / *self.distances.get(idx);
                 }
             }
+            self.closeness[2] = Some(mem);
         }
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
         // }
-        Ok(mem)
+        self.get_closeness_centrality(normalize)
+    }
+
+    /// Gets (from a previously cached result) the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - `None` --- no normalization.
+    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///
+    pub fn get_hamonic_centrality(
+        &self,
+        normalization: Option<bool>,
+    ) -> Result<&[f64], Box<dyn std::error::Error>> {
+        let idx = Self::index_by_normalization(normalization);
+        let mem = self.harmonic[idx]
+            .as_ref() // borrow Option, do not move it
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                "error lin's centrality isn't yet in cache".into()
+            })?;
+        Ok(mem.as_slice())
+    }
+
+    /// Gets (from a previously cached result) or computes the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalization` --- tri-state flag determining the type of normalization to be used for the computation.
+    ///     - `None` --- no normalization.
+    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///
+    pub fn get_or_compute_harmonic_centrality(
+        &'a mut self,
+        normalization: Option<bool>,
+    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+        let idx = Self::index_by_normalization(normalization);
+        if self.harmonic[idx].is_none() {
+            self.compute_harmonic_centrality(normalization)
+        } else {
+            self.get_hamonic_centrality(normalization)
+        }
     }
 
     /// Computes the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
@@ -187,7 +287,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     pub fn compute_harmonic_centrality(
         &mut self,
         normalize: Option<bool>,
-    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+    ) -> Result<&[f64], Box<dyn std::error::Error>> {
         let node_count = self.g.size(); // |V|
 
         let c_fn =
@@ -209,6 +309,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     *mem.get_mut(idx) = *self.inverse_distances.get(idx);
                 }
             }
+            self.harmonic[0] = Some(mem);
         // normalized by number of reacheable nodes
         } else if normalize.unwrap() {
             for idx in 0..node_count {
@@ -219,6 +320,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         / (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.);
                 }
             }
+            self.harmonic[1] = Some(mem);
         // normalized by node count (|v| - 1)
         } else {
             let normalize_factor = node_count as f64 - 1.; // |V| - 1
@@ -229,18 +331,38 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     *mem.get_mut(idx) = *self.inverse_distances.get(idx) / normalize_factor;
                 }
             }
+            self.harmonic[2] = Some(mem);
         }
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
         // }
-        Ok(mem)
+        self.get_hamonic_centrality(normalize)
+    }
+
+    /// Gets (from a previously cached result) the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
+    pub fn get_lins_centrality(&self) -> Result<&[f64], Box<dyn std::error::Error>> {
+        let mem = self
+            .lin
+            .as_ref() // borrow Option, do not move it
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                "error lin's centrality isn't yet in cache".into()
+            })?;
+        Ok(mem.as_slice())
+    }
+
+    /// Gets (from a previously cached result) or computes the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
+    pub fn get_or_compute_lins_centrality(
+        &'a mut self,
+    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+        if self.lin.is_none() {
+            self.compute_lins_centrality()
+        } else {
+            self.get_lins_centrality()
+        }
     }
 
     /// Computes the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
-    ///
-    pub fn compute_lins_centrality(
-        &mut self,
-    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+    pub fn compute_lins_centrality(&mut self) -> Result<&[f64], Box<dyn std::error::Error>> {
         let node_count = self.g.size(); // |V|
 
         let c_fn = self.centrality_cache_file_name(Centrality::Lin)?;
@@ -257,10 +379,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     / *self.distances.get(idx);
             }
         }
+
+        self.lin = Some(mem);
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
         // }
-        Ok(mem)
+        self.get_lins_centrality()
     }
 
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -404,6 +528,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
             max_t,
             #[cfg(feature = "bench")]
             iters: 0,
+            closeness: [None, None, None],
+            harmonic: [None, None, None],
+            lin: None,
         })
     }
 
@@ -619,9 +746,9 @@ mod test {
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
 
         // metrics
-        let e_mae = mae(approx.shared_slice().as_slice(), e.as_slice());
-        let e_mape = mape(approx.shared_slice().as_slice(), e.as_slice());
-        let rho = spearman_rho(approx.shared_slice().as_slice(), e.as_slice());
+        let e_mae = mae(approx, e.as_slice());
+        let e_mape = mape(approx, e.as_slice());
+        let rho = spearman_rho(approx, e.as_slice());
 
         eprintln!(
             "dataset={:?}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}",
