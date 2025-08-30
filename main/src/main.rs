@@ -246,12 +246,12 @@ fn parse_bytes_mmaped<
     /* ********************************************************************************* */
     //
 
-    let time = Instant::now();
-    let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
-    println!();
-    _euler_trail.drop_cache()?;
+    // let time = Instant::now();
+    // let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    // println!("found {} euler trails", _euler_trail.trail_number());
+    // println!("euler trail built {:?}", time.elapsed());
+    // println!();
+    // _euler_trail.drop_cache()?;
 
     let time = Instant::now();
     let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
@@ -271,13 +271,13 @@ fn parse_bytes_mmaped<
     //     i += 1234600;
     // }
     //
-    let time = Instant::now();
-    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    println!("found {} communities", _louvain.community_count());
-    println!("partition modularity {} ", _louvain.partition_modularity());
-    println!("louvain finished in {:?}", time.elapsed());
-    println!();
-    _louvain.drop_cache()?;
+    // let time = Instant::now();
+    // let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    // println!("found {} communities", _louvain.community_count());
+    // println!("partition modularity {} ", _louvain.partition_modularity());
+    // println!("louvain finished in {:?}", time.elapsed());
+    // println!();
+    // _louvain.drop_cache()?;
     //
     // let time = Instant::now();
     // let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
@@ -292,24 +292,24 @@ fn parse_bytes_mmaped<
     // println!("clustering coefficient finished in {:?}", time.elapsed());
     // println!();
 
-    let time = Instant::now();
-    let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    println!("k-core liu et al {:?}", time.elapsed());
-    println!();
-    _liu_et_al.drop_cache()?;
-
-    let time = Instant::now();
-    let mut _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
-    println!("k-truss burkhardt et al {:?}", time.elapsed());
-    println!();
-    _burkhardt_et_al.drop_cache()?;
-
-    let time = Instant::now();
-    let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
-    println!("k-truss pkt {:?}", time.elapsed());
-    println!();
-    _pkt.drop_cache()?;
-
+    // let time = Instant::now();
+    // let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    // println!("k-core liu et al {:?}", time.elapsed());
+    // println!();
+    // _liu_et_al.drop_cache()?;
+    //
+    // let time = Instant::now();
+    // let mut _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    // println!("k-truss burkhardt et al {:?}", time.elapsed());
+    // println!();
+    // _burkhardt_et_al.drop_cache()?;
+    //
+    // let time = Instant::now();
+    // let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
+    // println!("k-truss pkt {:?}", time.elapsed());
+    // println!();
+    // _pkt.drop_cache()?;
+    //
     println!("droping");
     graph_mmaped.drop_cache()?;
     println!("dropped");

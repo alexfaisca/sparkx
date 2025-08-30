@@ -33,8 +33,7 @@ where
         .noise_threshold(0.01);
     for (label, path) in datasets {
         // Load/construct graph ONCE per input size; not in the timed body.
-        let mut graph =
-            load_graph::<EdgeType, Edge, &str>(path).expect("graph init should succeed");
+        let graph = load_graph::<EdgeType, Edge, &str>(path).expect("graph init should succeed");
         // Bench throughput for |E|
         group.throughput(Throughput::Elements(graph.width() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(*label), path, |b, _p| {
@@ -46,7 +45,7 @@ where
                     let proc_mem = algo.init_cache_mem().expect("cache init should succeed");
                     (algo, proc_mem)
                 }, // setup: borrow the already-built graph
-                |(a, p)| {
+                |(mut a, p)| {
                     let () = a.compute_with_proc_mem(p).expect("algo should succeed");
                 },
                 BatchSize::PerIteration, // isolate IO/cache per sample

@@ -47,7 +47,7 @@ where
                     let proc_mem = algo.init_cache_mem().expect("cache init should succeed");
                     (algo, proc_mem)
                 }, // setup: borrow the already-built graph
-                |(a, p)| {
+                |(mut a, p)| {
                     let () = a.compute_with_proc_mem(p).expect("algo should succeed");
                 },
                 BatchSize::PerIteration, // isolate IO/cache per sample

@@ -85,42 +85,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let node_count = g.size();
-        // make sure presision is within bounds
-        let precision =
-            precision.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
-                p.clamp(
-                    HyperBallInner::<EdgeType, Edge>::MIN_PRECISION,
-                    HyperBallInner::<EdgeType, Edge>::MAX_PRECISION,
-                )
-            });
-        // make sure depth is within bounds
-        let max_t = max_depth.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
-            std::cmp::max(HyperBallInner::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
-        });
-        // init cached vecs for distances and inverse distances accumulation
-        let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(g)?;
-        // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
-        (0..node_count).for_each(|u| {
-            *counters.get_mut(u) = hyperloglog_rs::prelude::HyperLogLog::<P, B>::default();
-            counters.get_mut(u).insert(u);
-            *distances.get_mut(u) = 0f64;
-            *inverse_distances.get_mut(u) = 0f64;
-        });
-
-        let mut hyper_ball = Self {
-            g,
-            counters,
-            distances,
-            inverse_distances,
-            precision,
-            max_t,
-            #[cfg(feature = "bench")]
-            iters: 0,
-        };
+        let mut hyper_ball = Self::new_no_compute(g, precision, max_depth)?;
 
         let proc_mem = hyper_ball.init_cache_mem()?;
         hyper_ball.compute_with_proc_mem(proc_mem)?;
+
         hyper_ball.g.cleanup_cache(CacheFile::HyperBall)?;
 
         Ok(hyper_ball)
@@ -294,6 +263,92 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         Ok(mem)
     }
 
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        let out_fn = this.g.build_cache_filename(CacheFile::HyperBall, None)?;
+        let d_fn = this
+            .g
+            .build_cache_filename(CacheFile::HyperBallDistances, None)?;
+        let i_fn = this
+            .g
+            .build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
+        std::fs::remove_file(out_fn)?;
+        std::fs::remove_file(d_fn)?;
+        std::fs::remove_file(i_fn)?;
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+/// HyperBall engine functions.
+impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>, const B: usize>
+    HyperBallInner<'a, EdgeType, Edge, P, B>
+{
+    #[cfg(feature = "bench")]
+    #[inline(always)]
+    pub fn new_no_compute(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        precision: Option<u8>,
+        max_depth: Option<usize>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_no_compute_impl(g, precision, max_depth)
+    }
+
+    #[cfg(not(feature = "bench"))]
+    #[inline(always)]
+    pub(crate) fn new_no_compute(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        precision: Option<u8>,
+        max_depth: Option<usize>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_no_compute_impl(g, precision, max_depth)
+    }
+
+    #[cfg(feature = "bench")]
+    #[inline(always)]
+    pub fn init_cache_mem(
+        &self,
+    ) -> Result<
+        AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
+        Box<dyn std::error::Error>,
+    > {
+        self.init_cache_mem_impl()
+    }
+
+    #[cfg(not(feature = "bench"))]
+    #[inline(always)]
+    pub(crate) fn init_cache_mem(
+        &self,
+    ) -> Result<
+        AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
+        Box<dyn std::error::Error>,
+    > {
+        self.init_cache_mem_impl()
+    }
+
+    #[cfg(feature = "bench")]
+    #[inline(always)]
+    pub fn compute_with_proc_mem(
+        &mut self,
+        swap: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.compute_with_proc_mem_impl(swap)
+    }
+
+    #[cfg(not(feature = "bench"))]
+    #[inline(always)]
+    pub(crate) fn compute_with_proc_mem(
+        &mut self,
+        swap: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.compute_with_proc_mem_impl(swap)
+    }
+
+    #[cfg(feature = "bench")]
+    pub fn get_throughput_factor(&self) -> usize {
+        self.iters
+    }
+
     fn init_cache(
         g: &'a GraphMemoryMap<EdgeType, Edge>,
     ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
@@ -312,27 +367,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         Ok((counters, distances, inverse_distances))
     }
 
-    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let this = ManuallyDrop::new(self);
-        let out_fn = this.g.build_cache_filename(CacheFile::HyperBall, None)?;
-        let d_fn = this
-            .g
-            .build_cache_filename(CacheFile::HyperBallDistances, None)?;
-        let i_fn = this
-            .g
-            .build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
-        std::fs::remove_file(out_fn)?;
-        std::fs::remove_file(d_fn)?;
-        std::fs::remove_file(i_fn)?;
-        Ok(())
-    }
-}
-
-#[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>, const B: usize>
-    HyperBallInner<'a, EdgeType, Edge, P, B>
-{
-    pub fn new_no_compute(
+    fn new_no_compute_impl(
         g: &'a GraphMemoryMap<EdgeType, Edge>,
         precision: Option<u8>,
         max_depth: Option<usize>,
@@ -372,7 +407,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         })
     }
 
-    pub fn init_cache_mem(
+    fn init_cache_mem_impl(
         &self,
     ) -> Result<
         AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
@@ -388,7 +423,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         Ok(swap)
     }
 
-    pub fn compute_with_proc_mem(
+    fn compute_with_proc_mem_impl(
         &mut self,
         swap: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -509,11 +544,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 
         Ok(())
     }
-
-    #[cfg(feature = "bench")]
-    pub fn get_throughput_factor(&self) -> usize {
-        self.iters
-    }
 }
 
 #[cfg(test)]
@@ -581,12 +611,12 @@ mod test {
     fn generic_test<P: AsRef<Path>>(p: P) -> Result<(), Box<dyn std::error::Error>> {
         let g = GraphMemoryMap::init(get_or_init_dataset_cache_entry(p.as_ref())?, Some(16))?;
 
-        let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&g, None, None)?;
-        let approx = hyperball.compute_closeness_centrality(Some(false))?;
-
         let e_fn = get_or_init_dataset_exact_value(p.as_ref(), &g, ExactClosenessCentrality(H::H))?;
         let exact = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, g.size(), true)?;
         let e = exact.shared_slice();
+
+        let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&g, None, None)?;
+        let approx = hyperball.compute_closeness_centrality(Some(false))?;
 
         // metrics
         let e_mae = mae(approx.shared_slice().as_slice(), e.as_slice());
@@ -605,7 +635,7 @@ mod test {
 
     // generate test cases from dataset
     graph_tests! {
-        ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
+        // ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
         // ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
         // ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
         // ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
@@ -617,7 +647,7 @@ mod test {
         // ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
         // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
         // ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
-        // ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
         // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
         // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
         // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",

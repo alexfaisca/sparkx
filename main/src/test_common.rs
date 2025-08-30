@@ -170,6 +170,7 @@ pub(crate) fn get_or_init_dataset_exact_value<
                     FileType::ExactClosenessCentrality(H::H) => {
                         use rustworkx_core::centrality::closeness_centrality;
                         let node_count = graph.size();
+                        println!("compute closeness centrality");
                         let exact = closeness_centrality(&petgraph_export, false)
                             .iter()
                             .map(|opt| opt.unwrap_or(0.))
@@ -262,7 +263,7 @@ pub static DATASETS: &[(&str, &str)] = &[
     ("ggcat_9_10", "../ggcat/graphs/random_graph_9_10.lz4"),
     ("ggcat_8_15", "../ggcat/graphs/random_graph_8_15.lz4"),
     ("ggcat_9_15", "../ggcat/graphs/random_graph_9_15.lz4"),
-    ("kmer_V2a", "../proteic_dbgs/1/kmer_V2a/kmer_V2a.mtx"),
+    // ("kmer_V2a", "../proteic_dbgs/1/kmer_V2a/kmer_V2a.mtx"),
     // ("kmer_A2a", "../proteic_dbgs/2/kmer_A2a/kmer_A2a.mtx"),
     // ("kmer_V1r", "../proteic_dbgs/3/kmer_V1r/kmer_V1r.mtx"),
 ];
