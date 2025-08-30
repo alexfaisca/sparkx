@@ -2600,6 +2600,64 @@ where
         })
     }
 
+    /// Computes the modularity over a given partition over the [`GraphMemoryMap`] instance's nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `communities` --- a slice containing each node's community, the [`GraphMemoryMap`] instance's partition.
+    /// * `comms_cardinality` --- cardinality of distinct communities in the given partition.
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
+    pub fn modularity(&self, communities: &[usize], comms_cardinality: usize) -> Result<f64, Box<dyn std::error::Error>> {
+        let m2 = match self.width() {
+            0 => return Ok(0.),
+            edge_count => edge_count as f64,
+        };
+        let node_count = self.size();
+
+        // simple input invariants validatation
+        if communities.len() != node_count {
+            return Err(format!("error can't calculate the modularity of a partition with length {}: partition length must equal |V| = {node_count}", communities.len()).into())
+        } else if comms_cardinality > node_count {
+            return Err(format!("error community cardinality {comms_cardinality} can't be bigger than |V| = {node_count}").into())
+        }
+
+        // helper internal degree accumulator
+        let id_fn = self.build_helper_filename(0)?;
+        // helper total degree accumulator
+        let td_fn = self.build_helper_filename(1)?;
+
+        let mut internal_degree = SharedSliceMut::<usize>::abst_mem_mut(&id_fn, comms_cardinality, true)?;
+        let mut total_degree = SharedSliceMut::<usize>::abst_mem_mut(&td_fn, comms_cardinality, true)?;
+
+        for u in 0..node_count {
+            let iter = self.neighbours(u)?;
+            *total_degree.get_mut(communities[u]) += iter.remaining_neighbours();
+            for e in iter {
+                let v = e.dest();
+                if v >= node_count {
+                    continue;
+                } // safety
+                if communities[v] == communities[u] {
+                    *internal_degree.get_mut(communities[u]) += 1;
+                }
+            }
+        }
+
+        // modularity: sum_c( internal_dir_edges[c]/m2 - (Kc[c]/m2)^2 )
+        let mut partition_modularity = 0.0f64;
+        for c in 0..comms_cardinality {
+            let lc_over_m2 = (*internal_degree.get(c) as f64) / m2;
+            let kc_over_m2 = (*total_degree.get(c) as f64) / m2;
+            partition_modularity += lc_over_m2 - kc_over_m2 * kc_over_m2;
+        }
+
+        self.cleanup_helpers()?;
+
+        Ok(partition_modularity)
+
+    }
+
     #[inline(always)]
     fn is_neighbour(&self, u: usize, v: usize) -> Option<usize> {
         assert!(

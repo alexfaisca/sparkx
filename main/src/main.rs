@@ -271,13 +271,17 @@ fn parse_bytes_mmaped<
     //     i += 1234600;
     // }
     //
-    // let time = Instant::now();
-    // let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    // println!("found {} communities", _louvain.community_count());
-    // println!("partition modularity {} ", _louvain.partition_modularity());
-    // println!("louvain finished in {:?}", time.elapsed());
-    // println!();
-    // _louvain.drop_cache()?;
+    let time = Instant::now();
+    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    println!("found {} communities", _louvain.community_count());
+    println!("partition modularity {} ", _louvain.partition_modularity());
+    println!("louvain finished in {:?}", time.elapsed());
+    println!(
+        "partition modularity according to graph_mmaped method {}",
+        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    );
+    println!();
+    _louvain.drop_cache()?;
     //
     // let time = Instant::now();
     // let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
