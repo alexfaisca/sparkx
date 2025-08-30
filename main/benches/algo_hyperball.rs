@@ -10,15 +10,16 @@ use tool::{
     test_common::{DATASETS, load_graph},
 };
 
-emit_criterion_bench!(ipc, branch_missprediction_rate, cache_miss_rate, fault_rate,);
+emit_criterion_bench!(ipc, branch_missprediction_rate, cache_miss_rate, fault_rate);
 
-fn run_once<'a, EdgeType, Edge>(g: &'a GraphMemoryMap<EdgeType, Edge>)
+fn run_once<'a, EdgeType, Edge>(
+    g: &'a GraphMemoryMap<EdgeType, Edge>,
+) -> HyperBallInner<'a, EdgeType, Edge>
 where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
-    let _algo =
-        HyperBallInner::<'a, EdgeType, Edge>::new(g, None, None).expect("algo should succeed");
+    HyperBallInner::<'a, EdgeType, Edge>::new(g, None, None).expect("algo should succeed")
 }
 
 fn bench_time_throughput<EdgeType, Edge>(c: &mut Criterion, datasets: &[(&str, &str)])
@@ -26,7 +27,7 @@ where
     EdgeType: GenericEdgeType + Send + Sync + 'static,
     Edge: GenericEdge<EdgeType> + Send + Sync + 'static,
 {
-    let mut group = c.benchmark_group("time_and_nodes_throughput_hyperball");
+    let mut group = c.benchmark_group("time_and_iters_throughput_hyperball");
     // Optional: tighten stats for paper-quality numbers
     group
         // .measurement_time(Duration::from_secs(1540))
@@ -37,14 +38,20 @@ where
     for (label, path) in datasets {
         // Load/construct graph ONCE per input size; not in the timed body.
         let graph = load_graph::<EdgeType, Edge, &str>(path).expect("graph init should succeed");
+
         // Bench throughput for |E|
         group.throughput(Throughput::Elements(graph.width() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(*label), path, |b, _p| {
             // Each measurement iteration gets a fresh cache dir and runs the algorithm once.
             b.iter_batched(
-                || &graph, // setup: borrow the already-built graph
-                |g| {
-                    run_once::<EdgeType, Edge>(g);
+                || {
+                    let algo = HyperBallInner::<EdgeType, Edge>::new_no_compute(&graph, None, None)
+                        .expect("algo should succeed");
+                    let proc_mem = algo.init_cache_mem().expect("cache init should succeed");
+                    (algo, proc_mem)
+                }, // setup: borrow the already-built graph
+                |(mut a, p)| {
+                    let () = a.compute_with_proc_mem(p).expect("algo should succeed");
                 },
                 BatchSize::PerIteration, // isolate IO/cache per sample
             );

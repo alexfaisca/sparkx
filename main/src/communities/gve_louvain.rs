@@ -6,6 +6,7 @@ use crossbeam::thread;
 use num_cpus::get_physical;
 use portable_atomic::{AtomicBool, AtomicF64, AtomicUsize, Ordering};
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::Barrier;
 type ProceduralMemoryGVELouvain = (
@@ -86,6 +87,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         };
         gve_louvain.compute(10)?;
         Ok(gve_louvain)
+    }
+
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        let out_fn = this.g.build_cache_filename(CacheFile::GVELouvain, None)?;
+        std::fs::remove_file(out_fn)?;
+        Ok(())
     }
 
     /// Returns the number of communities in the Louvain partition.
@@ -824,5 +832,323 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.g.cleanup_cache(CacheFile::GVELouvain)?;
 
         Ok(())
+    }
+}
+
+#[cfg(feature = "bench")]
+#[allow(dead_code)]
+impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
+    AlgoGVELouvain<'a, EdgeType, Edge>
+{
+    pub fn new_no_compute(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::GVELouvain, None)?;
+        let coms = SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size(), true)?;
+        Ok(Self {
+            g,
+            community: coms,
+            community_count: 0,
+            modularity: 0.,
+        })
+    }
+
+    pub fn init_cache_mem(&self) -> Result<ProceduralMemoryGVELouvain, Box<dyn std::error::Error>> {
+        let node_count = self.g.size();
+        let edge_count = self.g.width();
+
+        let k_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(0))?;
+        let s_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(1))?;
+        let gdi_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(2))?;
+        let gde_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(3))?;
+        let gddi_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(4))?;
+        let gdde_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(5))?;
+        let a_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(6))?;
+        let c_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(7))?;
+        let h_fn = self.build_cache_filename(CacheFile::GVELouvain, Some(8))?;
+
+        let k = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&k_fn, node_count, true)?;
+        let sigma = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&s_fn, node_count, true)?;
+        let gdi = SharedSliceMut::<usize>::abst_mem_mut(&gdi_fn, 2 * node_count, true)?;
+        let gde = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&gde_fn, edge_count, true)?;
+        let gddi = SharedSliceMut::<usize>::abst_mem_mut(&gddi_fn, 2 * node_count, true)?;
+        let gdde = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&gdde_fn, edge_count, true)?;
+        let processed = SharedSliceMut::<AtomicBool>::abst_mem_mut(&a_fn, node_count, true)?;
+        let coms = SharedSliceMut::<usize>::abst_mem_mut(&c_fn, node_count, true)?;
+        // has to be size max(|V|, |E|) as it is both used to store the 'holey' CSR (O(|E|) space) and
+        // renumbered community memberships (O(|V|) space)
+        let help = SharedSliceMut::<usize>::abst_mem_mut(&h_fn, edge_count.max(node_count), true)?;
+
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+
+        let threads = self.g.thread_num().max(get_physical());
+        // initialize
+        thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            // initializations always uses at least two threads per core
+            let node_load = node_count.div_ceil(threads);
+
+            let mut threads_res = vec![];
+            let threads = self.g.thread_num();
+            for tid in 0..threads {
+                let processed = processed.shared_slice();
+
+                let mut gdi = gdi.shared_slice();
+                let mut gde = gde.shared_slice();
+                let mut k = k.shared_slice();
+                let mut sigma = sigma.shared_slice();
+                let mut coms = coms.shared_slice();
+                let mut helper = help.shared_slice();
+                let mut communities = self.community.shared_slice();
+
+                let begin = std::cmp::min(tid * node_load, node_count);
+                let end = std::cmp::min(begin + node_load, node_count);
+
+                threads_res.push(scope.spawn(
+                    move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        for u in begin..end {
+                            let u_start = *index_ptr.get(u);
+                            let u_end = *index_ptr.get(u + 1);
+                            let out_offset = u * 2;
+                            let deg_u = match u_end.overflowing_sub(u_start) {
+                                (r, false) => r,
+                                (_, true) => {
+                                    return Err(format!(
+                                        "overflow calculating degree of {u}: {u_end} - {u_start}"
+                                    )
+                                    .into());
+                                }
+                            };
+                            let edges = graph_ptr
+                                .slice(u_start, u_end)
+                                .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                                    format!("error reading node {u} in init").into()
+                                })?
+                                .iter()
+                                .map(|e| (e.dest(), 1))
+                                .collect::<Vec<(usize, usize)>>();
+
+                            // mark all nodes unprocessed
+                            processed.get(u).swap(false, Ordering::Relaxed);
+
+                            // initilize helper, communities, coms and CSR vectors
+                            *helper.get_mut(u) = usize::MAX;
+                            *communities.get_mut(u) = u;
+                            *coms.get_mut(u) = u;
+                            *gdi.get_mut(out_offset) = u_start;
+                            *gdi.get_mut(out_offset + 1) = u_end;
+
+                            // copy G onto G'
+                            gde.write_slice(u_start, edges.as_slice());
+
+                            // Σ′ ← 𝐾′ ← 𝑣𝑒𝑟𝑡𝑒𝑥_w𝑒𝑖𝑔ℎ𝑡𝑠(𝐺′)
+                            *k.get_mut(u) = AtomicUsize::new(deg_u);
+                            *sigma.get_mut(u) = AtomicUsize::new(deg_u);
+                        }
+                        Ok(())
+                    },
+                ));
+            }
+
+            // check for errors
+            for (tid, r) in threads_res.into_iter().enumerate() {
+                r.join()
+                    .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("error in initialization (thread {tid}): {:?}", e).into()
+                    })?;
+            }
+
+            Ok(())
+        })
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
+
+        Ok((k, sigma, gdi, gde, gddi, gdde, processed, coms, help))
+    }
+
+    pub fn compute_with_proc_mem(
+        &mut self,
+        proc_mem: ProceduralMemoryGVELouvain,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = self.g.size();
+        let edge_count = self.g.width();
+
+        let threads = self.g.thread_num();
+
+        let (k, sigma, gdi, gde, gddi, gdde, processed, coms, helper) = proc_mem;
+
+        // C --- the community vector of the original nodes
+        let mut communities = self.community.shared_slice();
+
+        let mut tolerance = Self::INITIAL_TOLERANCE;
+
+        let mut prev_comm_count = node_count;
+        let mut new_comm_count: usize = 0;
+
+        // 2m (since each undirected edge has weight 2)
+        let m2 = edge_count as f64;
+        let m = m2 / 2.;
+
+        let mut coms = coms.shared_slice();
+        let mut helper = helper.shared_slice();
+
+        let mut index = gdi.shared_slice();
+        let mut next_index = gddi.shared_slice();
+        let mut edges = gde.shared_slice();
+        let mut next_edges = gdde.shared_slice();
+
+        let k = k.shared_slice();
+        let sigma = sigma.shared_slice();
+        let processed = processed.shared_slice();
+
+        // outer loop: louvain passes
+        for l_pass in 0..Self::MAX_PASSES {
+            if prev_comm_count <= 1 {
+                break;
+            }
+
+            // Σ′ ← 𝐾′ ← 𝑣𝑒𝑟𝑡𝑒𝑥_w𝑒𝑖𝑔ℎ𝑡𝑠(𝐺′) ; 𝐶′ ← [0..|𝑉′|) (initialization inside louvain_move())
+            // li <- louvain_move(G', C', K', Σ′)
+            // if 𝑙𝑖 ≤ 1 then break --- adjusted to 𝑙𝑖 ≤ 0 as we don't increment before loop ends
+            // as is teh case with the algorithm author
+            let count_iter = Self::louvain_move(
+                l_pass,
+                prev_comm_count,
+                k.clone(),
+                sigma.clone(),
+                processed.clone(),
+                index,
+                next_index,
+                edges,
+                coms,
+                helper,
+                m,
+                tolerance,
+                threads,
+            )?;
+            if count_iter == 0 {
+                break;
+            }
+
+            for u in 0..prev_comm_count {
+                let degree = *index.get(u * 2 + 1) - *index.get(u * 2);
+                let c = *coms.get(u);
+                let new_c = *helper.get(c);
+                if new_c == usize::MAX {
+                    *helper.get_mut(c) = new_comm_count;
+                    *coms.get_mut(u) = new_comm_count;
+                    *next_index.get_mut(new_comm_count * 2) = degree;
+                    new_comm_count += 1;
+                } else {
+                    *coms.get_mut(u) = new_c;
+                    *next_index.get_mut(new_c * 2) += degree;
+                }
+            }
+
+            // 𝐶 ← Lookup dendrogram using 𝐶 to 𝐶
+            for orig in 0..node_count {
+                let c = *communities.get(orig);
+                if c < prev_comm_count {
+                    *communities.get_mut(orig) = *coms.get(c);
+                } else {
+                    return Err(
+                        format!(
+                            "error performing dendrogram lookup: node {orig} is in community {c} but max_id for communities is {prev_comm_count} in the {l_pass}th pass"
+                            ).into()
+                        );
+                }
+            }
+
+            // if |Γ|/|Γ𝑜𝑙𝑑 | > 𝜏_𝑎𝑔𝑔 then break
+            if new_comm_count as f64 / prev_comm_count as f64 > Self::AGGREGATION_TOLERANCE {
+                prev_comm_count = new_comm_count;
+                break;
+            }
+
+            // build the aggregated graph (super-vertex graph) in the 'next_index' and 'next_edges' buffers
+            Self::louvain_aggregate(
+                l_pass,
+                prev_comm_count,
+                new_comm_count,
+                k.clone(),
+                sigma.clone(),
+                processed.clone(),
+                index,
+                next_index,
+                edges,
+                next_edges,
+                coms,
+                helper,
+                threads,
+            )?;
+
+            // check aggregation tolerance: if communities did not reduce sufficiently, break cycle
+            if new_comm_count as f64 >= (prev_comm_count as f64 * Self::AGGREGATION_TOLERANCE) {
+                prev_comm_count = new_comm_count;
+                break;
+            }
+
+            // tighten tolerance for next pass (threshold scaling)
+            // 𝜏 = 𝜏 / TOLERANCE_DROP
+            tolerance /= Self::TOLERANCE_DROP;
+
+            // prepare for next loop by resetting community count and switching CSRs
+            std::mem::swap(&mut index, &mut next_index);
+            std::mem::swap(&mut edges, &mut next_edges);
+
+            prev_comm_count = new_comm_count;
+            new_comm_count = 0;
+        }
+
+        self.community_count = prev_comm_count;
+
+        // compute partition modularity
+        if m2 == 0. {
+            self.modularity = 0.0;
+            self.g.cleanup_cache(CacheFile::GVELouvain)?;
+            return Ok(());
+        }
+
+        for u in 0..node_count {
+            k.get(*communities.get(u)).store(0, Ordering::Relaxed);
+            sigma.get(*communities.get(u)).store(0, Ordering::Relaxed);
+        }
+
+        // sum internal degree ---> sigma | sum total degree ---> k
+        for u in 0..node_count {
+            let comm_u = *communities.get(u);
+            let iter = self.g.neighbours(u)?;
+            k.get(*communities.get(u))
+                .fetch_add(iter.remaining_neighbours(), Ordering::Relaxed);
+            for e in iter {
+                let v = e.dest();
+                if v >= node_count {
+                    continue;
+                } // safety
+                if *communities.get(v) == comm_u {
+                    sigma.get(comm_u).fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+
+        // modularity: sum_c( internal_dir_edges[c]/m2 - (Kc[c]/m2)^2 )
+        let mut partition_modularity = 0.0f64;
+        for c in 0..prev_comm_count {
+            let lc_over_m2 = (sigma.get(c).load(Ordering::Relaxed) as f64) / m2;
+            let kc_over_m2 = (k.get(c).load(Ordering::Relaxed) as f64) / m2;
+            partition_modularity += lc_over_m2 - kc_over_m2 * kc_over_m2;
+        }
+
+        self.modularity = partition_modularity;
+        self.community.flush()?;
+
+        self.g.cleanup_cache(CacheFile::GVELouvain)?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bench")]
+    pub fn get_throughput_factor(&self) -> usize {
+        self.g.width()
     }
 }

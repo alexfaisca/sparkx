@@ -5,6 +5,7 @@ use crate::shared_slice::*;
 use crossbeam::thread;
 use memmap2::{Mmap, MmapMut};
 use num_cpus::get_physical;
+use std::mem::ManuallyDrop;
 use std::{collections::HashMap, fs::OpenOptions, time::Instant};
 
 /// For the computation of the euler trail(s) of a [`GraphMemoryMap`] instance using *Hierholzer's Algorithm*.
@@ -51,6 +52,13 @@ where
         };
         euler.compute(10)?;
         Ok(euler)
+    }
+
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        let out_fn = this.g.build_cache_filename(CacheFile::EulerTrail, None)?;
+        std::fs::remove_file(out_fn)?;
+        Ok(())
     }
 
     fn initialize_hierholzers_procedural_memory(
@@ -401,6 +409,160 @@ where
         // println!("euler trails merge {:?}", time.elapsed());
 
         Ok(())
+    }
+}
+
+#[cfg(feature = "bench")]
+#[allow(dead_code)]
+impl<'a, EdgeType, Edge> AlgoHierholzer<'a, EdgeType, Edge>
+where
+    EdgeType: GenericEdgeType,
+    Edge: GenericEdge<EdgeType>,
+{
+    pub fn new_no_compute(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::EulerTrail, None)?;
+        Ok(Self {
+            g,
+            euler_trails: SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.width(), true)?,
+            trail_index: Vec::new(),
+        })
+    }
+
+    pub fn init_cache_mem(
+        &self,
+    ) -> Result<
+        (
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<u8>,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let node_count = self.g.size();
+
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+
+        let e_fn = self
+            .g
+            .build_cache_filename(CacheFile::EulerTrail, Some(0))?;
+        let c_fn = self
+            .g
+            .build_cache_filename(CacheFile::EulerTrail, Some(1))?;
+
+        let edges = SharedSliceMut::<usize>::abst_mem_mut(&e_fn, node_count, true)?;
+        let count = SharedSliceMut::<u8>::abst_mem_mut(&c_fn, node_count, true)?;
+
+        thread::scope(|scope| {
+            // initializations always uses at least two threads per core
+            let threads = self.g.thread_num().max(get_physical() * 2);
+            let node_load = node_count.div_ceil(threads);
+
+            for i in 0..threads {
+                let mut edges = edges.shared_slice();
+                let mut count = count.shared_slice();
+                let begin = std::cmp::min(i * node_load, node_count);
+                let end = std::cmp::min(begin + node_load, node_count);
+
+                scope.spawn(move |_| {
+                    for k in begin..end {
+                        *edges.get_mut(k) = *index_ptr.get(k);
+                        *count.get_mut(k) = (*index_ptr.get(k + 1) - *index_ptr.get(k)) as u8;
+                    }
+                });
+            }
+        })
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+
+        edges.flush()?;
+        count.flush()?;
+
+        Ok((edges, count))
+    }
+
+    pub fn compute_with_proc_mem(
+        &mut self,
+        proc_mem: (
+            AbstractedProceduralMemoryMut<usize>,
+            AbstractedProceduralMemoryMut<u8>,
+        ),
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = match self.g.size() {
+            0 => return Ok(()),
+            i => i,
+        };
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), self.g.width());
+
+        let (mut edges, mut edge_count) = proc_mem;
+
+        let mut start_vertex_counter = 0usize;
+        let mut cycles = self.euler_trails.shared_slice();
+        let mut write_idx = 0usize;
+        // find cycles until no unused edges remain
+        loop {
+            let start_v = loop {
+                let idx = if start_vertex_counter >= node_count {
+                    break None;
+                } else {
+                    start_vertex_counter
+                };
+                if idx >= node_count {
+                    break None;
+                }
+                if *edge_count.get(idx) > 0 {
+                    break Some(idx);
+                }
+                start_vertex_counter += 1;
+            };
+            let start_v = match start_v {
+                Some(v) => v,
+                None => {
+                    break;
+                }
+            };
+
+            // Hierholzer's DFS
+            let mut stack: Vec<usize> = Vec::new();
+            let mut cycle: Vec<usize> = Vec::new();
+            stack.push(start_v);
+            while let Some(&v) = stack.last() {
+                if *edge_count.get(v) > 0 {
+                    *edge_count.get_mut(v) -= 1;
+                    stack.push(graph_ptr.get(*edges.get(v)).dest());
+                    *edges.get_mut(v) += 1;
+                } else {
+                    stack.pop();
+                    cycle.push(v);
+                }
+            }
+            if !cycle.is_empty() {
+                cycle.reverse();
+
+                let cycle_slice = cycle.as_slice();
+                let end = cycle_slice.len() - 1;
+
+                write_idx = cycles
+                    .write_slice(write_idx, &cycle_slice[..end])
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        "error couldn't slice mmap to write cycle".into()
+                    })?;
+
+                self.trail_index.push(write_idx);
+                cycle.clear();
+            }
+        }
+
+        self.euler_trails.flush()?;
+
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::EulerTrail)?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bench")]
+    pub fn get_throughput_factor(&self) -> usize {
+        self.g.width()
     }
 }
 

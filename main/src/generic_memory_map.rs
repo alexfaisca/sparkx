@@ -18,6 +18,7 @@ use ordered_float::OrderedFloat;
 use portable_atomic::{AtomicUsize, Ordering};
 use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
+use std::mem::ManuallyDrop;
 use std::{
     collections::HashSet,
     fmt::Debug,
@@ -2193,13 +2194,13 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Returns the offsets file's filename.
     #[inline]
     pub fn index_filename(&self) -> String {
-        self.graph_filename.clone()
+        self.index_filename.clone()
     }
 
     /// Returns the fst (metalabel-to-node map) file's filename.
     #[inline]
     pub fn fst_filename(&self) -> String {
-        self.graph_filename.clone()
+        self.metalabel_filename.clone()
     }
 
     /// Returns the graph's cache id.
@@ -2276,6 +2277,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// [`CacheFile`]: ./enum.CacheFile.html#
     pub(self) fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
         cleanup_cache(&self.cache_id()?, Self::convert_cache_file(target))
+    }
+
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        std::fs::remove_file(this.edges_filename())?;
+        std::fs::remove_file(this.index_filename())?;
+        std::fs::remove_file(this.fst_filename())?;
+        Ok(())
     }
 }
 
@@ -3095,6 +3104,18 @@ where
     #[inline(always)]
     pub fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
         self.graph_cache.cleanup_cache(target)
+    }
+
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut this = ManuallyDrop::new(self);
+
+        let er_fn = this.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
+        let eo_fn = this.build_cache_filename(CacheFile::EdgeOver, None)?;
+
+        let _r = std::fs::remove_file(er_fn);
+        let _r = std::fs::remove_file(eo_fn);
+
+        this.graph_cache.drop_cache()
     }
 }
 

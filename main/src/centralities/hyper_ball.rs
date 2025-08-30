@@ -9,6 +9,7 @@ use hyperloglog_rs::prelude::Precision8;
 use hyperloglog_rs::prelude::WordType;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use portable_atomic::{AtomicUsize, Ordering};
+use std::mem::ManuallyDrop;
 use std::sync::{Arc, Barrier};
 
 type ProceduralMemoryHB<P, const B: usize> = (
@@ -56,6 +57,8 @@ pub struct HyperBallInner<
     precision: u8,
     /// Maximum number of iteration --- default is 128, max is 1024 (details on how these values are ludicrously big are found in the abovementioned paper).
     max_t: usize,
+    #[cfg(feature = "bench")]
+    iters: usize,
 }
 
 #[allow(dead_code)]
@@ -112,200 +115,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
             inverse_distances,
             precision,
             max_t,
+            #[cfg(feature = "bench")]
+            iters: 0,
         };
 
-        hyper_ball.compute()?;
+        let proc_mem = hyper_ball.init_cache_mem()?;
+        hyper_ball.compute_with_proc_mem(proc_mem)?;
         hyper_ball.g.cleanup_cache(CacheFile::HyperBall)?;
 
         Ok(hyper_ball)
-    }
-
-    fn init_cache(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
-    ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
-        let node_count = g.size();
-
-        let c_fn = g.build_cache_filename(CacheFile::HyperBall, None)?;
-        let d_fn = g.build_cache_filename(CacheFile::HyperBallDistances, None)?;
-        let i_fn = g.build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
-
-        let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
-            &c_fn, node_count, true,
-        )?;
-        let distances = SharedSliceMut::<f64>::abst_mem_mut(&d_fn, node_count, true)?;
-        let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(&i_fn, node_count, true)?;
-
-        Ok((counters, distances, inverse_distances))
-    }
-
-    #[deprecated]
-    fn _compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size();
-
-        let mut counters = self.counters.shared_slice();
-
-        let s_fn = self.g.build_cache_filename(CacheFile::HyperBall, Some(0))?;
-        let mut swap = SharedSliceMut::<HyperLogLog<P, B>>::abst_mem_mut(&s_fn, node_count, true)?;
-
-        let mut counters =
-            counters
-                .mut_slice(0, node_count)
-                .ok_or_else(|| -> Box<dyn std::error::Error> {
-                    "error getting counters mut slice".into()
-                })?;
-
-        let mut swap =
-            swap.mut_slice(0, node_count)
-                .ok_or_else(|| -> Box<dyn std::error::Error> {
-                    "error getting counters swap mut slice".into()
-                })?;
-
-        let mut t_f64: f64 = 1.; // first iteration is initialization
-        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
-        let mut changed = 0;
-
-        loop {
-            for u in 0..node_count {
-                let mut a: HyperLogLog<P, B> = counters[u];
-
-                let prev_count = a.estimate_cardinality();
-
-                for v in self.g.neighbours(u)? {
-                    a |= counters[v.dest()];
-                }
-
-                let curr_count = a.estimate_cardinality();
-                let count_diff = (curr_count - prev_count) as f64;
-
-                if count_diff > 0f64 {
-                    *self.distances.get_mut(u) += t_f64 * count_diff;
-                    *self.inverse_distances.get_mut(u) += inv_t_f64 * count_diff;
-                    changed += 1;
-                }
-
-                swap[u] = a;
-            }
-
-            if changed == 0 {
-                break;
-            }
-
-            swap = std::mem::replace(&mut counters, swap);
-            changed = 0;
-            t_f64 += 1.;
-            inv_t_f64 = 1. / t_f64;
-        }
-
-        Ok(())
-    }
-
-    fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let node_count = self.g.size();
-        let threads = self.g.thread_num();
-        let node_load = node_count.div_ceil(threads);
-
-        let global_changed = Arc::new(AtomicUsize::new(0));
-        let synchronize = Arc::new(Barrier::new(threads));
-
-        let s_fn = self.g.build_cache_filename(CacheFile::HyperBall, Some(0))?;
-        let swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
-            &s_fn, node_count, true,
-        )?;
-
-        let counters = self.counters.shared_slice();
-        let swap = swap.shared_slice();
-
-        let mut t_f64: f64 = 1.; // first iteration is initialization
-        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
-        let mut changed = 0;
-
-        thread::scope(
-            |scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                for tid in 0..threads {
-                    let graph = &self.g;
-
-                    let mut counters = counters;
-                    let mut swap = swap;
-                    let mut distance_accumulator = self.distances.shared_slice();
-                    let mut inverse_distance_accumulator = self.inverse_distances.shared_slice();
-
-                    let global_changed = Arc::clone(&global_changed);
-                    let synchronize = Arc::clone(&synchronize);
-
-                    let begin = std::cmp::min(tid * node_load, node_count);
-                    let end = std::cmp::min(begin + node_load, node_count);
-                    scope.spawn(
-                        move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                            loop {
-                                {
-                                    // println!("HyperBall tid {tid} iteration {t_f64}");
-                                }
-
-                                for u in begin..end {
-                                    let mut a: HyperLogLog<P, B> = *counters.get_mut(u);
-
-                                    let prev_count = a.estimate_cardinality();
-
-                                    let u_n = graph.neighbours(u).map_err(
-                                        |e| -> Box<dyn std::error::Error + Send + Sync> {
-                                            format!("couldn't find neighbours of {u}: {e}").into()
-                                        },
-                                    )?;
-
-                                    for v in u_n {
-                                        a |= counters.get(v.dest());
-                                    }
-
-                                    let curr_count = a.estimate_cardinality();
-                                    let count_diff = (curr_count - prev_count) as f64;
-
-                                    if count_diff > 0f64 {
-                                        // update accumulators
-                                        *distance_accumulator.get_mut(u) += t_f64 * count_diff;
-                                        *inverse_distance_accumulator.get_mut(u) +=
-                                            inv_t_f64 * count_diff;
-                                        // update local changed count
-                                        changed += 1;
-                                    }
-
-                                    *swap.get_mut(u) = a;
-                                }
-
-                                global_changed.fetch_add(changed, Ordering::Relaxed);
-                                synchronize.wait();
-
-                                if changed == 0 && global_changed.load(Ordering::Relaxed) == 0 {
-                                    break Ok(());
-                                }
-
-                                swap = std::mem::replace(&mut counters, swap);
-                                changed = 0;
-                                t_f64 += 1.;
-                                inv_t_f64 = 1. / t_f64;
-
-                                synchronize.wait();
-
-                                if tid == 0 {
-                                    global_changed.store(0, Ordering::Relaxed);
-                                }
-                            }
-                        },
-                    );
-                }
-                Ok(())
-            },
-        )
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?;
-
-        self.counters.flush()?;
-
-        // for i in 0..node_count {
-        //     print!("\t|id: {i} ==> counter: {}|", self.counters.get(i).estimate_cardinality());
-        // }
-        // println!();
-
-        Ok(())
     }
 
     /// Manager logic for centralities' caching filenames' creation.
@@ -474,6 +292,227 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         //     println!("{:?}\n centrality", s);
         // }
         Ok(mem)
+    }
+
+    fn init_cache(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
+        let node_count = g.size();
+
+        let c_fn = g.build_cache_filename(CacheFile::HyperBall, None)?;
+        let d_fn = g.build_cache_filename(CacheFile::HyperBallDistances, None)?;
+        let i_fn = g.build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
+
+        let counters = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
+            &c_fn, node_count, true,
+        )?;
+        let distances = SharedSliceMut::<f64>::abst_mem_mut(&d_fn, node_count, true)?;
+        let inverse_distances = SharedSliceMut::<f64>::abst_mem_mut(&i_fn, node_count, true)?;
+
+        Ok((counters, distances, inverse_distances))
+    }
+
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        let out_fn = this.g.build_cache_filename(CacheFile::HyperBall, None)?;
+        let d_fn = this
+            .g
+            .build_cache_filename(CacheFile::HyperBallDistances, None)?;
+        let i_fn = this
+            .g
+            .build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
+        std::fs::remove_file(out_fn)?;
+        std::fs::remove_file(d_fn)?;
+        std::fs::remove_file(i_fn)?;
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>, const B: usize>
+    HyperBallInner<'a, EdgeType, Edge, P, B>
+{
+    pub fn new_no_compute(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        precision: Option<u8>,
+        max_depth: Option<usize>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let node_count = g.size();
+        // make sure presision is within bounds
+        let precision =
+            precision.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
+                p.clamp(
+                    HyperBallInner::<EdgeType, Edge>::MIN_PRECISION,
+                    HyperBallInner::<EdgeType, Edge>::MAX_PRECISION,
+                )
+            });
+        // make sure depth is within bounds
+        let max_t = max_depth.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
+            std::cmp::max(HyperBallInner::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
+        });
+        // init cached vecs for distances and inverse distances accumulation
+        let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(g)?;
+        // init counters: foreach v in 0..=n { add(c[v], v) } & distances and inverse_distances
+        (0..node_count).for_each(|u| {
+            *counters.get_mut(u) = hyperloglog_rs::prelude::HyperLogLog::<P, B>::default();
+            counters.get_mut(u).insert(u);
+            *distances.get_mut(u) = 0f64;
+            *inverse_distances.get_mut(u) = 0f64;
+        });
+
+        Ok(Self {
+            g,
+            counters,
+            distances,
+            inverse_distances,
+            precision,
+            max_t,
+            #[cfg(feature = "bench")]
+            iters: 0,
+        })
+    }
+
+    pub fn init_cache_mem(
+        &self,
+    ) -> Result<
+        AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
+        Box<dyn std::error::Error>,
+    > {
+        let node_count = self.g.size();
+
+        let s_fn = self.g.build_cache_filename(CacheFile::HyperBall, Some(0))?;
+        let swap = SharedSliceMut::<hyperloglog_rs::prelude::HyperLogLog<P, B>>::abst_mem_mut(
+            &s_fn, node_count, true,
+        )?;
+
+        Ok(swap)
+    }
+
+    pub fn compute_with_proc_mem(
+        &mut self,
+        swap: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = self.g.size();
+        let threads = self.g.thread_num();
+        let node_load = node_count.div_ceil(threads);
+
+        let global_changed = Arc::new(AtomicUsize::new(0));
+        let synchronize = Arc::new(Barrier::new(threads));
+
+        let counters = self.counters.shared_slice();
+        let swap = swap.shared_slice();
+
+        let mut t_f64: f64 = 1.; // first iteration is initialization
+        let mut inv_t_f64: f64 = 1.; // first iteration is initialization
+        let mut changed = 0;
+
+        #[cfg(feature = "bench")]
+        let iters = Arc::new(AtomicUsize::new(0));
+
+        thread::scope(
+            |scope| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                for tid in 0..threads {
+                    let graph = &self.g;
+
+                    let mut counters = counters;
+                    let mut swap = swap;
+                    let mut distance_accumulator = self.distances.shared_slice();
+                    let mut inverse_distance_accumulator = self.inverse_distances.shared_slice();
+
+                    let global_changed = Arc::clone(&global_changed);
+                    let synchronize = Arc::clone(&synchronize);
+                    #[cfg(feature = "bench")]
+                    let iters = iters.clone();
+
+                    let begin = std::cmp::min(tid * node_load, node_count);
+                    let end = std::cmp::min(begin + node_load, node_count);
+                    scope.spawn(
+                        move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                            loop {
+                                #[cfg(feature = "bench")]
+                                if tid == 0 {
+                                    iters.add(1, Ordering::Relaxed);
+                                }
+                                {
+                                    // println!("HyperBall tid {tid} iteration {t_f64}");
+                                }
+
+                                for u in begin..end {
+                                    let mut a: HyperLogLog<P, B> = *counters.get_mut(u);
+
+                                    let prev_count = a.estimate_cardinality();
+
+                                    let u_n = graph.neighbours(u).map_err(
+                                        |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                            format!("couldn't find neighbours of {u}: {e}").into()
+                                        },
+                                    )?;
+
+                                    for v in u_n {
+                                        a |= counters.get(v.dest());
+                                    }
+
+                                    let curr_count = a.estimate_cardinality();
+                                    let count_diff = (curr_count - prev_count) as f64;
+
+                                    if count_diff > 0f64 {
+                                        // update accumulators
+                                        *distance_accumulator.get_mut(u) += t_f64 * count_diff;
+                                        *inverse_distance_accumulator.get_mut(u) +=
+                                            inv_t_f64 * count_diff;
+                                        // update local changed count
+                                        changed += 1;
+                                    }
+
+                                    *swap.get_mut(u) = a;
+                                }
+
+                                global_changed.fetch_add(changed, Ordering::Relaxed);
+                                synchronize.wait();
+
+                                if changed == 0 && global_changed.load(Ordering::Relaxed) == 0 {
+                                    break Ok(());
+                                }
+
+                                swap = std::mem::replace(&mut counters, swap);
+                                changed = 0;
+                                t_f64 += 1.;
+                                inv_t_f64 = 1. / t_f64;
+
+                                synchronize.wait();
+
+                                if tid == 0 {
+                                    global_changed.store(0, Ordering::Relaxed);
+                                }
+                            }
+                        },
+                    );
+                }
+                Ok(())
+            },
+        )
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("error HyperBall {:?}", e).into() })?;
+
+        #[cfg(feature = "bench")]
+        {
+            self.iters = iters.load(Ordering::Relaxed);
+        }
+
+        self.counters.flush()?;
+        self.g.cleanup_cache(CacheFile::HyperBall)?;
+
+        // for i in 0..node_count {
+        //     print!("\t|id: {i} ==> counter: {}|", self.counters.get(i).estimate_cardinality());
+        // }
+        // println!();
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bench")]
+    pub fn get_throughput_factor(&self) -> usize {
+        self.iters
     }
 }
 

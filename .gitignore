@@ -5,8 +5,12 @@
 /exact_values_backup
 /thesis_template
 /test
+criterion_backup*
+/main/criterion-benches/target/*
+*/criterion-benches/target/
 /proteic_dbgs
 /ggcat
+/main/criterion-benches/target/
 /books
 /bruijnx
 *.txt

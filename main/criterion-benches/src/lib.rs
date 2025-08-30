@@ -21,8 +21,18 @@ macro_rules! emit_criterion_bench {
     ( $( $label:ident ),* $(,)? ) => {
         $crate::emit_criterion_bench!(@collect [] [ $( $label ),* ]);
     };
+    // Public entry: any number of labels, optional trailing comma
+    ( $(,)? ) => {
+        $crate::emit_criterion_bench!(@collect [] []);
+    };
 
     // --------- COLLECT PHASE (build a list without `ipc`) ---------
+
+    // Done collecting: emit code. Ensure `time_throughput` is present exactly once.
+    (@collect [] []) => {
+        // gen labels: time_throughput + collected
+        $crate::emit_criterion_bench!(@emit [ time_throughput ] [ time_throughput ]);
+    };
 
     // Done collecting: emit code. Ensure `time_throughput` is present exactly once.
     (@collect [$($acc:ident),*] []) => {

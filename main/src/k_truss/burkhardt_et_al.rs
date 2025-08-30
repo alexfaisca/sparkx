@@ -5,6 +5,7 @@ use crate::shared_slice::*;
 use crossbeam::thread;
 use num_cpus::get_physical;
 use portable_atomic::{AtomicU8, Ordering};
+use std::mem::ManuallyDrop;
 use std::{
     collections::HashMap,
     sync::{Arc, Barrier},
@@ -46,6 +47,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let burkhardt_et_al = Self { g, k_trusses };
         burkhardt_et_al.compute(10)?;
         Ok(burkhardt_et_al)
+    }
+
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        let out_fn = this.g.build_cache_filename(CacheFile::KTrussBEA, None)?;
+        std::fs::remove_file(out_fn)?;
+        Ok(())
     }
 
     fn init_procedural_memory_burkhardt_et_al(
@@ -284,6 +292,254 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 }
 
+#[cfg(feature = "bench")]
+#[allow(dead_code)]
+impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
+    AlgoBurkhardtEtAl<'a, EdgeType, Edge>
+{
+    pub fn new_no_compute(
+        g: &'a GraphMemoryMap<EdgeType, Edge>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let out_fn = g.build_cache_filename(CacheFile::KTrussBEA, None)?;
+        let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
+        Ok(Self { g, k_trusses })
+    }
+
+    pub fn init_cache_mem(
+        &self,
+    ) -> Result<ProceduralMemoryBurkhardtEtAl, Box<dyn std::error::Error>> {
+        let edge_count = self.g.width();
+        let edge_count2 = self.g.width() * 2;
+
+        let t_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(0))?;
+        let el_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(1))?;
+        let ei_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(2))?;
+        let s_fn = self.g.build_cache_filename(CacheFile::KTrussBEA, Some(3))?;
+
+        let tri_count = SharedSliceMut::<AtomicU8>::abst_mem_mut(&t_fn, edge_count, true)?;
+        let edge_list = SharedSliceMut::<usize>::abst_mem_mut(&el_fn, edge_count, true)?;
+        let edge_index = SharedSliceMut::<usize>::abst_mem_mut(&ei_fn, edge_count, true)?;
+        let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&s_fn, edge_count2, true)?;
+
+        // pre-initialize the memmapped files if they don't exist
+        let _edge_reciprocal = self.g.get_edge_reciprocal()?;
+        let _edge_out = self.g.get_edge_dest_id_over_source()?;
+
+        Ok((tri_count, edge_list, edge_index, stack))
+    }
+
+    pub fn compute_with_proc_mem(
+        &self,
+        proc_mem: ProceduralMemoryBurkhardtEtAl,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let node_count = self.g.size();
+        let edge_count = self.g.width();
+
+        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+
+        // Shared atomic & simple arrays for counts and trussness
+        let (triangle_count, edges, edge_index, e_stack) = proc_mem;
+        let mut trussness = self.k_trusses.shared_slice();
+
+        let edge_reciprocal = self.g.get_edge_reciprocal()?;
+        let edge_out = self.g.get_edge_dest_id_over_source()?;
+
+        // Algorithm 1 - adjusted for directed scheme
+        thread::scope(|scope| {
+            // initializations always uses at least two threads per core
+            let threads = self.g.thread_num().max(get_physical() * 2);
+            let node_load = node_count.div_ceil(threads);
+
+            // Thread syncronization
+            let synchronize = Arc::new(Barrier::new(threads));
+
+            for tid in 0..threads {
+                let eo = edge_out.shared_slice();
+                let er = edge_reciprocal.shared_slice();
+
+                let mut tris = triangle_count.shared_slice();
+                let mut edges = edges.shared_slice();
+                let mut edge_index = edge_index.shared_slice();
+
+                let synchronize = synchronize.clone();
+
+                let start = std::cmp::min(tid * node_load, node_count);
+                let end = std::cmp::min(start + node_load, node_count);
+
+                scope.spawn(move |_| {
+                    // initialize triangle_count with zeroes
+                    let edge_begin = *index_ptr.get(start);
+                    let edge_end = *index_ptr.get(end);
+                    for idx in edge_begin..edge_end {
+                        *trussness.get_mut(idx) = 0;
+                        *tris.get_mut(idx) = AtomicU8::new(0);
+                    }
+
+                    synchronize.wait();
+
+                    let mut neighbours = HashMap::<usize, usize>::new();
+                    for u in start..end {
+                        for j in *eo.get(u)..*index_ptr.get(u + 1) {
+                            let w = *graph_ptr.get(j);
+                            *edges.get_mut(j) = j;
+                            *edge_index.get_mut(j) = j;
+                            neighbours.insert(w.dest(), j);
+                        }
+                        for u_v in *index_ptr.get(u)..*eo.get(u) {
+                            *edges.get_mut(u_v) = u_v;
+                            *edge_index.get_mut(u_v) = u_v;
+                            let v = *graph_ptr.get(u_v);
+                            let v = v.dest();
+                            if u == v {
+                                continue;
+                            }
+                            for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
+                                let w = graph_ptr.get(v_w).dest();
+                                if w <= u {
+                                    break;
+                                }
+                                let w_u = match neighbours.get(&w) {
+                                    Some(i) => *i,
+                                    None => continue,
+                                };
+
+                                tris.get(u_v).fetch_add(1, Ordering::Relaxed);
+                                tris.get(v_w).fetch_add(1, Ordering::Relaxed);
+                                tris.get(w_u).fetch_add(1, Ordering::Relaxed);
+                                tris.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
+                                tris.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
+                                tris.get(*er.get(w_u)).fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        neighbours.clear();
+                    }
+                });
+            }
+        })
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+
+        let mut stack = SharedQueueMut::<(usize, usize)>::from_shared_slice(e_stack.shared_slice());
+
+        // Algorithm 2 - sentinel value is 0
+        // blank (u64, usize) value
+        let mut edges = edges.shared_slice();
+        let mut edge_index = edge_index.shared_slice();
+        let mut edge_count = edge_count;
+        let er = edge_reciprocal.shared_slice();
+        let tris = triangle_count.shared_slice();
+        let mut test = vec![0usize; u8::MAX as usize];
+
+        for k in 1..u8::MAX {
+            if edge_count == 0 {
+                break;
+            }
+            let mut idx = 0;
+            while idx < edge_count {
+                let edge_offset = *edge_index.get(idx);
+                let t_count = tris.get(edge_offset).load(Ordering::Relaxed);
+                if t_count == k {
+                    let u = graph_ptr.get(*er.get(edge_offset)).dest();
+                    stack.push((u, edge_offset));
+                    idx = match idx.overflowing_add(1) {
+                        (r, false) => r,
+                        _ => {
+                            return Err(format!("error overflow add to idx ({idx} + 1)",).into());
+                        }
+                    };
+                } else if t_count == 0 {
+                    edge_count = match edge_count.overflowing_sub(1) {
+                        (r, false) => r,
+                        _ => {
+                            return Err(format!(
+                                "error overflow add to edge_count ({edge_count} + 1)",
+                            )
+                            .into());
+                        }
+                    };
+                    let e_index = *edge_index.get(edge_count);
+                    let r_index = *edges.get(edge_offset);
+                    *edge_index.get_mut(edge_count) = *edge_index.get(r_index);
+                    *edge_index.get_mut(r_index) = e_index;
+                    *edges.get_mut(edge_offset) = edge_count;
+                    *edges.get_mut(e_index) = r_index;
+                    // store edge trussness
+                    *trussness.get_mut(edge_offset) = k - 1;
+                    test[k as usize - 1] += 1;
+                    continue;
+                } else {
+                    idx = match idx.overflowing_add(1) {
+                        (r, false) => r,
+                        _ => {
+                            return Err(format!("error overflow add to idx ({idx} + 1)",).into());
+                        }
+                    };
+                }
+            }
+
+            let mut neighbours = HashMap::<usize, usize>::new();
+
+            while let Some((u, offset)) = stack.pop() {
+                tris.get(offset).store(0, Ordering::Relaxed);
+                let v = graph_ptr.get(offset).dest();
+                for u_w in *index_ptr.get(u)..*index_ptr.get(u + 1) {
+                    let w = graph_ptr.get(u_w).dest();
+                    if w != u && w != v {
+                        neighbours.insert(w, u_w);
+                    }
+                }
+                for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
+                    let w = graph_ptr.get(v_w).dest();
+                    if w == v {
+                        continue;
+                    }
+                    let u_w = match neighbours.get(&w) {
+                        Some(i) => *i,
+                        None => continue,
+                    };
+
+                    let w_u = *er.get(u_w);
+                    if tris.get(v_w).load(Ordering::Relaxed) != 0
+                        && tris.get(w_u).load(Ordering::Relaxed) != 0
+                    {
+                        let prev_w_u = tris.get(w_u).fetch_sub(1, Ordering::Relaxed);
+                        let prev_v_w = tris.get(v_w).fetch_sub(1, Ordering::Relaxed);
+                        if prev_w_u == k + 1 {
+                            stack.push((w, w_u));
+                        }
+                        if prev_v_w == k + 1 {
+                            stack.push((v, v_w));
+                        }
+                    }
+                }
+                neighbours.clear();
+            }
+        }
+        let env_verbose_val = std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());
+        let verbose: bool = env_verbose_val == "1";
+        if verbose {
+            let mut max = 0;
+            test.iter().enumerate().for_each(|(i, v)| {
+                if *v != 0 && i > max {
+                    max = i;
+                }
+            });
+            test.resize(max + 1, 0);
+            println!("k-trussness {:?}", test);
+        }
+        self.k_trusses.flush_async()?;
+
+        // cleanup cache
+        self.g.cleanup_cache(CacheFile::KTrussBEA)?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bench")]
+    pub fn get_throughput_factor(&self) -> usize {
+        self.g.width()
+    }
+}
 #[cfg(test)]
 mod test {
     use crate::{k_truss::verify_k_trusses, test_common::get_or_init_dataset_cache_entry};

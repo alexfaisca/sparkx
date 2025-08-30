@@ -37,18 +37,22 @@ where
         // Load/construct graph ONCE per input size; not in the timed body.
         let graph = load_graph::<EdgeType, Edge, &str>(path).expect("graph init should succeed");
         // Bench throughput for |E|
-        group
-            .throughput(Throughput::Elements(graph.width() as u64))
-            .bench_with_input(BenchmarkId::from_parameter(*label), path, |b, _p| {
-                // Each measurement iteration gets a fresh cache dir and runs the algorithm once.
-                b.iter_batched(
-                    || &graph, // setup: borrow the already-built graph
-                    |g| {
-                        run_once::<EdgeType, Edge>(g);
-                    },
-                    BatchSize::PerIteration, // isolate IO/cache per sample
-                );
-            });
+        group.throughput(Throughput::Elements(graph.width() as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(*label), path, |b, _p| {
+            // Each measurement iteration gets a fresh cache dir and runs the algorithm once.
+            b.iter_batched(
+                || {
+                    let algo = AlgoLiuEtAl::<EdgeType, Edge>::new_no_compute(&graph)
+                        .expect("algo should succeed");
+                    let proc_mem = algo.init_cache_mem().expect("cache init should succeed");
+                    (algo, proc_mem)
+                }, // setup: borrow the already-built graph
+                |(a, p)| {
+                    let () = a.compute_with_proc_mem(p).expect("algo should succeed");
+                },
+                BatchSize::PerIteration, // isolate IO/cache per sample
+            );
+        });
     }
 
     group.finish();
