@@ -11,6 +11,8 @@ type ProceduralMemoryHierholzers = (
     AbstractedProceduralMemoryMut<u8>,
 );
 
+type AllEulerTrailsConcatenatedWithBounds<'a> = (&'a [usize], Box<[(usize, usize)]>);
+
 /// For the computation of the euler trail(s) of a [`GraphMemoryMap`] instance using *Hierholzer's Algorithm*.
 ///
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
@@ -19,9 +21,9 @@ pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeT
     /// Graph for which the euler trail(s) is(are) computed.
     g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing the euler trails.
-    pub euler_trails: AbstractedProceduralMemoryMut<usize>,
+    euler_trails: AbstractedProceduralMemoryMut<usize>,
     /// Array containing the starting position of each euler trail.
-    pub trail_index: Vec<usize>,
+    trail_index: Vec<usize>,
 }
 
 #[allow(dead_code)]
@@ -43,7 +45,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which *Hierholzer's Algorithm* is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
@@ -53,13 +55,6 @@ where
         euler.compute_with_proc_mem(proc_mem)?;
 
         Ok(euler)
-    }
-
-    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let this = ManuallyDrop::new(self);
-        let out_fn = this.g.build_cache_filename(CacheFile::EulerTrail, None)?;
-        std::fs::remove_file(out_fn)?;
-        Ok(())
     }
 
     /// Returns the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm.
@@ -77,22 +72,62 @@ where
         self.trail_number()
     }
 
-    /// Returns the starting index of a given euler trail.
+    /// Returns the euler trail corresponding to a given `idx` index for the [`GraphMemoryMap`] instance.
     ///
     /// # Arguments
     ///
-    /// * `idx`: `usize` --- the euler trail for which the in-memory starting index is to be returned.
+    /// * `idx` --- the index of the euler trail which is to be returned.
     ///
     /// * Returns
     ///
-    /// This method will return `Some` if `idx` is smaller than the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm and `None` otherwise, i.e. iff `idx < trail_index.len()`.
+    /// This method will return [`Some`] if `idx` is smaller than the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm and [`None`] otherwise, i.e. iff `idx < trail_index.len()`.
     ///
-    pub fn get_trail(&self, idx: usize) -> Option<SharedSliceMut<usize>> {
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn get_trail(&self, idx: usize) -> Option<&[usize]> {
         if idx < self.trail_index.len() {
-            Some(self.euler_trails.shared_slice())
+            // get trail start index
+            let start = match idx.overflowing_sub(1) {
+                (_, true) => 0,
+                (i, false) => self.trail_index[i],
+            };
+            // get trail end index
+            let end = self.trail_index[idx];
+            // slice concatenated trails based on start & end indexes
+            self.euler_trails.slice(start, end)
         } else {
             None
         }
+    }
+
+    /// Returns all euler trails of the [`GraphMemoryMap`] instance.
+    ///
+    /// The euler trails are concatenated and a slice of bounds[^1] is provided with indexing
+    /// purposes.
+    ///
+    /// [^1]: bounds are given as a tuple (start_idx: [`usize`], end_idx: [`usize`]).
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn get_all_trails(&'a self) -> AllEulerTrailsConcatenatedWithBounds<'a> {
+        let mut bounds: Vec<(usize, usize)> = Vec::with_capacity(self.trail_index.len());
+        self.trail_index
+            .iter()
+            .enumerate()
+            .for_each(|(idx, &end_pos)| {
+                let start = match idx.overflowing_sub(1) {
+                    (_, true) => 0,
+                    (i, false) => self.trail_index[i],
+                };
+                bounds.push((start, end_pos));
+            });
+        (self.euler_trails.as_slice(), bounds.into_boxed_slice())
+    }
+
+    /// Removes all cached files pertaining to this algorithm's execution's results.
+    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let this = ManuallyDrop::new(self);
+        let out_fn = this.g.build_cache_filename(CacheFile::EulerTrail, None)?;
+        std::fs::remove_file(out_fn)?;
+        Ok(())
     }
 }
 

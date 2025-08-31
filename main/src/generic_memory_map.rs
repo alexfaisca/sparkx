@@ -82,7 +82,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     const EXT_COMPRESSED_LZ4: &str = "lz4";
     const EXT_PLAINTEXT_MTX: &str = "mtx";
     const EXT_PLAINTEXT_TXT: &str = "txt";
-    const DEFAULT_BATCHING_SIZE: usize = 50_000usize;
+    pub const DEFAULT_BATCHING_SIZE: usize = 50_000usize;
     /// in genetic graphs annotated with ff, fr, rf and rr directions maximum number of edges is 16
     /// |alphabet = 4| * |annotation set = 4| = 4 * 4 = 16
     const DEFAULT_MAX_EDGES: u16 = 16;
@@ -334,7 +334,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// # Arguments
     ///
     /// * `input` - Input bytes.
-    /// * `max_edges` - Ascribes a maximum number of edges for a node. If None is provided, defaults to 16.
+    /// * `max_edges` - Ascribes a maximum number of edges for a node. If None is provided, defaults to `16`.
     /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// # Returns
@@ -450,8 +450,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let cache = &self;
 
                 handles.push(s.spawn(move |_|  -> Result<Box<[PathBuf]>, Box<dyn std::error::Error + Send + Sync>> {
- 
-                    // this assumes UTF-8 but avoids full conversion
+                    // this assumes UTF-8 but avoids full conversion 
                     let mut lines = input.split(|&b| b == b'\n');
                     let mut node_edges = Vec::with_capacity(u8::MAX as usize);
                     while let Some(line) = lines.next() {
@@ -539,12 +538,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         drop(offsets);
         drop(edges);
 
-        // if graph cache was used to build a graph then the graph's fst
-        //  holds meatlabel_filename open, hence, it must be removed so that the new fst may
-        //  be built
+        // if graph cache was used to build a graph then the graph's fst holds meatlabel_filename 
+        // open, hence, it must be removed so that the new fst may be built
         std::fs::remove_file(&self.metalabel_filename)?;
 
-        // Now merge all batch FSTs into option
+        // merge all batch FSTs into option
         self.merge_fsts(&batches)?;
 
         // Cleanup temp batch files (not necessary because that is done in method finish())
@@ -565,7 +563,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// # Arguments
     ///
     /// * `input` - Input bytes.
-    /// * `max_edges` - Ascribes a maximum number of edges for a node. If None is provided, defaults to 16.
+    /// * `max_edges` - Ascribes a maximum number of edges for a node. If None is provided, defaults to `16`.
     /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// # Returns
@@ -643,13 +641,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `id` --- cache id to be used when creating cache files' filenames.
     /// * `batch_size` --- size of input chunking for fst (re)build(s)[^1][^2].
     ///
-    /// [^1]: if `None` is provided defaults to 10'000.
+    /// [^1]: if `None` is provided defaults to [`DEFAULT_BATCHING_SIZE`].
     /// [^2]: for more information on the functionality of input chunking, refer to [`build_fst_from_unsorted_file`]'s documentation footnote #2.
     ///
     /// [`from_ggcat_file`]: ./struct.GraphCache.html#method.from_ggcat_file
     /// [`from_mtx_file`]: ./struct.GraphCache.html#method.from_mtx_file
     /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
+    ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
     fn init_with_id(
         id: &str,
         batch: Option<usize>,
@@ -718,11 +718,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `batch_size` --- size of input chunking for fst (re)build(s)[^2][^3].
     ///
     /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the [`GraphCache`] instance are inferred from the cache id.
-    /// [^2]: if `None` is provided defaults to 10'000.
+    /// [^2]: if [`None`] is provided defaults to [`DEFAULT_BATCHING_SIZE`].
     /// [^3]: for more information on the functionality of input chunking, refer to [`build_fst_from_unsorted_file`]'s documentation footnote #2.
     ///
     /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
     pub fn open(
         filename: &str,
         batch: Option<usize>,
@@ -799,14 +800,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `batch` --- size of input chunking for fst rebuild[^3][^4].
     /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
-    /// [^1]: for example, as a `String`.
-    /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
-    /// [^3]: if `None` is provided defaults to 10'000.
+    /// [^1]: for example, as a [`String`].
+    /// [^2]: if [`None`] is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    /// [^3]: if [`None`] is provided defaults to [`DEFAULT_BATCHING_SIZE`].
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
-    /// [^5]: if `None` is provided defaults to **NOT** storing any node's label.
+    /// [^5]: if [`None`] is provided defaults to **NOT** storing any node's label.
     /// * `in_fst` - A function that receives a usize as input and returns a bool as output. For every node id it should return false, if its kmer is not to be included in the graph's metalabel fst or true, vice-versa.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
     pub fn from_file<P: AsRef<Path>>(
         p: P,
         id: Option<String>,
@@ -843,13 +845,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `batch`--- size of input chunking for fst rebuild[^3][^4].
     /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
-    /// [^1]: for example, a `String`.
-    /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
-    /// [^3]: if `None` is provided defaults to 10'000.
+    /// [^1]: for example, a [`String`].
+    /// [^2]: if [`None`] is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    /// [^3]: if [`None`] is provided defaults to [`DEFAULT_BATCHING_SIZE`].
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
-    /// [^5]: if `None` is provided defaults to **NOT** storing every node's label.
+    /// [^5]: if [`None`] is provided defaults to **NOT** storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
     pub fn from_ggcat_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
@@ -892,13 +895,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `batch` --- size of input chunking for fst rebuild[^3][^4].
     /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
-    /// [^1]: for example, as a `String`.
-    /// [^2]: if `None` is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
-    /// [^3]: if `None` is provided defaults to 10'000.
+    /// [^1]: for example, as a [`String`].
+    /// [^2]: if [`None`] is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    /// [^3]: if [`None`] is provided defaults to [`DEFAULT_BATCHING_SIZE`].
     /// [^4]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
-    /// [^5]: if `None` is provided defaults to storing every node's label.
+    /// [^5]: if [`None`] is provided defaults to storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
     pub fn from_mtx_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
@@ -1791,11 +1795,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^4].
     ///
     /// [^1]: may be from any of the graph's cached files, the graph's cache id is then extracted from the filename and all necessary filename's necessary for the [`GraphCache`] instance are inferred from the cache id.
-    /// [^2]: if `None` is provided defaults to 10'000.
+    /// [^2]: if [`None`] is provided defaults to [`DEFAULT_BATCHING_SIZE`].
     /// [^3]: given a `batch_size` `n`, finite state transducers of size up to `n` are succeedingly built until no more unprocessed entries remain, at which point all the partial fsts are merged into the final resulting general fst.
-    /// [^4]: if `None` is provided defaults to storing every node's label.
+    /// [^4]: if [`None`] is provided defaults to storing every node's label.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
     pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path>>(
         &mut self,
         path: P,
@@ -2153,7 +2158,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    /// Make the [`GraphCache`] instance readonly. Allows the user to `Clone` the struct.
+    /// Make the [`GraphCache`] instance readonly. Allows the user to [`Clone`] the struct.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     pub fn make_readonly(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -2489,10 +2494,10 @@ where
     /// * `target_size` --- the partition's target size[^3].
     /// * `target_volume` --- the partition's target volume[^4].
     ///
-    /// [^1]: diffusion vector entries must be of type `(node_id: usize, heat: f64)`.
+    /// [^1]: diffusion vector entries must be of type (node_id: [`usize`], heat: [`f64`]).
     /// [^2]: entries must be descendingly ordered by diffusion.
-    /// [^3]: if `None` is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
-    /// [^4]: if `None` is provided defaults to `|E|`, effectively, the overall best partition by conducatance is returned independent on the number of edges in it.
+    /// [^3]: if [`None`] is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
+    /// [^4]: if [`None`] is provided defaults to `|E|`, effectively, the overall best partition by conducatance is returned independent on the number of edges in it.
     pub fn sweep_cut_over_diffusion_vector_by_conductance(
         &self,
         diffusion: &mut [(usize, f64)],

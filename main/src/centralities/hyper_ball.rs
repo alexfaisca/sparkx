@@ -45,7 +45,7 @@ pub struct HyperBallInner<
     P: WordType<B> = Precision8,
     const B: usize = 6,
 > {
-    /// Graph for which node/edge coreness is computed.
+    /// Graph for which *HyperBall* is computed.
     g: &'a GraphMemoryMap<EdgeType, Edge>,
     /// Memmapped slice containing each node's *HyperLogLog++* counter.
     counters: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
@@ -57,11 +57,14 @@ pub struct HyperBallInner<
     precision: u8,
     /// Maximum number of iteration --- default is 128, max is 1024 (details on how these values are ludicrously big are found in the abovementioned paper).
     max_t: usize,
+    /// Closeness centralities' cached values --- under various degrees of normalization.
+    closeness: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
+    /// Harmonic centralities' cached values --- under various degrees of normalization.
+    harmonic: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
+    /// Lin's centrality's cached values.
+    lin: Option<AbstractedProceduralMemoryMut<f64>>,
     #[cfg(feature = "bench")]
     iters: usize,
-    closeness: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
-    harmonic: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
-    lin: Option<AbstractedProceduralMemoryMut<f64>>,
 }
 
 #[allow(dead_code)]
@@ -78,7 +81,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///
     /// # Arguments
     ///
-    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the *HyperBall Algorithm* is to be performed in.
     /// * `precision` --- the precision to be used for each nodes *HyperLogLog++* counter (defaults to 8, equivalent to 2⁸-register bits per node).
     /// * `max_depth` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
     ///
@@ -113,7 +116,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
             Centrality::Lin => (CacheFile::HyperBallLinCentrality, Some(0)),
         };
 
-        self.g.build_cache_filename(cache_file_type, seq)
+        self.build_cache_filename(cache_file_type, seq)
     }
 
     fn index_by_normalization(normalization: Option<bool>) -> usize {
@@ -129,9 +132,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     /// # Arguments
     ///
     /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - `None` --- no normalization.
-    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_closeness_centrality(
         &self,
@@ -141,7 +144,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         let mem = self.closeness[idx]
             .as_ref() // borrow Option, do not move it
             .ok_or_else(|| -> Box<dyn std::error::Error> {
-                "error lin's centrality isn't yet in cache".into()
+                "error closeness centrality isn't yet in cache".into()
             })?;
         Ok(mem.as_slice())
     }
@@ -150,10 +153,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///
     /// # Arguments
     ///
-    /// * `normalize` --- tri-state flag determining the type of normalization to be used for the computation.
-    ///     - `None` --- no normalization.
-    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_or_compute_closeness_centrality(
         &'a mut self,
@@ -171,10 +174,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///
     /// # Arguments
     ///
-    /// * `normalization` --- tri-state flag determining the type of normalization to be used for the computation.
-    ///     - `None` --- no normalization.
-    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    /// * `normalize` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn compute_closeness_centrality(
         &mut self,
@@ -237,9 +240,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     /// # Arguments
     ///
     /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - `None` --- no normalization.
-    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_hamonic_centrality(
         &self,
@@ -249,7 +252,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         let mem = self.harmonic[idx]
             .as_ref() // borrow Option, do not move it
             .ok_or_else(|| -> Box<dyn std::error::Error> {
-                "error lin's centrality isn't yet in cache".into()
+                "error harmonic centrality isn't yet in cache".into()
             })?;
         Ok(mem.as_slice())
     }
@@ -258,10 +261,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///
     /// # Arguments
     ///
-    /// * `normalization` --- tri-state flag determining the type of normalization to be used for the computation.
-    ///     - `None` --- no normalization.
-    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_or_compute_harmonic_centrality(
         &'a mut self,
@@ -279,10 +282,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///
     /// # Arguments
     ///
-    /// * `normalize` --- tri-state flag determining the type of normalization to be used for the computation.
-    ///     - `None` --- no normalization.
-    ///     - `Some(false)`--- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - `Some(true)` --- centrality normalized by total number of nodes, |V|.
+    /// * `normalize` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn compute_harmonic_centrality(
         &mut self,
@@ -387,18 +390,44 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         self.get_lins_centrality()
     }
 
+    /// Removes all cached files pertaining to this algorithm's execution's results, as well as any
+    /// files containing centrailty values computed through them.
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
-        let out_fn = this.g.build_cache_filename(CacheFile::HyperBall, None)?;
-        let d_fn = this
-            .g
-            .build_cache_filename(CacheFile::HyperBallDistances, None)?;
-        let i_fn = this
-            .g
-            .build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
+        let out_fn = this.build_cache_filename(CacheFile::HyperBall, None)?;
+        let d_fn = this.build_cache_filename(CacheFile::HyperBallDistances, None)?;
+        let i_fn = this.build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
         std::fs::remove_file(out_fn)?;
         std::fs::remove_file(d_fn)?;
         std::fs::remove_file(i_fn)?;
+
+        // remove any closeness centralities' cached values
+        for (i, t) in [
+            (0, Centrality::Closeness),
+            (1, Centrality::NCloseness),
+            (2, Centrality::NCloseness),
+        ] {
+            if this.closeness[i].is_some() {
+                std::fs::remove_file(this.centrality_cache_file_name(t)?)?;
+            }
+        }
+
+        // remove any harmonic centralities' cached values
+        for (i, t) in [
+            (0, Centrality::Harmonic),
+            (1, Centrality::NHarmonic),
+            (2, Centrality::NCHarmonic),
+        ] {
+            if this.closeness[i].is_some() {
+                std::fs::remove_file(this.centrality_cache_file_name(t)?)?;
+            }
+        }
+
+        // remove any lin's centrality's cached values
+        if this.lin.is_some() {
+            std::fs::remove_file(this.centrality_cache_file_name(Centrality::Lin)?)?;
+        }
+
         Ok(())
     }
 }
@@ -468,6 +497,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
         self.compute_with_proc_mem_impl(swap)
     }
 
+    #[inline(always)]
+    fn build_cache_filename(
+        &self,
+        file_type: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.g.build_cache_filename(file_type, seq)
+    }
+
     #[cfg(feature = "bench")]
     pub fn get_throughput_factor(&self) -> usize {
         self.iters
@@ -526,11 +564,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
             inverse_distances,
             precision,
             max_t,
-            #[cfg(feature = "bench")]
-            iters: 0,
             closeness: [None, None, None],
             harmonic: [None, None, None],
             lin: None,
+            #[cfg(feature = "bench")]
+            iters: 0,
         })
     }
 

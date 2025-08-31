@@ -51,15 +51,26 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         Ok(liu_et_al)
     }
 
-    pub fn k_coreness(&self, e_idx: usize) -> u8 {
+    /// Returns the coreness of a given edge of a [`GraphMemoryMap`] instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `e_idx` --- the index of the edge whose coreness is to be returned.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn coreness(&self, e_idx: usize) -> u8 {
         assert!(e_idx < self.g.width());
         *self.k_cores.get(e_idx)
     }
 
+    /// Returns a slice containing the coreness of each edge of the [`GraphMemoryMap`] instance.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn k_cores(&self) -> &[u8] {
         self.k_cores.as_slice()
     }
 
+    /// Removes all cached files pertaining to this algorithm's execution's results.
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
         let out_fn = this.g.build_cache_filename(CacheFile::KCoreLEA, None)?;

@@ -34,7 +34,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     ///
     /// # Arguments
     ///
-    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
@@ -46,15 +46,26 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         Ok(pkt)
     }
 
-    pub fn k_trussness(&self, e_idx: usize) -> u8 {
+    /// Returns the trussness of a given edge of a [`GraphMemoryMap`] instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `e_idx` --- the index of the edge whose trussness is to be returned.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn trussness(&self, e_idx: usize) -> u8 {
         assert!(e_idx < self.g.width());
         *self.k_trusses.get(e_idx)
     }
 
+    /// Returns a slice containing the trussness of each edge of the [`GraphMemoryMap`] instance.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn k_trusses(&self) -> &[u8] {
         self.k_trusses.as_slice()
     }
 
+    /// Removes all cached files pertaining to this algorithm's execution's results.
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
         let out_fn = this.g.build_cache_filename(CacheFile::KTrussPKT, None)?;

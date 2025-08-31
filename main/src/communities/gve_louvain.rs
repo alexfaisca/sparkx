@@ -106,6 +106,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         self.community.as_slice()
     }
 
+    /// Removes all cached files pertaining to this algorithm's execution's results.
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
         let out_fn = this.g.build_cache_filename(CacheFile::GVELouvain, None)?;
