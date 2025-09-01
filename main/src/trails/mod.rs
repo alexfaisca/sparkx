@@ -6,8 +6,7 @@ use _verify::verify_trails;
 #[cfg(test)]
 mod _verify {
     use crate::{
-        generic_edge::{GenericEdge, GenericEdgeType},
-        generic_memory_map::GraphMemoryMap,
+        graph::{GenericEdge, GenericEdgeType, GraphMemoryMap},
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
         utils::{FileType, H, cache_file_name},
     };

@@ -1,10 +1,7 @@
 use crate::utils::{CACHE_DIR, EXACT_VALUE_CACHE_DIR, id_from_filename};
 use crate::{
-    graph::{
-        GenericEdge, GenericEdgeType, GraphMemoryMap,
-        cache::GraphCache,
-        edge::{TinyEdgeType, TinyLabelStandardEdge},
-    },
+    generic_edge::{GenericEdge, GenericEdgeType, TinyEdgeType, TinyLabelStandardEdge},
+    generic_memory_map::{GraphCache, GraphMemoryMap},
     shared_slice::SharedSliceMut,
     utils::{FileType, H, cache_file_name, cache_file_name_from_id},
 };

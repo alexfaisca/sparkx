@@ -1,12 +1,11 @@
-use crate::generic_edge::*;
-use crate::generic_memory_map::*;
+use crate::graph::*;
 use crate::shared_slice::*;
 #[cfg(test)]
 use crate::utils::{FileType::ExactClosenessCentrality, H};
 
 use crossbeam::thread;
-use hyperloglog_rs::prelude::Precision8;
 use hyperloglog_rs::prelude::WordType;
+use hyperloglog_rs::prelude::*;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use portable_atomic::{AtomicUsize, Ordering};
 use std::mem::ManuallyDrop;
@@ -17,6 +16,22 @@ type ProceduralMemoryHB<P, const B: usize> = (
     AbstractedProceduralMemoryMut<f64>,
     AbstractedProceduralMemoryMut<f64>,
 );
+
+pub type HyperBall4<'a, ET, E> = HyperBallInner<'a, ET, E, Precision4, 6>;
+pub type HyperBall5<'a, ET, E> = HyperBallInner<'a, ET, E, Precision5, 6>;
+pub type HyperBall6<'a, ET, E> = HyperBallInner<'a, ET, E, Precision6, 6>;
+pub type HyperBall7<'a, ET, E> = HyperBallInner<'a, ET, E, Precision7, 6>;
+pub type HyperBall8<'a, ET, E> = HyperBallInner<'a, ET, E, Precision8, 6>;
+pub type HyperBall9<'a, ET, E> = HyperBallInner<'a, ET, E, Precision9, 6>;
+pub type HyperBall10<'a, ET, E> = HyperBallInner<'a, ET, E, Precision10, 6>;
+pub type HyperBall11<'a, ET, E> = HyperBallInner<'a, ET, E, Precision11, 6>;
+pub type HyperBall12<'a, ET, E> = HyperBallInner<'a, ET, E, Precision12, 6>;
+pub type HyperBall13<'a, ET, E> = HyperBallInner<'a, ET, E, Precision13, 6>;
+pub type HyperBall14<'a, ET, E> = HyperBallInner<'a, ET, E, Precision14, 6>;
+pub type HyperBall15<'a, ET, E> = HyperBallInner<'a, ET, E, Precision15, 6>;
+pub type HyperBall16<'a, ET, E> = HyperBallInner<'a, ET, E, Precision16, 6>;
+pub type HyperBall17<'a, ET, E> = HyperBallInner<'a, ET, E, Precision17, 6>;
+pub type HyperBall18<'a, ET, E> = HyperBallInner<'a, ET, E, Precision18, 6>;
 
 /// Enum for centralities' caching filenames' creation manager logic.
 #[allow(dead_code)]

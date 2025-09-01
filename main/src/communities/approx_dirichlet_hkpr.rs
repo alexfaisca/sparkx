@@ -1,5 +1,4 @@
-use crate::generic_edge::*;
-use crate::generic_memory_map::*;
+use crate::graph::*;
 use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use ordered_float::OrderedFloat;
@@ -283,11 +282,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             })
             .collect::<Vec<(usize, f64)>>();
 
-        match self.g.sweep_cut_over_diffusion_vector_by_conductance(
-            p.as_mut(),
-            Some(self.target_size),
-            Some(self.target_vol),
-        ) {
+        match self
+            .g
+            .sweep_cut(p.as_mut(), Some(self.target_size), Some(self.target_vol))
+        {
             Ok(c) => {
                 println!(
                     "best community approxdirichlethkpr {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
@@ -362,11 +360,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
             })
             .collect::<Vec<(usize, f64)>>();
 
-        match self.g.sweep_cut_over_diffusion_vector_by_conductance(
-            p.as_mut(),
-            Some(self.target_size),
-            Some(self.target_vol),
-        ) {
+        match self
+            .g
+            .sweep_cut(p.as_mut(), Some(self.target_size), Some(self.target_vol))
+        {
             Ok(c) => {
                 println!(
                     "best community approxdirichlethkpr {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",

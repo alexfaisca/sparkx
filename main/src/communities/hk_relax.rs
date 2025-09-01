@@ -1,5 +1,4 @@
-use crate::generic_edge::*;
-use crate::generic_memory_map::*;
+use crate::graph::*;
 use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use std::collections::{HashMap, VecDeque};
@@ -335,11 +334,10 @@ where
             .map(|v| (*v, x.get(v).unwrap() / self.g.node_degree(*v) as f64))
             .collect::<Vec<(usize, f64)>>();
 
-        match self.g.sweep_cut_over_diffusion_vector_by_conductance(
-            h.as_mut(),
-            self.target_size,
-            self.target_volume,
-        ) {
+        match self
+            .g
+            .sweep_cut(h.as_mut(), self.target_size, self.target_volume)
+        {
             Ok(c) => {
                 println!(
                     "best community hkrelax {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",

@@ -7,8 +7,7 @@ use _verify::verify_k_cores;
 #[cfg(test)]
 mod _verify {
     use crate::{
-        generic_edge::{GenericEdge, GenericEdgeType},
-        generic_memory_map::GraphMemoryMap,
+        graph::{GraphMemoryMap, GenericEdge, GenericEdgeType},
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
         utils::{FileType, H, cache_file_name},
     };

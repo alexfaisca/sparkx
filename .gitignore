@@ -24,4 +24,5 @@ criterion_backup*
 *.tar
 *.gz
 *.zip
+papers/
 

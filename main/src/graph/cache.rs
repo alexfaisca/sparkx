@@ -1,10 +1,12 @@
-use crate::generic_edge::{GenericEdge, GenericEdgeType};
 use crate::shared_slice::{
-    AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
+    AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
 };
-use crate::utils::{
+use super::{
+    CacheFile, GraphFile, GenericEdge, GenericEdgeType,
+    utils::{
     CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id, cleanup_cache,
-    graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename,
+    graph_id_from_cache_file_name, id_from_filename,id_for_subgraph_export,
+}
 };
 
 #[cfg(any(test, feature = "bench"))]
@@ -14,47 +16,20 @@ use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
 use num_cpus::get_physical;
-use ordered_float::OrderedFloat;
 use portable_atomic::{AtomicUsize, Ordering};
-use rustworkx_core::petgraph::graph::{DiGraph, NodeIndex};
 use static_assertions::const_assert;
 use std::mem::ManuallyDrop;
 use std::{
-    collections::HashSet,
-    fmt::Debug,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
     process::Command,
-    slice,
-    sync::{Arc, Barrier},
+    sync::Arc,
 };
 use zerocopy::*;
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
-
-#[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
-pub enum CacheFile {
-    /// FIXME: Only member that should be visible to users
-    General,
-    EulerTrail,
-    KCoreBZ,
-    KCoreLEA,
-    KTrussBEA,
-    KTrussPKT,
-    ClusteringCoefficient,
-    EdgeReciprocal,
-    EdgeOver,
-    HyperBall,
-    HyperBallDistances,
-    HyperBallInvDistances,
-    HyperBallClosenessCentrality,
-    HyperBallHarmonicCentrality,
-    HyperBallLinCentrality,
-    GVELouvain,
-}
 
 #[allow(dead_code, clippy::upper_case_acronyms)]
 enum InputFileType {
@@ -109,7 +84,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok(())
     }
 
-    pub(self) fn init_cache_file_from_id_or_random(
+    pub(super) fn init_cache_file_from_id_or_random(
         graph_id: &str,
         target_type: FileType,
         seq: Option<usize>,
@@ -386,7 +361,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let mut offsets = offsets.shared_slice();
 
                 handles.push(s.spawn(move |_|  -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
- 
+
                     // this assumes UTF-8 but avoids full conversion
                     let mut lines = input.split(|&b| b == b'\n');
                     while let Some(line) = lines.next() {
@@ -2214,6 +2189,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         graph_id_from_cache_file_name(self.graph_filename.clone())
     }
 
+    /// Returns the graph's cache id.
+    #[inline]
+    pub(super) fn build_subgraph_cache_id(&self, sequence: usize) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(id_for_subgraph_export(self.cache_id()?, Some(sequence)))
+    }
+
     fn convert_cache_file(file_type: CacheFile) -> FileType {
         match file_type {
             CacheFile::General => FileType::General,
@@ -2235,11 +2216,19 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
+    fn convert_graph_file(file_type: GraphFile) -> FileType {
+        match file_type {
+            GraphFile::Edges => FileType::Edges(H::H),
+            GraphFile::Index => FileType::Index(H::H),
+            GraphFile::Metalabel => FileType::Metalabel(H::H),
+        }
+    }
+
     /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphCache`] instance.
     ///
     /// [`CacheFile`]: ./enum.CacheFile.html#
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub(self) fn build_cache_filename(
+    pub(super) fn build_cache_filename(
         &self,
         target: CacheFile,
         seq: Option<usize>,
@@ -2247,11 +2236,23 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         cache_file_name(&self.graph_filename, Self::convert_cache_file(target), seq)
     }
 
+    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`GaraphFile`] type for the [`GraphCache`] instance.
+    ///
+    /// [`GraphFile`]: ./enum.CacheFile.html#
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    pub(super) fn build_graph_filename(
+        id: &str,
+        target: GraphFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        cache_file_name(id, Self::convert_graph_file(target), seq)
+    }
+
     /// Build a cached `.tmp` file of type [`FileType`]::Helper(_) for the [`GraphCache`] instance.
     ///
     /// [`FileType`]: ../utils/enum.FileType.html#
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub(self) fn build_helper_filename(
+    pub(super) fn build_helper_filename(
         &self,
         seq: usize,
     ) -> Result<String, Box<dyn std::error::Error>> {
@@ -2262,7 +2263,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`FileType`]: ../utils/enum.FileType.html#
-    pub(self) fn cleanup_helpers(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn cleanup_helpers(&self) -> Result<(), Box<dyn std::error::Error>> {
         cleanup_cache(&self.cache_id()?, FileType::Helper(H::H))
     }
 
@@ -2270,7 +2271,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`FileType`]: ../utils/enum.FileType.html#
-    pub(self) fn cleanup_cache_by_target(
+    pub(super) fn cleanup_cache_by_target(
         &self,
         target: FileType,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2280,7 +2281,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Remove [`GraphCache`] instance's cached `.tmp` files for a given [`CacheFile`] in the cache directory.
     ///
     /// [`CacheFile`]: ./enum.CacheFile.html#
-    pub(self) fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
         cleanup_cache(&self.cache_id()?, Self::convert_cache_file(target))
     }
 
@@ -2293,1142 +2294,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     }
 }
 
-#[derive(Clone)]
-pub struct GraphMemoryMap<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    graph: Arc<Mmap>,
-    index: Arc<Mmap>,
-    metalabels: Arc<Map<Mmap>>,
-    graph_cache: GraphCache<EdgeType, Edge>,
-    edge_size: usize,
-    thread_count: u8,
-    exports: u8,
-}
-
-#[allow(dead_code)]
-impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
-    /// Initializes a [`GraphMemoryMap`] instance from a [`GraphCache`] instance[^1][^2].
-    ///
-    /// [^1]: [`GraphCache`] instance must be reandonly, dynamic graphs are not supported.
-    /// [^2]: despite being readonly, the [`GraphCache`] instance's fst may be rebuilt *a posteriori* if proven necessary, checkout [`GraphCache`]'s documentation for more information on how to perform an fst rebuild.
-    ///
-    /// # Arguments
-    ///
-    /// * `graph_cache` --- [`GraphCache`] instance to be used.
-    /// * `thread_count`--- user suggested number of threads to be used when computing algorithms on the graph.
-    ///
-    /// [`GraphCache`]: ./struct.GraphCache.html#
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    pub fn init(
-        graph_cache: GraphCache<EdgeType, Edge>,
-        thread_count: Option<u8>,
-    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if graph_cache.readonly {
-            let graph = Arc::new(unsafe { Mmap::map(&graph_cache.graph_file)? });
-            let index = Arc::new(unsafe { Mmap::map(&graph_cache.index_file)? });
-            let metalabels = Arc::new(Map::new(unsafe {
-                MmapOptions::new().map(&File::open(&graph_cache.metalabel_filename)?)?
-            })?);
-            let edge_size = std::mem::size_of::<Edge>();
-            let thread_count = thread_count.unwrap_or(1).max(1);
-            let exports = 0u8;
-
-            return Ok(GraphMemoryMap {
-                graph,
-                index,
-                metalabels,
-                graph_cache,
-                edge_size,
-                thread_count,
-                exports,
-            });
-        }
-
-        Err("error graph cache must be readonly to be memmapped".into())
-    }
-
-    #[inline(always)]
-    pub(crate) fn index_ptr(&self) -> *const usize {
-        self.index.as_ptr() as *const usize
-    }
-
-    #[inline(always)]
-    pub(crate) fn edges_ptr(&self) -> *const Edge {
-        self.graph.as_ptr() as *const Edge
-    }
-
-    /// Returns the (suggested) number of threads being used for computations on the graph.
-    #[inline(always)]
-    pub fn thread_num(&self) -> usize {
-        self.thread_count.max(1) as usize
-    }
-
-    /// Returns the graph's cache id.
-    #[inline(always)]
-    pub fn graph_id(&self) -> Result<String, Box<dyn std::error::Error>> {
-        self.graph_cache.cache_id()
-    }
-
-    /// Returns the graph's edge file's filename.
-    #[inline(always)]
-    pub fn cache_edges_filename(&self) -> String {
-        self.graph_cache.edges_filename()
-    }
-
-    /// Returns the graph's offsets file's filename.
-    #[inline(always)]
-    pub fn cache_index_filename(&self) -> String {
-        self.graph_cache.index_filename()
-    }
-
-    /// Returns the graph's fst file's filename.
-    #[inline(always)]
-    pub fn cache_fst_filename(&self) -> String {
-        self.graph_cache.fst_filename()
-    }
-
-    /// Returns the given (by id) node's degree.
-    #[inline(always)]
-    pub fn node_degree(&self, node_id: usize) -> usize {
-        assert!(node_id < self.size());
-        unsafe {
-            let ptr = (self.index.as_ptr() as *const usize).add(node_id);
-            let begin = ptr.read_unaligned();
-            ptr.add(1).read_unaligned() - begin
-        }
-    }
-
-    /// Returns the given (by id) node's metalabel if it exists and was stored in the graph's fst.
-    #[inline(always)]
-    pub fn node_id_from_metalabel(
-        &self,
-        metalabel: &str,
-    ) -> Result<u64, Box<dyn std::error::Error>> {
-        if let Some(val) = self.metalabels.get(metalabel) {
-            Ok(val)
-        } else {
-            Err(format!("error metalabel {metalabel} not found").into())
-        }
-    }
-
-    /// Returns the given (by id) node's edges' offsets.
-    #[inline(always)]
-    pub fn index_node(&self, node_id: usize) -> std::ops::Range<usize> {
-        assert!(node_id < self.size());
-        unsafe {
-            let ptr = (self.index.as_ptr() as *const usize).add(node_id);
-            ptr.read_unaligned()..ptr.add(1).read_unaligned()
-        }
-    }
-
-    /// Returns a [`NeighbourIter`] iterator over the given (by id) node's neighbours.
-    ///
-    /// [`NeighbourIter`]: ./struct.NeighbourIter.html#
-    pub fn neighbours(
-        &self,
-        node_id: usize,
-    ) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if node_id >= self.size() {
-            return Err(format!(
-                "error {node_id} must be smaller than |V| = {}",
-                self.size()
-            )
-            .into());
-        }
-
-        Ok(NeighbourIter::<EdgeType, Edge>::new(
-            self.graph.as_ptr() as *const Edge,
-            self.index.as_ptr() as *const usize,
-            node_id,
-        ))
-    }
-
-    /// Returns an [`EdgeIter`] iterator over all of the graph's edges.
-    ///
-    /// [`EdgeIter`]: ./struct.EdgeIter.html#
-    pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        Ok(EdgeIter::<EdgeType, Edge>::new(
-            self.graph.as_ptr() as *const Edge,
-            self.index.as_ptr() as *const usize,
-            0,
-            self.size(),
-        ))
-    }
-
-    /// Returns an [`EdgeIter`] iterator over the graph's edges in a given range.
-    ///
-    /// # Arguments
-    ///
-    /// * `begin_node` --- id of the node whose offset begin marks the beginning of the iterator's range.
-    /// * `end_node` ---  id of the node whose offset end marks the end of the iterator's range.
-    ///
-    /// [`EdgeIter`]: ./struct.EdgeIter.html#
-    pub fn edges_in_range(
-        &self,
-        begin_node: usize,
-        end_node: usize,
-    ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if begin_node > end_node {
-            return Err("error invalid range, beginning after end".into());
-        }
-        if begin_node > self.size() || end_node > self.size() {
-            return Err("error invalid range".into());
-        }
-
-        Ok(EdgeIter::<EdgeType, Edge>::new(
-            self.graph.as_ptr() as *const Edge,
-            self.index.as_ptr() as *const usize,
-            begin_node,
-            end_node,
-        ))
-    }
-
-    /// Performs a sweep cut over a given diffusion vector[^1] by partition conductance.
-    ///
-    /// # Arguments
-    ///
-    /// * `diffusion` --- the diffusion vector[^1][^2].
-    /// * `target_size` --- the partition's target size[^3].
-    /// * `target_volume` --- the partition's target volume[^4].
-    ///
-    /// [^1]: diffusion vector entries must be of type (node_id: [`usize`], heat: [`f64`]).
-    /// [^2]: entries must be descendingly ordered by diffusion.
-    /// [^3]: if [`None`] is provided defaults to `|V|`, effectively, the overall best partition by conducatance is returned independent on the number of nodes in it.
-    /// [^4]: if [`None`] is provided defaults to `|E|`, effectively, the overall best partition by conducatance is returned independent on the number of edges in it.
-    pub fn sweep_cut_over_diffusion_vector_by_conductance(
-        &self,
-        diffusion: &mut [(usize, f64)],
-        target_size: Option<usize>,
-        target_volume: Option<usize>,
-    ) -> Result<Community<usize>, Box<dyn std::error::Error>> {
-        diffusion.sort_unstable_by_key(|(_, mass)| std::cmp::Reverse(OrderedFloat(*mass)));
-        let target_size = target_size.map_or(self.size(), |s| s);
-        let target_volume = target_volume.map_or(self.width(), |s| s);
-
-        let mut vol_s = 0usize;
-        let mut vol_v_minus_s = self.width();
-        let mut cut_s = 0usize;
-        let mut community: HashSet<usize> = HashSet::new();
-        let mut best_conductance = 1f64;
-        let mut best_community: Vec<(usize, f64)> = Vec::new();
-        let mut best_size = 0usize;
-        let mut best_width = 0usize;
-
-        for (idx, (u, _)) in diffusion.iter().enumerate() {
-            let u_n = self
-                .neighbours(*u)
-                .map_err(|e| -> Box<dyn std::error::Error> {
-                    format!("error sweep cut couldn't get {u} neighbours: {e}").into()
-                })?;
-            let neighbour_count = u_n.remaining_neighbours();
-
-            vol_s = match vol_s.overflowing_add(neighbour_count) {
-                (r, false) => r,
-                (_, true) => {
-                    return Err(format!("error sweep cut overflow_add in vol_s at node {u}").into());
-                }
-            };
-
-            vol_v_minus_s = match vol_v_minus_s.overflowing_sub(neighbour_count) {
-                (r, false) => r,
-                (_, true) => {
-                    return Err(format!(
-                        "error sweep cut overflow_add in vol_v_minus_s at node {u}"
-                    )
-                    .into());
-                }
-            };
-
-            if !community.insert(*u) {
-                return Err(
-                    format!("error sweepcut diffusion vector: {u} present multiple times").into(),
-                );
-            }
-
-            for v in u_n {
-                // if edge is (u, u) it doesn't influence delta(S)
-                if v.dest() == *u {
-                    continue;
-                }
-                if community.contains(&v.dest()) {
-                    cut_s = match cut_s.overflowing_sub(1) {
-                        (r, false) => r,
-                        (_, true) => {
-                            return Err(format!(
-                                "error sweepcut overflow_sub at node {u} in neighbour {}",
-                                v.dest()
-                            )
-                            .into());
-                        }
-                    };
-                } else {
-                    cut_s = match cut_s.overflowing_add(1) {
-                        (r, false) => r,
-                        (_, true) => {
-                            return Err(format!(
-                                "error sweepcut overflow_add at node {u} in neighbour {}",
-                                v.dest()
-                            )
-                            .into());
-                        }
-                    };
-                }
-            }
-
-            let conductance = (cut_s as f64) / (std::cmp::min(vol_s, vol_v_minus_s) as f64);
-            if conductance < best_conductance {
-                best_conductance = conductance;
-                best_community = diffusion[0..=idx].to_vec();
-                best_width = vol_s;
-                best_size = community.len();
-            }
-
-            // truncate sweep if vol or size go over double the target value
-            if community.len() > target_size * 2 || vol_s > target_volume * 2 {
-                println!(
-                    "Sweep cut truncated with size: {} and volume {}\n\tTarget size: {target_size}\n\tTarget volume: {target_volume}",
-                    community.len(),
-                    vol_s
-                );
-                break;
-            }
-        }
-
-        Ok(Community {
-            nodes: best_community,
-            size: best_size,
-            width: best_width,
-            conductance: best_conductance,
-        })
-    }
-
-    /// Computes the modularity over a given partition over the [`GraphMemoryMap`] instance's nodes.
-    ///
-    /// # Arguments
-    ///
-    /// * `communities` --- a slice containing each node's community, the [`GraphMemoryMap`] instance's partition.
-    /// * `comms_cardinality` --- cardinality of distinct communities in the given partition.
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    pub fn modularity(&self, communities: &[usize], comms_cardinality: usize) -> Result<f64, Box<dyn std::error::Error>> {
-        let m2 = match self.width() {
-            0 => return Ok(0.),
-            edge_count => edge_count as f64,
-        };
-        let node_count = self.size();
-
-        // simple input invariants validatation
-        if communities.len() != node_count {
-            return Err(format!("error can't calculate the modularity of a partition with length {}: partition length must equal |V| = {node_count}", communities.len()).into())
-        } else if comms_cardinality > node_count {
-            return Err(format!("error community cardinality {comms_cardinality} can't be bigger than |V| = {node_count}").into())
-        }
-
-        // helper internal degree accumulator
-        let id_fn = self.build_helper_filename(0)?;
-        // helper total degree accumulator
-        let td_fn = self.build_helper_filename(1)?;
-
-        let mut internal_degree = SharedSliceMut::<usize>::abst_mem_mut(&id_fn, comms_cardinality, true)?;
-        let mut total_degree = SharedSliceMut::<usize>::abst_mem_mut(&td_fn, comms_cardinality, true)?;
-
-        for u in 0..node_count {
-            let iter = self.neighbours(u)?;
-            *total_degree.get_mut(communities[u]) += iter.remaining_neighbours();
-            for e in iter {
-                let v = e.dest();
-                if v >= node_count {
-                    continue;
-                } // safety
-                if communities[v] == communities[u] {
-                    *internal_degree.get_mut(communities[u]) += 1;
-                }
-            }
-        }
-
-        // modularity: sum_c( internal_dir_edges[c]/m2 - (Kc[c]/m2)^2 )
-        let mut partition_modularity = 0.0f64;
-        for c in 0..comms_cardinality {
-            let lc_over_m2 = (*internal_degree.get(c) as f64) / m2;
-            let kc_over_m2 = (*total_degree.get(c) as f64) / m2;
-            partition_modularity += lc_over_m2 - kc_over_m2 * kc_over_m2;
-        }
-
-        self.cleanup_helpers()?;
-
-        Ok(partition_modularity)
-
-    }
-
-    #[inline(always)]
-    fn is_neighbour(&self, u: usize, v: usize) -> Option<usize> {
-        assert!(
-            u < self.size(),
-            "{} is not smaller than max node id |V| = {} --- node doesn't exist",
-            u,
-            self.size()
-        );
-
-        let mut floor = unsafe { (self.index.as_ptr() as *const usize).add(u).read() };
-        let mut ceil = unsafe { (self.index.as_ptr() as *const usize).add(u + 1).read() };
-        // binary search on neighbours w, where w < v
-        loop {
-            // may happen if u + 1 overflows
-            if floor > ceil {
-                return None;
-            }
-            let m = floor + (ceil - floor).div_floor(2);
-            let dest = unsafe { (self.graph.as_ptr() as *const Edge).add(m).read().dest() };
-            match dest.cmp(&v) {
-                std::cmp::Ordering::Greater => ceil = m - 1,
-                std::cmp::Ordering::Less => floor = m + 1,
-                _ => break Some(m),
-            }
-        }
-    }
-
-    fn is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
-        let mut index_a = None;
-        let mut index_b = None;
-        let switch = v < u;
-
-        if let Ok(mut iter) = self.neighbours(w) {
-            loop {
-                if let Some((index, n)) = iter._next_with_offset() {
-                    if index_a.is_none() {
-                        match (if switch { v } else { u }).cmp(&n.dest()) {
-                            std::cmp::Ordering::Less => {
-                                return None;
-                            }
-                            std::cmp::Ordering::Equal => {
-                                if let Some(b) = index_b {
-                                    return Some((index, b));
-                                }
-                                index_a = Some(index);
-                            }
-                            _ => {}
-                        };
-                    } else {
-                        match (if switch { u } else { v }).cmp(&n.dest()) {
-                            std::cmp::Ordering::Less => {
-                                return None;
-                            }
-                            std::cmp::Ordering::Equal => {
-                                if let Some(a) = index_a {
-                                    return Some(if switch { (index, a) } else { (a, index) });
-                                }
-                            }
-                            _ => {}
-                        };
-                    }
-                } else {
-                    return None;
-                }
-                if let Some((index, n)) = iter._next_back_with_offset() {
-                    if index_b.is_none() {
-                        match (if switch { u } else { v }).cmp(&n.dest()) {
-                            std::cmp::Ordering::Greater => return None,
-                            std::cmp::Ordering::Equal => {
-                                if let Some(a) = index_a {
-                                    return Some((a, index));
-                                }
-                                index_b = Some(index);
-                            }
-                            _ => {}
-                        };
-                    } else {
-                        match (if switch { v } else { u }).cmp(&n.dest()) {
-                            std::cmp::Ordering::Greater => return None,
-                            std::cmp::Ordering::Equal => {
-                                if let Some(b) = index_b {
-                                    return Some(if switch { (b, index) } else { (index, b) });
-                                }
-                            }
-                            _ => {}
-                        };
-                    }
-                } else {
-                    return None;
-                }
-            }
-        }
-        None
-    }
-
-    /// Returns number of entries in the offset file[^1].
-    ///
-    /// [^1]: this is equivalent to `|V| + 1`, as there is an extra offset file entry to mark the end of edges' offsets.
-    #[inline(always)]
-    pub fn offsets_size(&self) -> usize {
-        self.graph_cache.index_bytes // num nodes
-    }
-
-    /// Returns number of nodes in the offset file[^1].
-    ///
-    /// Performs a saturating subtraction of 1 to the number of entries in the offset file.
-    ///
-    /// [^1]: this is equivalent to `|V|`.
-    #[inline(always)]
-    pub fn size(&self) -> usize {
-        self.graph_cache.index_bytes.saturating_sub(1)
-    }
-
-    /// Returns number of entries in edge file[^1].
-    ///
-    /// [^1]: this is equivalent to `|E|`.
-    #[inline(always)]
-    pub fn width(&self) -> usize {
-        self.graph_cache.graph_bytes // num edges
-    }
-
-    fn exports_fetch_increment(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
-        self.exports = match self.exports.overflowing_add(1) {
-            (r, false) => r,
-            (_, true) => {
-                self.exports = u8::MAX;
-                return Err(
-                    "error overflowed export count var in graph struct, please provide an identifier for your export".into()
-                );
-            }
-        };
-        Ok((self.exports - 1) as usize)
-    }
-
-    /// Applies the mask: fn(usize) -> bool function to each node id and returns the resulting subgraph.
-    ///
-    /// The resulting subgraph is that wherein only the set of nodes, `S ⊂ V`, of the nodes for whose the output of mask is true, as well as, only the set of edges coming from and going to nodes in `S`[^1].
-    ///
-    /// [^1]: the node ids of the subgraph may not, and probably will not, correspond to the original node identifiers, efffectively, it will be a whole new graph.
-    pub fn apply_mask_to_nodes(
-        &mut self,
-        mask: fn(usize) -> bool,
-        identifier: Option<&str>,
-    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        let node_count = self.size();
-
-        let identifier = identifier.map(|id| id.to_string());
-        let id = identifier.unwrap_or(id_for_subgraph_export(
-            self.graph_id()?,
-            Some(self.exports_fetch_increment()?),
-        )?);
-
-        // build subgraph's cache entries' filenames
-        let e_fn = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
-            &id,
-            FileType::Edges(H::H),
-            None,
-        )?;
-        let i_fn = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
-            &id,
-            FileType::Index(H::H),
-            None,
-        )?;
-        let ml_fn = GraphCache::<EdgeType, Edge>::init_cache_file_from_id_or_random(
-            &id,
-            FileType::Metalabel(H::H),
-            None,
-        )?;
-
-        if node_count > 1 {
-            // helper counter
-            let hc_fn = self.build_helper_filename(0)?;
-            // helper indexer
-            let hi_fn = self.build_helper_filename(1)?;
-
-            // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
-            let mut edge_count = SharedSliceMut::<usize>::abst_mem_mut(&hc_fn, self.offsets_size(), true)?;
-            // allocate |V| usize's to store each node's new id if present in the subgraph
-            let mut node_index = SharedSliceMut::<usize>::abst_mem_mut(&hi_fn, self.size(), true)?;
-
-            let mut curr_node_index: usize = 0;
-            let mut curr_edge_count: usize = 0;
-            *edge_count.get_mut(0) = curr_edge_count;
-            // iterate over |V|
-            for u in 0..self.size() {
-                if mask(u) {
-                    *node_index.get_mut(u) = curr_node_index;
-                    curr_node_index += 1;
-                    let neighbours = self.neighbours(u)?.filter(|x| mask(x.dest())).count();
-                    curr_edge_count += neighbours;
-                    *edge_count.get_mut(u + 1) = curr_edge_count;
-                } else {
-                    *node_index.get_mut(u) = usize::MAX;
-                    *edge_count.get_mut(u + 1) = curr_edge_count;
-                }
-            }
-
-            let mut metalabel_stream = self.metalabels.stream();
-
-            let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, curr_edge_count, true)?;
-            let mut index =
-                SharedSliceMut::<usize>::abst_mem_mut(&i_fn, curr_node_index + 1, true)?;
-            let metalabel_file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&ml_fn)?;
-
-            let mut build = MapBuilder::new(&metalabel_file)?;
-
-            // write nodes in order of lexicographically ordered metalabels to avoid sorting metaabels
-            // FIXME: what is more costly random page accesses or sorting build merging metalabel fst?
-            *index.get_mut(0) = 0;
-            while let Some((metalabel, node_id)) = metalabel_stream.next() {
-                let id = node_id as usize;
-                if mask(id) {
-                    // write index file for next node (id + 1)
-                    let new_id = *node_index.get(id);
-                    *index.get_mut(new_id + 1) = *edge_count.get(id + 1);
-                    // write edge file node
-                    edges
-                        .write_slice(
-                            *edge_count.get(id),
-                            self.neighbours(id)?
-                                .filter(|x| mask(x.dest()))
-                                .collect::<Vec<Edge>>()
-                                .as_slice(),
-                        )
-                        .ok_or("error writing edges for node {id}")?;
-                    // write fst for node
-                    build.insert(metalabel, new_id as u64)?;
-                }
-            }
-            build.finish()?;
-        } else {
-            // if graph is empty allocate empty for its empty subgraph
-            SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, 0, true)?;
-            let mut i = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, 1, true)?;
-            // store end of offsets in index entry at |V| (empty graph --- offsets end at 0)
-            *i.get_mut(0) = 0;
-            let metalabel_file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&ml_fn)?;
-
-            let build = MapBuilder::new(&metalabel_file)?;
-            build.finish()?;
-        }
-
-        // finalize by initialozing a GraphCache instance for the subgraph and building it
-        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(&ml_fn, None)?;
-        self.cleanup_helpers()?;
-        GraphMemoryMap::init(cache, Some(self.thread_count))
-    }
-
-    /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
-    ///
-    /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
-    pub fn export_petgraph(
-        &self,
-    ) -> Result<DiGraph<NodeIndex<usize>, EdgeType>, Box<dyn std::error::Error>> {
-        let mut graph = DiGraph::<NodeIndex<usize>, EdgeType>::new();
-        let node_count = self.size();
-
-        (0..node_count).for_each(|u| {
-            graph.add_node(NodeIndex::new(u));
-        });
-        (0..node_count)
-            .filter_map(|u| match self.neighbours(u) {
-                Ok(neighbours_of_u) => Some((u, neighbours_of_u)),
-                Err(e) => {
-                    eprint!("error getting neihghbours of {u} (proceeding anyways): {e}");
-                    None
-                }
-            })
-            .for_each(|(u, u_n)| {
-                u_n.for_each(|v| {
-                    graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), v.e_type());
-                });
-            });
-
-        Ok(graph)
-    }
-
-    /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format stripping any edge or node labelings whatsoever.
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    pub fn export_petgraph_stripped(&self) -> Result<DiGraph<(), ()>, Box<dyn std::error::Error>> {
-        let mut graph = DiGraph::<(), ()>::new();
-        let node_count = self.size();
-
-        (0..node_count).for_each(|_| {
-            graph.add_node(());
-        });
-        (0..node_count)
-            .filter_map(|u| match self.neighbours(u) {
-                Ok(neighbours_of_u) => Some((u, neighbours_of_u)),
-                Err(e) => {
-                    eprint!("error getting neihghbours of {u} (proceeding anyways): {e}");
-                    None
-                }
-            })
-            .for_each(|(u, u_n)| {
-                u_n.for_each(|v| {
-                    graph.add_edge(NodeIndex::new(u), NodeIndex::new(v.dest()), ());
-                });
-            });
-
-        Ok(graph)
-    }
-
-    fn init_procedural_memory_build_reciprocal(
-        &self,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-        ),
-        Box<dyn std::error::Error>,
-    > {
-        let node_count = self.size();
-        let edge_count = self.width();
-
-        let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
-        let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
-
-        let edge_reciprocal = SharedSliceMut::<usize>::abst_mem_mut(&er_fn, edge_count, true)?;
-        let edge_out = SharedSliceMut::<usize>::abst_mem_mut(&eo_fn, node_count, true)?;
-
-        Ok((edge_reciprocal, edge_out))
-    }
-
-    fn build_reciprocal_edge_index(
-        &self,
-    ) -> Result<
-        (
-            AbstractedProceduralMemoryMut<usize>,
-            AbstractedProceduralMemoryMut<usize>,
-        ),
-        Box<dyn std::error::Error>,
-    > {
-        let node_count = self.size();
-        let edge_count = self.width();
-
-        let threads = self.thread_count.max(1) as usize;
-        let thread_load = node_count.div_ceil(threads);
-
-        let index_ptr =
-            SharedSlice::<usize>::new(self.index.as_ptr() as *const usize, self.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.as_ptr() as *const Edge, edge_count);
-
-        let (er, eo) = self.init_procedural_memory_build_reciprocal()?;
-
-        let synchronize = Arc::new(Barrier::new(threads));
-
-        thread::scope(|scope| {
-            for tid in 0..threads {
-                let mut er = er.shared_slice();
-                let mut eo = eo.shared_slice();
-
-                let synchronize = synchronize.clone();
-
-                let begin = std::cmp::min(tid * thread_load, node_count);
-                let end = std::cmp::min(begin + thread_load, node_count);
-                scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                    let mut edges_start = *index_ptr.get(begin);
-                    for u in begin..end {
-                        let mut eo_at_end = true;
-                        let edges_stop = *index_ptr.get(u + 1);
-                        for edge_offset in edges_start..edges_stop {
-                            let v = graph_ptr.get(edge_offset).dest();
-                            if v > u {
-                                eo_at_end = false;
-                                *eo.get_mut(u) = edge_offset;
-                                break;
-                            }
-                            // FIXME: add section u == v to update edge_reciprocal array?
-                        }
-                        if eo_at_end {
-                            *eo.get_mut(u) = edges_stop;
-                        }
-                        edges_start = edges_stop;
-                    }
-
-                    synchronize.wait();
-
-                    for u in begin..end {
-                        for edge_offset in *eo.get(u)..*index_ptr.get(u + 1) {
-                            let v = graph_ptr.get(edge_offset).dest();
-                            let mut floor = *index_ptr.get(v);
-                            let mut ceil = *eo.get(v);
-                            // binary search on neighbours w, where w < v
-                            let reciprocal = loop {
-                                if floor > ceil {
-                                    return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})").into());
-                                }
-                                let m = floor + (ceil - floor).div_floor(2);
-                                let dest = graph_ptr.get(m).dest();
-                                match dest.cmp(&u) {
-                                    std::cmp::Ordering::Greater => ceil = m - 1,
-                                    std::cmp::Ordering::Less => floor = m + 1,
-                                    _ => break m,
-                                }
-                            };
-                            *er.get_mut(edge_offset) = reciprocal;
-                            *er.get_mut(reciprocal) = edge_offset;
-                        }
-                    }
-
-                    Ok(())
-                });
-            }
-        })
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
-
-        er.flush()?;
-        eo.flush()?;
-
-        Ok((er, eo))
-    }
-
-    pub(crate) fn get_edge_reciprocal(
-        &self,
-    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
-        let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
-        let dud = Vec::new();
-        match OpenOptions::new().read(true).open(er_fn.as_str()) {
-            Ok(i) => {
-                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
-            }
-            Err(_) => {
-                self.build_reciprocal_edge_index()?;
-                match OpenOptions::new().read(true).open(er_fn.as_str()) {
-                    Ok(i) => {
-                        let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                        SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
-                    }
-                    Err(e) => {
-                        Err(format!("error can't abst mem for edge_reciprocal {e}").into())
-                    }
-                }
-            }
-        }
-    }
-
-    pub(crate) fn get_edge_dest_id_over_source(
-        &self,
-    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
-        let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
-        let dud = Vec::new();
-        match OpenOptions::new().read(true).open(eo_fn.as_str()) {
-            Ok(i) => {
-                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
-            }
-            Err(_) => {
-                self.build_reciprocal_edge_index()?;
-                match OpenOptions::new().read(true).open(eo_fn.as_str()) {
-                    Ok(i) => {
-                        let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                        SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
-                    }
-                    Err(e) => {
-                        Err(format!("error can't abst mem for edge_over {e}").into())
-                    }
-                }
-            }
-        }
-    }
-
-    fn build_helper_filename(&self, seq: usize) -> Result<String, Box<dyn std::error::Error>> {
-        self.graph_cache.build_helper_filename(seq)
-    }
-
-    fn cleanup_helpers(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.graph_cache.cleanup_helpers()
-    }
-
-    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphMemoryMap`] instance.
-    ///
-    /// [`CacheFile`]: ./enum.CacheFile.html#
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    #[inline(always)]
-    pub fn build_cache_filename(
-        &self,
-        file_type: CacheFile,
-        seq: Option<usize>,
-    ) -> Result<String, Box<dyn std::error::Error>> {
-        self.graph_cache.build_cache_filename(file_type, seq)
-    }
-
-    /// Remove [`GraphMemoryMap`] instance's cached `.tmp` files for a given [`CacheFile`] in the cache directory.
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    /// [`CacheFile`]: ./enum.CacheFile.html#
-    #[inline(always)]
-    pub fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
-        self.graph_cache.cleanup_cache(target)
-    }
-
-    pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut this = ManuallyDrop::new(self);
-
-        let er_fn = this.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
-        let eo_fn = this.build_cache_filename(CacheFile::EdgeOver, None)?;
-
-        let _r = std::fs::remove_file(er_fn);
-        let _r = std::fs::remove_file(eo_fn);
-
-        this.graph_cache.drop_cache()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NeighbourIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    edge_ptr: *const Edge,
-    _orig_edge_ptr: *const Edge,
-    _orig_id_ptr: *const usize,
-    id: usize,
-    count: usize,
-    offset: usize,
-    _phantom: std::marker::PhantomData<EdgeType>,
-}
-
-#[derive(Debug)]
-pub struct EdgeIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    edge_ptr: *const Edge,
-    id_ptr: *const usize,
-    id: usize,
-    end: usize,
-    count: usize,
-    _phantom: std::marker::PhantomData<EdgeType>,
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> NeighbourIter<EdgeType, Edge> {
-    fn new(edge_mmap: *const Edge, id_mmap: *const usize, node_id: usize) -> Self {
-        let _orig_edge_ptr = edge_mmap;
-        let _orig_id_ptr = id_mmap;
-        let id_ptr = unsafe { id_mmap.add(node_id) };
-        let offset = unsafe { id_ptr.read_unaligned() };
-
-        NeighbourIter {
-            edge_ptr: unsafe { edge_mmap.add(offset) },
-            _orig_edge_ptr,
-            _orig_id_ptr,
-            id: node_id,
-            count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            offset,
-            _phantom: std::marker::PhantomData::<EdgeType>,
-        }
-    }
-
-    #[inline(always)]
-    fn _into_neighbour(&self) -> Self {
-        NeighbourIter::new(self._orig_edge_ptr, self._orig_id_ptr, unsafe {
-            self.edge_ptr.read_unaligned().dest()
-        })
-    }
-
-    fn _next_back_with_offset(&mut self) -> Option<(usize, Edge)> {
-        if self.count == 0 {
-            return None;
-        }
-        self.count -= 1;
-        let next: (usize, Edge);
-        unsafe {
-            next = (self.id, self.edge_ptr.add(self.count).read_unaligned());
-        };
-        Some(next)
-    }
-
-    pub fn remaining_neighbours(&self) -> usize {
-        self.count
-    }
-
-    fn _next_with_offset(&mut self) -> Option<(usize, Edge)> {
-        if self.count == 0 {
-            return None;
-        }
-        self.count -= 1;
-        let next: (usize, Edge);
-        self.edge_ptr = unsafe {
-            next = (self.offset, self.edge_ptr.read_unaligned());
-            self.edge_ptr.add(1)
-        };
-        self.offset += 1;
-        Some(next)
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> DoubleEndedIterator
-    for NeighbourIter<EdgeType, Edge>
-{
-    #[inline(always)]
-    fn next_back(&mut self) -> Option<Edge> {
-        if self.count == 0 {
-            return None;
-        }
-        self.count -= 1;
-        let next: Edge;
-        unsafe {
-            next = self.edge_ptr.add(self.count).read_unaligned();
-        };
-        Some(next)
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator
-    for NeighbourIter<EdgeType, Edge>
-{
-    type Item = Edge;
-
-    #[inline(always)]
-    fn next(&mut self) -> Option<Edge> {
-        if self.count == 0 {
-            return None;
-        }
-        self.count -= 1;
-        self.offset += 1;
-        let next: Edge;
-        self.edge_ptr = unsafe {
-            next = self.edge_ptr.read_unaligned();
-            self.edge_ptr.add(1)
-        };
-        Some(next)
-    }
-
-    #[inline(always)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.count;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> EdgeIter<EdgeType, Edge> {
-    #[inline(always)]
-    fn new(edge_mmap: *const Edge, id_mmap: *const usize, start: usize, end: usize) -> Self {
-        let id_ptr = unsafe { id_mmap.add(start) };
-        let offset = unsafe { id_ptr.read_unaligned() };
-        let edge_ptr = unsafe { edge_mmap.add(offset) };
-
-        EdgeIter {
-            edge_ptr,
-            id_ptr,
-            id: start,
-            end,
-            count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            _phantom: std::marker::PhantomData::<EdgeType>,
-        }
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator for EdgeIter<EdgeType, Edge> {
-    type Item = Edge;
-
-    #[inline(always)]
-    fn next(&mut self) -> Option<Edge> {
-        if self.count == 0 {
-            self.id += 1;
-            if self.id > self.end {
-                return None;
-            }
-            unsafe {
-                self.id_ptr = self.id_ptr.add(1);
-                let offset = self.id_ptr.read_unaligned();
-                self.count = self.id_ptr.add(1).read_unaligned() - offset;
-            };
-        }
-        self.count -= 1;
-        let next: Edge;
-        self.edge_ptr = unsafe {
-            next = self.edge_ptr.read_unaligned();
-            self.edge_ptr.add(1)
-        };
-        Some(next)
-    }
-
-    #[inline(always)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.end - self.id;
-        (remaining, Some(remaining))
-    }
-}
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::RangeFull>
-    for GraphMemoryMap<EdgeType, Edge>
-{
-    type Output = [Edge];
-    #[inline]
-    fn index(&self, _index: std::ops::RangeFull) -> &[Edge] {
-        // FIXME: this is really weird, most probably it is WRONG!!! Don't turn this in without replacing this ugly '* 8' for something that you understand and guarantee is right!!!
-        unsafe {
-            slice::from_raw_parts(
-                self.graph.as_ptr() as *const Edge,
-                self.size() * 8 / self.edge_size,
-            )
-        }
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::Range<usize>>
-    for GraphMemoryMap<EdgeType, Edge>
-{
-    type Output = [Edge];
-    #[inline]
-    fn index(&self, index: std::ops::Range<usize>) -> &[Edge] {
-        unsafe {
-            slice::from_raw_parts(
-                self.graph.as_ptr().add(index.start * self.edge_size) as *const Edge,
-                index.end - index.start,
-            )
-        }
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::Range<u64>>
-    for GraphMemoryMap<EdgeType, Edge>
-{
-    type Output = [Edge];
-    #[inline]
-    fn index(&self, index: std::ops::Range<u64>) -> &[Edge] {
-        let start = index.start as usize;
-        let end = index.end as usize;
-
-        unsafe {
-            slice::from_raw_parts(
-                self.graph.as_ptr().add(start * self.edge_size) as *const Edge,
-                end - start,
-            )
-        }
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug
-    for GraphMemoryMap<EdgeType, Edge>
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "MemoryMappedData {{\n\t
-            filename: {},\n\t
-            index_filename: {},\n\t
-            size: {},\n\t
-            width: {},\n\t
-            }}",
-            self.graph_cache.graph_filename,
-            self.graph_cache.index_filename,
-            self.size(),
-            self.width(),
-        )
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug for GraphCache<EdgeType, Edge> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{{\n\tgraph filename: {}\n\tindex filename: {}\n\tmetalabel filename: {}\n}}",
-            self.graph_filename, self.index_filename, self.metalabel_filename
-        )
-    }
-}
 
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCache<EdgeType, Edge> {
     fn clone(&self) -> Self {
@@ -3452,19 +2317,6 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
             _marker2: self._marker2,
         }
     }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub struct Community<NodeId: Copy + Debug> {
-    /// (s, h(s)), ∀ s ϵ S, where h(s) is the heat kernel diffusion for a given node s
-    pub nodes: Vec<(NodeId, f64)>,
-    /// |S|
-    pub size: usize,
-    /// vol(S)
-    pub width: usize,
-    /// ϕ(S)
-    pub conductance: f64,
 }
 
 type ProcessGGCATEntry = Option<(Vec<u8>, u64)>;

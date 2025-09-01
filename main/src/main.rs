@@ -4,13 +4,11 @@ use tool::centralities::hyper_ball::*;
 use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
-use tool::generic_edge::CompactLabel;
 #[allow(unused_imports)]
-use tool::generic_edge::{
-    GenericEdge, GenericEdgeType, StandardLabel, Test, TinyEdgeType, TinyLabelStandardEdge,
+use tool::graph::{
+    GenericEdge, GenericEdgeType, GraphMemoryMap,
+    edge::{CompactLabel, StandardLabel, Test, TinyEdgeType, TinyLabelStandardEdge},
 };
-#[allow(unused_imports)]
-use tool::generic_memory_map::{GraphCache, GraphMemoryMap};
 #[allow(unused_imports)]
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
@@ -162,9 +160,7 @@ fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     data_path: String,
     threads: Option<u8>,
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-    let graph_cache: GraphCache<EdgeType, Edge> =
-        GraphCache::<EdgeType, Edge>::open(&data_path, None)?;
-    let graph_mmaped = GraphMemoryMap::<EdgeType, Edge>::init(graph_cache, threads)?;
+    let graph_mmaped = GraphMemoryMap::<EdgeType, Edge>::open(&data_path, None, threads)?;
 
     /* ********************************************************************************* */
     // Lookup test
@@ -211,14 +207,16 @@ fn parse_bytes_mmaped<
 ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
-    let graph_cache =
-        GraphCache::<EdgeType, Edge>::from_file(path.clone(), id, None, Some(|_| false))?;
-    println!("cache no fst built {:?}", time.elapsed());
-    let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
-        GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
+        GraphMemoryMap::<EdgeType, Edge>::from_file(
+            path.clone(),
+            id,
+            None,
+            Some(|_| false),
+            threads,
+        )?;
     println!(
-        "graph initialized (|V| = {:?}, |E| = {}) {:?}",
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
         graph_mmaped.width(),
         time.elapsed()
