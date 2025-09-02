@@ -218,12 +218,8 @@ where
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
 
-        let e_fn = self
-            .g
-            .build_cache_filename(CacheFile::EulerTrail, Some(0))?;
-        let c_fn = self
-            .g
-            .build_cache_filename(CacheFile::EulerTrail, Some(1))?;
+        let e_fn = self.build_cache_filename(CacheFile::EulerTrail, Some(0))?;
+        let c_fn = self.build_cache_filename(CacheFile::EulerTrail, Some(1))?;
 
         let edges = SharedSliceMut::<usize>::abst_mem_mut(&e_fn, node_count, true)?;
         let count = SharedSliceMut::<u8>::abst_mem_mut(&c_fn, node_count, true)?;
@@ -357,8 +353,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph =
-            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
+        let graph = GraphMemoryMap::init_from_cache(
+            get_or_init_dataset_cache_entry(path.as_ref())?,
+            Some(16),
+        )?;
         let het = AlgoHierholzer::new(&graph)?;
 
         verify_trails(&graph, het.euler_trails, het.trail_index)

@@ -1,6 +1,5 @@
 use crate::graph::*;
 use crate::shared_slice::*;
-use crate::utils::*;
 
 use crossbeam::thread;
 use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -177,10 +176,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let edge_out = self.g.get_edge_dest_id_over_source()?;
 
         // Allocate memory for thread local arrays
-        let template_fn = self.g.cache_fst_filename();
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
         for i in 0..threads {
-            let x_fn = cache_file_name(&template_fn, FileType::KTrussPKT(H::H), Some(8 + i))?;
+            let x_fn = self
+                .g
+                .build_cache_filename(CacheFile::KTrussPKT, Some(8 + i))?;
             x.push(SharedSliceMut::<usize>::abst_mem_mut(
                 &x_fn, node_count, true,
             )?)
@@ -563,8 +563,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph =
-            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
+        let graph = GraphMemoryMap::init_from_cache(
+            get_or_init_dataset_cache_entry(path.as_ref())?,
+            Some(16),
+        )?;
         let pkt_k_trusses = AlgoPKT::new(&graph)?;
 
         verify_k_trusses(&graph, pkt_k_trusses.k_trusses)

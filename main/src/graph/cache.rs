@@ -10,7 +10,7 @@ use super::{
 };
 
 #[cfg(any(test, feature = "bench"))]
-use crate::utils::EXACT_VALUE_CACHE_DIR;
+use super::utils::EXACT_VALUE_CACHE_DIR;
 
 use crossbeam::thread;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
@@ -27,7 +27,6 @@ use std::{
     process::Command,
     sync::Arc,
 };
-use zerocopy::*;
 
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
@@ -1817,7 +1816,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 // write label
                 writeln!(self.metalabel_file, "{}\t{}", node_id, label)?;
 
-                self.index_file.write_all(self.graph_bytes.as_bytes()).map_err(
+                self.index_file.write_all(bytemuck::bytes_of(&self.graph_bytes)).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!("error writing index for {node_id}: {e}").into()
                     }
@@ -1847,7 +1846,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let expected_id = self.index_bytes;
         match node_id == expected_id {
             true => {
-                self.index_file.write_all(self.graph_bytes.as_bytes()).map_err(
+                self.index_file.write_all(bytemuck::bytes_of(&self.graph_bytes)).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!("error writing index for {node_id}: {e}").into()
                     }
@@ -2144,7 +2143,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // complete index file if not set to readonly
         if !self.index_file.metadata()?.permissions().readonly() {
             self.index_file
-                .write_all(self.graph_bytes.as_bytes())
+                .write_all(bytemuck::bytes_of(&self.graph_bytes))
                 .map_err(|e| -> Box<dyn std::error::Error> {
                     format!("error couldn't finish index: {e}").into()
                 })?;
@@ -2198,6 +2197,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn convert_cache_file(file_type: CacheFile) -> FileType {
         match file_type {
             CacheFile::General => FileType::General,
+            CacheFile::BFS => FileType::BFS(H::H),
+            CacheFile::DFS => FileType::DFS(H::H),
             CacheFile::EulerTrail => FileType::EulerTrail(H::H),
             CacheFile::KCoreBZ => FileType::KCoreBZ(H::H),
             CacheFile::KCoreLEA => FileType::KCoreLEA(H::H),

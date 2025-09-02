@@ -387,8 +387,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(path: P) -> Result<(), Box<dyn std::error::Error>> {
-        let graph =
-            GraphMemoryMap::init(get_or_init_dataset_cache_entry(path.as_ref())?, Some(16))?;
+        let graph = GraphMemoryMap::init_from_cache(
+            get_or_init_dataset_cache_entry(path.as_ref())?,
+            Some(16),
+        )?;
         let bz_k_cores = AlgoBatageljZaversnik::new(&graph)?;
 
         verify_k_cores(&graph, bz_k_cores.k_cores)

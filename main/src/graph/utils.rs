@@ -7,9 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(not(any(test, feature = "bench")))]
-pub static CACHE_DIR: &str = "./.cache/";
 #[cfg(any(test, feature = "bench"))]
+pub static CACHE_DIR: &str = "./.cache/";
+#[cfg(not(any(test, feature = "bench")))]
 pub static CACHE_DIR: &str = "./.test_cache/";
 
 #[cfg(any(test, feature = "bench"))]
@@ -127,7 +127,7 @@ fn graph_id_and_dir_from_cache_file_name(
 }
 
 #[allow(dead_code)]
-pub(crate) fn cache_file_name(
+pub fn cache_file_name(
     original_filename: &str,
     target_type: FileType,
     sequence_number: Option<usize>,
@@ -209,7 +209,7 @@ pub(crate) fn remove_tmp_files_from_cache() -> Result<(), Box<dyn std::error::Er
 ///
 /// Short for "Hidden".
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum H {
+pub enum H {
     H,
 }
 
@@ -222,6 +222,8 @@ pub enum FileType {
     Index(H),
     Metalabel(H),
     Helper(H),
+    BFS(H),
+    DFS(H),
     EulerTrail(H),
     KCoreBZ(H),
     KCoreLEA(H),
@@ -239,7 +241,6 @@ pub enum FileType {
     GVELouvain(H),
     #[cfg(any(test, feature = "bench"))]
     Test(H),
-    #[cfg(any(test, feature = "bench"))]
     ExactClosenessCentrality(H),
     #[cfg(any(test, feature = "bench"))]
     ExactHarmonicCentrality(H),
@@ -284,6 +285,8 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
     static SUFFIX_FOR_INDEX: &str = "index";
     static SUFFIX_FOR_METALABEL: &str = "fst";
     static SUFFIX_FOR_HELPER: &str = "helper";
+    static SUFFIX_FOR_BFS: &str = "bfs";
+    static SUFFIX_FOR_DFS: &str = "dfs";
     static SUFFIX_FOR_EULER_TRAIL: &str = "eulertrail";
     static SUFFIX_FOR_KCORE_BZ: &str = "kcoresbz";
     static SUFFIX_FOR_KCORE_LEA: &str = "kcoreslea";
@@ -301,7 +304,6 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
     static SUFFIX_FOR_GVE_LOUVAIN: &str = "louvain";
     #[cfg(any(test, feature = "bench"))]
     static SUFFIX_FOR_TEST: &str = "test";
-    #[cfg(any(test, feature = "bench"))]
     static SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY: &str = "exactclosenesscentrality";
     #[cfg(any(test, feature = "bench"))]
     static SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY: &str = "exactharmoniccentrality";
@@ -314,6 +316,8 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
         FileType::Index(_) => SUFFIX_FOR_INDEX,
         FileType::Metalabel(_) => SUFFIX_FOR_METALABEL,
         FileType::Helper(_) => SUFFIX_FOR_HELPER,
+        FileType::BFS(_) => SUFFIX_FOR_BFS,
+        FileType::DFS(_) => SUFFIX_FOR_DFS,
         FileType::EulerTrail(_) => SUFFIX_FOR_EULER_TRAIL,
         FileType::KCoreBZ(_) => SUFFIX_FOR_KCORE_BZ,
         FileType::KCoreLEA(_) => SUFFIX_FOR_KCORE_LEA,
@@ -331,7 +335,6 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
         FileType::GVELouvain(_) => SUFFIX_FOR_GVE_LOUVAIN,
         #[cfg(any(test, feature = "bench"))]
         FileType::Test(_) => SUFFIX_FOR_TEST,
-        #[cfg(any(test, feature = "bench"))]
         FileType::ExactClosenessCentrality(_) => SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY,
         #[cfg(any(test, feature = "bench"))]
         FileType::ExactHarmonicCentrality(_) => SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY,
@@ -348,6 +351,8 @@ impl std::fmt::Display for FileType {
             FileType::Index(_) => "Index",
             FileType::Metalabel(_) => "Metalabel",
             FileType::Helper(_) => "Helper",
+            FileType::BFS(_) => "BFS",
+            FileType::DFS(_) => "DFS",
             FileType::EulerTrail(_) => "EulerTrail",
             FileType::KCoreBZ(_) => "KCoreBatageljZaversnik",
             FileType::KCoreLEA(_) => "KCoreLiuEtAl",
@@ -365,7 +370,6 @@ impl std::fmt::Display for FileType {
             FileType::GVELouvain(_) => "Louvain",
             #[cfg(any(test, feature = "bench"))]
             FileType::Test(_) => "Test",
-            #[cfg(any(test, feature = "bench"))]
             FileType::ExactClosenessCentrality(_) => "ExactClosenessCentrality",
             #[cfg(any(test, feature = "bench"))]
             FileType::ExactHarmonicCentrality(_) => "ExactHarmonicCentrality",

@@ -7,12 +7,6 @@ edition = "2024"
 # no extra dependencies, just a switch you to pass on to `cargo`
 bench = []
 
-# [[bench]]
-# name = "bench"
-# # criterion requires this
-# harness = false
-# required-features = ["bench"]
-
 [dependencies]
 graph_derive = { path = "../macros" }
 bytemuck = { version = "1.23.0", features = ["derive"] }
@@ -23,7 +17,6 @@ memmap2 = "0.9.7"
 rand = "0.9.1"
 rustworkx-core = "0.16.0"
 static_assertions = "1.1.0"
-zerocopy = { version = "0.8.25", features = ["derive"] }
 fst = "0.4"
 regex-automata = { version = "0.1.9", features = ["transducer"] }
 regex = "1"

@@ -1,3 +1,7 @@
+pub mod bfs;
+pub mod bfs_visit;
+pub mod dfs;
+pub mod dfs_visit;
 pub mod hierholzer;
 
 #[cfg(test)]
@@ -6,9 +10,11 @@ use _verify::verify_trails;
 #[cfg(test)]
 mod _verify {
     use crate::{
-        graph::{GenericEdge, GenericEdgeType, GraphMemoryMap},
+        graph::{
+            GenericEdge, GenericEdgeType, GraphMemoryMap,
+            utils::{FileType, H, cache_file_name},
+        },
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
-        utils::{FileType, H, cache_file_name},
     };
 
     #[allow(dead_code)]

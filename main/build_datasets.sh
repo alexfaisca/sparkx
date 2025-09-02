@@ -116,6 +116,8 @@ fi
 cd ".."
 # back to maindir
 cd ".."
+# back to maindir
+cd ".."
 
 # 5) Install Rust + ggcat if needed (default features only)
 if ! command -v ggcat >/dev/null 2>&1; then
@@ -141,14 +143,14 @@ fi
 build_one() {
 	cd "./ggcat"
 
-	local infile="../${WORKDIR}/data/$1"
+	local infile="../main/${WORKDIR}/data/$1"
 	local k="$2"
 	local idx="$3"
 
 	local base
 	base="$(basename "${infile}")"
 	base="${base%.*}" # strip one extension
-	local out="../${WORKDIR}/graphs/graph_${idx}_${k}.lz4"
+	local out="../main/${WORKDIR}/graphs/graph_${idx}_${k}.lz4"
 
 	# # Prepare a temp list file for ggcat
 	# local list="one_input_${base}.txt"

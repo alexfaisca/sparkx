@@ -3,6 +3,7 @@
 */.cache/
 */.test_cache/
 datasets/
+main/datasets/
 /exact_values_backup
 /thesis_template
 /test

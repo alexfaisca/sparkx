@@ -1,7 +1,7 @@
+#[cfg(test)]
+use crate::graph::utils::{FileType::ExactClosenessCentrality, H};
 use crate::graph::*;
 use crate::shared_slice::*;
-#[cfg(test)]
-use crate::utils::{FileType::ExactClosenessCentrality, H};
 
 use crossbeam::thread;
 use hyperloglog_rs::prelude::WordType;
@@ -789,7 +789,10 @@ mod test {
     }
 
     fn generic_test<P: AsRef<Path>>(p: P) -> Result<(), Box<dyn std::error::Error>> {
-        let g = GraphMemoryMap::init(get_or_init_dataset_cache_entry(p.as_ref())?, Some(16))?;
+        let g = GraphMemoryMap::init_from_cache(
+            get_or_init_dataset_cache_entry(p.as_ref())?,
+            Some(16),
+        )?;
 
         let e_fn = get_or_init_dataset_exact_value(p.as_ref(), &g, ExactClosenessCentrality(H::H))?;
         let exact = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, g.size(), true)?;
@@ -815,19 +818,19 @@ mod test {
 
     // generate test cases from dataset
     graph_tests! {
-        // ggcat_1_5 => "../ggcat/graphs/random_graph_1_5.lz4",
-        // ggcat_2_5 => "../ggcat/graphs/random_graph_2_5.lz4",
-        // ggcat_3_5 => "../ggcat/graphs/random_graph_3_5.lz4",
-        // ggcat_4_5 => "../ggcat/graphs/random_graph_4_5.lz4",
+        ggcat_1_5 => "datasets/graphs/graph_1_5.lz4",
+        ggcat_2_5 => "datasets/graphs/graph_2_5.lz4",
+        ggcat_3_5 => "datasets/graphs/graph_3_5.lz4",
+        ggcat_4_5 => "datasets/graphs/graph_4_5.lz4",
         // ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
         // ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
         // ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
         // ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
         // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        // ggcat_1_10 => "../ggcat/graphs/random_graph_1_10.lz4",
-        // ggcat_2_10 => "../ggcat/graphs/random_graph_2_10.lz4",
-        // ggcat_3_10 => "../ggcat/graphs/random_graph_3_10.lz4",
-        ggcat_4_10 => "../ggcat/graphs/random_graph_4_10.lz4",
+        ggcat_1_10 => "datasets/graphs/graph_1_10.lz4",
+        ggcat_2_10 => "datasets/graphs/graph_2_10.lz4",
+        ggcat_3_10 => "datasets/graphs/graph_3_10.lz4",
+        ggcat_4_10 => "datasets/graphs/graph_4_10.lz4",
         // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
         // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
         // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",

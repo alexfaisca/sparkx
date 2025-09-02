@@ -8,9 +8,11 @@ use _verify::verify_k_trusses;
 #[cfg(test)]
 mod _verify {
     use crate::{
-        graph::{GenericEdge, GenericEdgeType, GraphMemoryMap},
+        graph::{
+            GenericEdge, GenericEdgeType, GraphMemoryMap,
+            utils::{FileType, H, cache_file_name},
+        },
         shared_slice::{AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut},
-        utils::{FileType, H, cache_file_name},
     };
 
     use crossbeam::thread;

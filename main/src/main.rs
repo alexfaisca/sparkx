@@ -4,6 +4,7 @@ use tool::centralities::hyper_ball::*;
 use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
+use tool::graph::utils::{FileType, H, cache_file_name};
 #[allow(unused_imports)]
 use tool::graph::{
     GenericEdge, GenericEdgeType, GraphMemoryMap,
@@ -13,6 +14,9 @@ use tool::graph::{
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
 use tool::k_truss::{burkhardt_et_al::*, clustering_coefficient::*, pkt::*};
+use tool::shared_slice::SharedSliceMut;
+use tool::trails::bfs::BFSDists;
+use tool::trails::dfs::DFS;
 #[allow(unused_imports)]
 use tool::trails::hierholzer::*;
 
@@ -244,17 +248,63 @@ fn parse_bytes_mmaped<
     /* ********************************************************************************* */
     //
 
-    // let time = Instant::now();
-    // let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    // println!("found {} euler trails", _euler_trail.trail_number());
-    // println!("euler trail built {:?}", time.elapsed());
-    // println!();
-    // _euler_trail.drop_cache()?;
+    let e_fn = cache_file_name(
+        &graph_mmaped.cache_index_filename(),
+        FileType::ExactClosenessCentrality(H::H),
+        None,
+    )?;
+    let node_count = graph_mmaped.size();
+    println!(
+        "compute closeness centrality {}",
+        graph_mmaped.cache_index_filename()
+    );
+    let mut e = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, node_count, true)?;
+    for u in 0..node_count {
+        if u % 1000 == 0 {
+            println!("reached {u} of {node_count}");
+        }
+        let bfs = BFSDists::new(&graph_mmaped, u)?;
+        if bfs.recheable() <= 1 || bfs.total_distances() == 0. {
+            *e.get_mut(u) = 0.0;
+        } else {
+            *e.get_mut(u) = bfs.recheable() as f64 / bfs.total_distances();
+        }
+    }
+    e.flush()?;
+    let mut i = 0;
+    loop {
+        if i >= graph_mmaped.size() {
+            break;
+        }
+        let time = Instant::now();
+        let mut bfs = BFSDists::new(&graph_mmaped, i)?;
+        println!(
+            "source {i} -> bfs reacheable {} total_dist {}",
+            bfs.recheable(),
+            bfs.total_distances()
+        );
+        println!("bfs computed in {:?}", time.elapsed());
+        println!();
+        i += 10340;
+        bfs.drop_cache()?;
+    }
 
     let time = Instant::now();
-    let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
-    println!("hyperball {:?}", time.elapsed());
-    hyperball.drop_cache()?;
+    let mut _dfs = DFS::new(&graph_mmaped, 0)?;
+    println!("dfs computed in {:?}", time.elapsed());
+
+    let time = Instant::now();
+    let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
+    println!();
+    _euler_trail.drop_cache()?;
+
+    // let time = Instant::now();
+    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
+    // println!("hyperball {:?}", time.elapsed());
+    // hyperball.drop_cache()?;
+
     // let time = Instant::now();
     // hyperball.compute_harmonic_centrality(None)?;
     // println!("harmonic centrality {:?}", time.elapsed());
@@ -269,17 +319,17 @@ fn parse_bytes_mmaped<
     //     i += 1234600;
     // }
     //
-    let time = Instant::now();
-    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    println!("found {} communities", _louvain.community_count());
-    println!("partition modularity {} ", _louvain.partition_modularity());
-    println!("louvain finished in {:?}", time.elapsed());
-    println!(
-        "partition modularity according to graph_mmaped method {}",
-        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
-    );
-    println!();
-    _louvain.drop_cache()?;
+    // let time = Instant::now();
+    // let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    // println!("found {} communities", _louvain.community_count());
+    // println!("partition modularity {} ", _louvain.partition_modularity());
+    // println!("louvain finished in {:?}", time.elapsed());
+    // println!(
+    //     "partition modularity according to graph_mmaped method {}",
+    //     graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    // );
+    // println!();
+    // _louvain.drop_cache()?;
     //
     // let time = Instant::now();
     // let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;

@@ -1,9 +1,10 @@
 pub(crate) mod cache;
 mod graph_miscelanious;
+pub(crate) mod impl_t;
 mod induced_subgraph;
 mod partition;
 mod reciprocal_edges;
-pub(crate) mod utils;
+pub mod utils;
 
 pub mod edge;
 
@@ -78,6 +79,8 @@ pub trait GenericEdge<T: GenericEdgeType>:
 pub enum CacheFile {
     /// FIXME: Only member that should be visible to users
     General,
+    BFS,
+    DFS,
     EulerTrail,
     KCoreBZ,
     KCoreLEA,

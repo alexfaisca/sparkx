@@ -1,10 +1,11 @@
-use crate::utils::{CACHE_DIR, EXACT_VALUE_CACHE_DIR, id_from_filename};
-use crate::{
-    generic_edge::{GenericEdge, GenericEdgeType, TinyEdgeType, TinyLabelStandardEdge},
-    generic_memory_map::{GraphCache, GraphMemoryMap},
-    shared_slice::SharedSliceMut,
+use super::utils::{CACHE_DIR, EXACT_VALUE_CACHE_DIR, id_from_filename};
+use super::{
+    GenericEdge, GenericEdgeType, GraphMemoryMap,
+    cache::GraphCache,
+    edge::{TinyEdgeType, TinyLabelStandardEdge},
     utils::{FileType, H, cache_file_name, cache_file_name_from_id},
 };
+use crate::shared_slice::SharedSliceMut;
 
 use dashmap::DashMap;
 use std::{
@@ -208,7 +209,7 @@ where
     Edge: GenericEdge<EdgeType>,
 {
     let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
-    GraphMemoryMap::init(cache, Some(16))
+    GraphMemoryMap::init_from_cache(cache, Some(16))
 }
 
 // #[allow(dead_code)]
@@ -237,7 +238,7 @@ where
     Edge: GenericEdge<EdgeType>,
 {
     let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
-    GraphMemoryMap::init(cache, Some(threads))
+    GraphMemoryMap::init_from_cache(cache, Some(threads))
 }
 
 #[allow(dead_code)]

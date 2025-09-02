@@ -7,9 +7,8 @@ use _verify::verify_k_cores;
 #[cfg(test)]
 mod _verify {
     use crate::{
-        graph::{GraphMemoryMap, GenericEdge, GenericEdgeType},
+        graph::{GraphMemoryMap, GenericEdge, GenericEdgeType, utils::{FileType, H, cache_file_name}},
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
-        utils::{FileType, H, cache_file_name},
     };
 
     use crossbeam::thread;

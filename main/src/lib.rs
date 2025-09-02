@@ -3,7 +3,7 @@
 // This library can only be used in linux
 #![cfg(target_os = "linux")]
 
-mod shared_slice;
+pub mod shared_slice;
 
 #[cfg(any(test, feature = "bench"))]
 pub mod test_common;

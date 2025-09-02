@@ -1,4 +1,8 @@
-use crate::utils::{CACHE_DIR, EXACT_VALUE_CACHE_DIR, id_from_filename};
+use crate::graph::utils::{
+    CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id,
+    id_from_filename,
+};
+use crate::trails::bfs_dists::BFSDists;
 use crate::{
     graph::{
         GenericEdge, GenericEdgeType, GraphMemoryMap,
@@ -6,7 +10,6 @@ use crate::{
         edge::{TinyEdgeType, TinyLabelStandardEdge},
     },
     shared_slice::SharedSliceMut,
-    utils::{FileType, H, cache_file_name, cache_file_name_from_id},
 };
 
 use dashmap::DashMap;
@@ -168,19 +171,21 @@ pub(crate) fn get_or_init_dataset_exact_value<
             } else {
                 eprintln!("built exact vals for {:?}", graph_path);
                 eprintln!("built in {:?} {e_fn}", exact_value_dir());
-                let petgraph_export = graph.export_petgraph_stripped()?;
                 match value_type {
                     FileType::ExactClosenessCentrality(H::H) => {
-                        use rustworkx_core::centrality::closeness_centrality;
                         let node_count = graph.size();
                         println!("compute closeness centrality");
-                        let exact = closeness_centrality(&petgraph_export, false)
-                            .iter()
-                            .map(|opt| opt.unwrap_or(0.))
-                            .collect::<Vec<f64>>();
                         let mut e = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, node_count, true)?;
-                        for (idx, val) in exact.iter().enumerate() {
-                            *e.get_mut(idx) = *val;
+                        for u in 0..node_count {
+                            if u % 1000 == 0 {
+                                println!("reached {u} of {node_count}");
+                            }
+                            let bfs = BFSDists::new(graph, u)?;
+                            if bfs.recheable() <= 1 || bfs.total_distances() == 0. {
+                                *e.get_mut(u) = 0.0;
+                            } else {
+                                *e.get_mut(u) = bfs.recheable() as f64 / bfs.total_distances();
+                            }
                         }
                         e.flush()?;
                     }
@@ -211,7 +216,7 @@ where
     Edge: GenericEdge<EdgeType>,
 {
     let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
-    GraphMemoryMap::init(cache, Some(16))
+    GraphMemoryMap::init_from_cache(cache, Some(16))
 }
 
 // #[allow(dead_code)]
@@ -240,32 +245,32 @@ where
     Edge: GenericEdge<EdgeType>,
 {
     let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
-    GraphMemoryMap::init(cache, Some(threads))
+    GraphMemoryMap::init_from_cache(cache, Some(threads))
 }
 
 #[allow(dead_code)]
 #[cfg(feature = "bench")]
 pub static DATASETS: &[(&str, &str)] = &[
-    ("ggcat_1_5", "../ggcat/graphs/random_graph_1_5.lz4"),
-    ("ggcat_2_5", "../ggcat/graphs/random_graph_2_5.lz4"),
-    ("ggcat_3_5", "../ggcat/graphs/random_graph_3_5.lz4"),
-    ("ggcat_4_5", "../ggcat/graphs/random_graph_4_5.lz4"),
-    ("ggcat_5_5", "../ggcat/graphs/random_graph_5_5.lz4"),
-    ("ggcat_6_5", "../ggcat/graphs/random_graph_6_5.lz4"),
-    ("ggcat_7_5", "../ggcat/graphs/random_graph_7_5.lz4"),
-    ("ggcat_8_5", "../ggcat/graphs/random_graph_8_5.lz4"),
-    ("ggcat_9_5", "../ggcat/graphs/random_graph_9_5.lz4"),
-    ("ggcat_1_10", "../ggcat/graphs/random_graph_1_10.lz4"),
-    ("ggcat_2_10", "../ggcat/graphs/random_graph_2_10.lz4"),
-    ("ggcat_3_10", "../ggcat/graphs/random_graph_3_10.lz4"),
-    ("ggcat_4_10", "../ggcat/graphs/random_graph_4_10.lz4"),
-    ("ggcat_5_10", "../ggcat/graphs/random_graph_5_10.lz4"),
-    ("ggcat_6_10", "../ggcat/graphs/random_graph_6_10.lz4"),
-    ("ggcat_7_10", "../ggcat/graphs/random_graph_7_10.lz4"),
-    ("ggcat_8_10", "../ggcat/graphs/random_graph_8_10.lz4"),
-    ("ggcat_9_10", "../ggcat/graphs/random_graph_9_10.lz4"),
-    ("ggcat_8_15", "../ggcat/graphs/random_graph_8_15.lz4"),
-    ("ggcat_9_15", "../ggcat/graphs/random_graph_9_15.lz4"),
+    ("ggcat_1_5", "datasets/graphs/graph_1_5.lz4"),
+    ("ggcat_2_5", "datasets/graphs/graph_2_5.lz4"),
+    ("ggcat_3_5", "datasets/graphs/graph_3_5.lz4"),
+    ("ggcat_4_5", "datasets/graphs/graph_4_5.lz4"),
+    // ("ggcat_5_5", "datasets/graphs/graph_5_5.lz4"),
+    // ("ggcat_6_5", "datasets/graphs/graph_6_5.lz4"),
+    // ("ggcat_7_5", "datasets/graphs/graph_7_5.lz4"),
+    // ("ggcat_8_5", "datasets/graphs/graph_8_5.lz4"),
+    // ("ggcat_9_5", "datasets/graphs/graph_9_5.lz4"),
+    ("ggcat_1_10", "datasets/graphs/graph_1_10.lz4"),
+    ("ggcat_2_10", "datasets/graphs/graph_2_10.lz4"),
+    ("ggcat_3_10", "datasets/graphs/graph_3_10.lz4"),
+    ("ggcat_4_10", "datasets/graphs/graph_4_10.lz4"),
+    // ("ggcat_5_10", "datasets/graphs/graph_5_10.lz4"),
+    // ("ggcat_6_10", "datasets/graphs/graph_6_10.lz4"),
+    // ("ggcat_7_10", "datasets/graphs/graph_7_10.lz4"),
+    // ("ggcat_8_10", "datasets/graphs/graph_8_10.lz4"),
+    // ("ggcat_9_10", "datasets/graphs/graph_9_10.lz4"),
+    // ("ggcat_8_15", "datasets/graphs/graph_8_15.lz4"),
+    // ("ggcat_9_15", "datasets/graphs/graph_9_15.lz4"),
     // ("kmer_V2a", "../proteic_dbgs/1/kmer_V2a/kmer_V2a.mtx"),
     // ("kmer_A2a", "../proteic_dbgs/2/kmer_A2a/kmer_A2a.mtx"),
     // ("kmer_V1r", "../proteic_dbgs/3/kmer_V1r/kmer_V1r.mtx"),

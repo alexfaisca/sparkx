@@ -32,7 +32,7 @@ pub(crate) struct SharedSlice<T> {
 }
 
 #[derive(Copy, Debug)]
-pub(crate) struct SharedSliceMut<T> {
+pub struct SharedSliceMut<T> {
     pub ptr: *mut T,
     len: usize,
 }
@@ -149,7 +149,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     }
 
     #[inline(always)]
-    pub(crate) fn get_mut(&mut self, idx: usize) -> &mut T {
+    pub fn get_mut(&mut self, idx: usize) -> &mut T {
         self.slice.get_mut(idx)
     }
 
@@ -207,7 +207,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
         self.shared_slice().len() == 0
     }
 
-    pub(crate) fn flush(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn flush(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.mmapped {
             Ok(self.mmap.flush()?)
         } else {
@@ -505,7 +505,7 @@ impl<T> SharedSliceMut<T> {
         Some(idx + slice.len())
     }
 
-    pub(crate) fn abst_mem_mut(
+    pub fn abst_mem_mut(
         mfn: &str,
         len: usize,
         mmapped: bool,
