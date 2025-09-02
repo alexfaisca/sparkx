@@ -1,9 +1,11 @@
-use super::utils::{CACHE_DIR, EXACT_VALUE_CACHE_DIR, id_from_filename};
 use super::{
     GenericEdge, GenericEdgeType, GraphMemoryMap,
     cache::{
         GraphCache,
-        utils::{FileType, H, cache_file_name, cache_file_name_from_id},
+        utils::{
+            CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name,
+            cache_file_name_from_id, id_from_filename,
+        },
     },
     edge::{TinyEdgeType, TinyLabelStandardEdge},
 };

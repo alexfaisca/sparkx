@@ -1,15 +1,17 @@
-use crate::graph::cache::utils::{
-    CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id,
-    id_from_filename,
-};
-use crate::trails::bfs::BFSDists;
 use crate::{
     graph::{
         GenericEdge, GenericEdgeType, GraphMemoryMap,
-        cache::GraphCache,
+        cache::{
+            GraphCache,
+            utils::{
+                CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name,
+                cache_file_name_from_id, id_from_filename,
+            },
+        },
         edge::{TinyEdgeType, TinyLabelStandardEdge},
     },
     shared_slice::SharedSliceMut,
+    trails::bfs::BFSDists,
 };
 
 use dashmap::DashMap;

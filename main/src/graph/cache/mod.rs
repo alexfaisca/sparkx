@@ -1,6 +1,9 @@
 pub(crate) mod utils;
+#[cfg(feature = "nodes_edges")]
 mod nodes_edges_parser;
+#[cfg(feature = "mtx")]
 mod mtx_parser;
+#[cfg(feature = "ggcat")]
 mod ggcaat_parser;
 
 use super::{
@@ -11,7 +14,7 @@ use utils::{
 };
 
 #[cfg(any(test, feature = "bench"))]
-use super::utils::EXACT_VALUE_CACHE_DIR;
+use utils::EXACT_VALUE_CACHE_DIR;
 
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
@@ -30,8 +33,11 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 #[allow(dead_code, clippy::upper_case_acronyms, non_camel_case_types)]
 enum InputFileType {
+#[cfg(feature = "ggcat")]
     GGCAT(&'static str),
+#[cfg(feature = "mtx")]
     MTX(&'static str),
+#[cfg(feature = "nodes_edges")]
     NODE_EDGE(&'static str),
 }
 
@@ -52,10 +58,15 @@ pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 
 #[allow(dead_code)]
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
+#[cfg(feature = "ggcat")]
     const EXT_COMPRESSED_LZ4: &str = "lz4";
+#[cfg(feature = "mtx")]
     const EXT_PLAINTEXT_MTX: &str = "mtx";
+#[cfg(feature = "ggcat")]
     const EXT_PLAINTEXT_TXT: &str = "txt";
+#[cfg(feature = "nodes_edges")]
     const EXT_PLAINTEXT_NODES: &str = "nodes";
+#[cfg(feature = "nodes_edges")]
     const EXT_PLAINTEXT_EDGES: &str = "edges";
     pub const DEFAULT_BATCHING_SIZE: usize = 50_000usize;
     /// in genetic graphs annotated with ff, fr, rf and rr directions maximum number of edges is 16
@@ -117,18 +128,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // parse extension to decide on decoding
         if let Some(ext) = ext {
             let input_file_type = match ext.to_str() {
+#[cfg(feature = "ggcat")]
                 Some(Self::EXT_COMPRESSED_LZ4) => InputFileType::GGCAT(Self::EXT_COMPRESSED_LZ4),
+#[cfg(feature = "ggcat")]
                 Some(Self::EXT_PLAINTEXT_TXT) => InputFileType::GGCAT(Self::EXT_PLAINTEXT_TXT),
+#[cfg(feature = "mtx")]
                 Some(Self::EXT_PLAINTEXT_MTX) => InputFileType::MTX(Self::EXT_PLAINTEXT_MTX),
+#[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_NODES) => InputFileType::NODE_EDGE(Self::EXT_PLAINTEXT_NODES),
+#[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_EDGES) => InputFileType::NODE_EDGE(Self::EXT_PLAINTEXT_EDGES),
                 _ => {
                     return Err(format!(
-                        "error ubknown extension {:?} (must be of type .{}, .{} or .{})",
+                        "error ubknown extension {:?} (have you perhaps disabled any features that would allow parsing of this file type)",
                         ext,
-                        Self::EXT_PLAINTEXT_TXT,
-                        Self::EXT_COMPRESSED_LZ4,
-                        Self::EXT_PLAINTEXT_MTX,
                     )
                     .into());
                 }
@@ -156,6 +169,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // parse extension to decide on decoding
         if let Some(ext) = ext {
             Ok(match ext.to_str() {
+#[cfg(feature = "ggcat")]
                 Some(Self::EXT_COMPRESSED_LZ4) => {
                     // prepare mmaped file to temporarily hold decoded contents
                     let h_fn = Self::init_cache_file_from_id_or_random(id, FileType::Helper(H::H), Some(0))?;
@@ -196,29 +210,26 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
                     (mmap.make_read_only().map_err(|e| -> Box<dyn std::error::Error> {format!("error making tmp memmap reandonly: {e}").into()})?, Some(h_fn))
                 }
+#[cfg(feature = "ggcat")]
                 Some(Self::EXT_PLAINTEXT_TXT) => {
                     let file = OpenOptions::new().create(false).truncate(false).read(true).write(false).open(path.as_ref())?;
                     let file_length = file.metadata()?.len();
                     (unsafe { MmapOptions::new().len(file_length as usize).map(&file)? }, None)
                 }
+#[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_NODES) => {
                     let file = OpenOptions::new().create(false).truncate(false).read(true).write(false).open(path.as_ref())?;
                     let file_length = file.metadata()?.len();
                     (unsafe { MmapOptions::new().len(file_length as usize).map(&file)? }, None)
                 }
+#[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_EDGES) => {
                     let file = OpenOptions::new().create(false).truncate(false).read(true).write(false).open(path.as_ref())?;
                     let file_length = file.metadata()?.len();
                     (unsafe { MmapOptions::new().len(file_length as usize).map(&file)? }, None)
                 }
                 _ => {
-                    return Err(format!(
-                        "error ubknown ggcat file extension {:?} (must be of type .{} or .{})",
-                        ext,
-                        Self::EXT_PLAINTEXT_TXT,
-                        Self::EXT_COMPRESSED_LZ4,
-                    )
-                    .into());
+                    return Err(format!("error ubknown file extension {:?}", ext,).into());
                 }
             })
         } else {
@@ -412,7 +423,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Self::guarantee_caching_dir()?;
 
         match Self::evaluate_input_file_type(p.as_ref())? {
+#[cfg(feature = "mtx")]
             InputFileType::MTX(_) => Ok(Self::from_mtx_file(p.as_ref(), id, batch)?),
+#[cfg(feature = "nodes_edges")]
             InputFileType::NODE_EDGE(ext) => 
             match ext {
                 Self::EXT_PLAINTEXT_NODES => {
@@ -437,6 +450,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 )
                 .into()),
             }
+#[cfg(feature = "ggcat")]
             InputFileType::GGCAT(ext) => 
             match ext {
                 Self::EXT_COMPRESSED_LZ4 => Ok(Self::from_ggcat_file(p.as_ref(), id, batch, in_fst)?),
@@ -471,6 +485,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
+#[cfg(feature = "nodes_edges")]
     pub fn from_node_edge_file<P: AsRef<Path>>(
         nodes_path: P,
         edges_path: P,
@@ -500,6 +515,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
+#[cfg(feature = "ggcat")]
     pub fn from_ggcat_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
@@ -528,6 +544,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
+#[cfg(feature = "mtx")]
     pub fn from_mtx_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
@@ -551,6 +568,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
+#[cfg(feature = "ggcat")]
     pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path>>(
         &mut self,
         path: P,
