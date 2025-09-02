@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::graph::utils::{FileType::ExactClosenessCentrality, H};
+use crate::graph::cache::utils::{FileType::ExactClosenessCentrality, H};
 use crate::graph::*;
 use crate::shared_slice::*;
 

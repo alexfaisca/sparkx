@@ -12,7 +12,7 @@ mod _verify {
     use crate::{
         graph::{
             GenericEdge, GenericEdgeType, GraphMemoryMap,
-            utils::{FileType, H, cache_file_name},
+            cache::utils::{FileType, H, cache_file_name},
         },
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
     };

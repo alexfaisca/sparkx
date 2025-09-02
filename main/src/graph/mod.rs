@@ -4,7 +4,6 @@ pub(crate) mod impl_t;
 mod induced_subgraph;
 mod partition;
 mod reciprocal_edges;
-pub mod utils;
 
 pub mod edge;
 

@@ -1,9 +1,11 @@
 use super::utils::{CACHE_DIR, EXACT_VALUE_CACHE_DIR, id_from_filename};
 use super::{
     GenericEdge, GenericEdgeType, GraphMemoryMap,
-    cache::GraphCache,
+    cache::{
+        GraphCache,
+        utils::{FileType, H, cache_file_name, cache_file_name_from_id},
+    },
     edge::{TinyEdgeType, TinyLabelStandardEdge},
-    utils::{FileType, H, cache_file_name, cache_file_name_from_id},
 };
 use crate::shared_slice::SharedSliceMut;
 

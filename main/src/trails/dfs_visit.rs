@@ -262,7 +262,7 @@ impl<'a, G: Graph> DFSVisit<'a, G> {
             let neigh = self.g.neigh(u);
 
             while idx < neigh.len() {
-                let v = neigh[idx] as usize;
+                let v = neigh[idx];
                 idx += 1;
 
                 if let ControlFlow::Break(()) = self.visit.examine_edge(u, v) {

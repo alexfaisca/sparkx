@@ -5,7 +5,6 @@ use tool::centralities::hyper_ball::*;
 use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
-use tool::graph::utils::{FileType, H, cache_file_name};
 #[allow(unused_imports)]
 use tool::graph::{
     GenericEdge, GenericEdgeType, GraphMemoryMap,
