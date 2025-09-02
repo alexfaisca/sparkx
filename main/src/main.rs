@@ -1,3 +1,4 @@
+use memmap2::MmapOptions;
 #[allow(unused_imports)]
 use tool::centralities::hyper_ball::*;
 #[allow(unused_imports)]
@@ -25,6 +26,7 @@ use clap::{ArgAction, Parser};
 use hyperloglog_rs::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::Display;
+use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
@@ -126,6 +128,32 @@ fn main() {
         }
         // .mtx input file
         (Some("mtx"), _) => {
+            if args.mmap {
+                mmapped_suite(
+                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                        args.file.clone(),
+                        args.threads,
+                        args.output_id,
+                    )
+                    .expect("error couldn't parse file"),
+                );
+            }
+        }
+        // .nodes input file
+        (Some("nodes"), _) => {
+            if args.mmap {
+                mmapped_suite(
+                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                        args.file.clone(),
+                        args.threads,
+                        args.output_id,
+                    )
+                    .expect("error couldn't parse file"),
+                );
+            }
+        }
+        // .edges input file
+        (Some("edges"), _) => {
             if args.mmap {
                 mmapped_suite(
                     parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
@@ -248,46 +276,54 @@ fn parse_bytes_mmaped<
     /* ********************************************************************************* */
     //
 
-    let e_fn = cache_file_name(
-        &graph_mmaped.cache_index_filename(),
-        FileType::ExactClosenessCentrality(H::H),
-        None,
-    )?;
-    let node_count = graph_mmaped.size();
-    println!(
-        "compute closeness centrality {}",
-        graph_mmaped.cache_index_filename()
-    );
-    let mut e = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, node_count, true)?;
-    for u in 0..node_count {
-        if u % 1000 == 0 {
-            println!("reached {u} of {node_count}");
-        }
-        let bfs = BFSDists::new(&graph_mmaped, u)?;
-        if bfs.recheable() <= 1 || bfs.total_distances() == 0. {
-            *e.get_mut(u) = 0.0;
-        } else {
-            *e.get_mut(u) = bfs.recheable() as f64 / bfs.total_distances();
-        }
-    }
-    e.flush()?;
-    let mut i = 0;
-    loop {
-        if i >= graph_mmaped.size() {
-            break;
-        }
-        let time = Instant::now();
-        let mut bfs = BFSDists::new(&graph_mmaped, i)?;
-        println!(
-            "source {i} -> bfs reacheable {} total_dist {}",
-            bfs.recheable(),
-            bfs.total_distances()
-        );
-        println!("bfs computed in {:?}", time.elapsed());
-        println!();
-        i += 10340;
-        bfs.drop_cache()?;
-    }
+    // let e_fn = cache_file_name(
+    //     &graph_mmaped.cache_index_filename(),
+    //     FileType::ExactClosenessCentrality(H::H),
+    //     None,
+    // )?;
+    // let node_count = graph_mmaped.size();
+    // println!("compute closeness centrality {e_fn}",);
+    // // let file = File::open(&e_fn)?;
+    // // let vals = unsafe { MmapOptions::new().map(&file)? };
+    // // let mut z = 0;
+    // // for i in 0..node_count {
+    // //     let val = unsafe { (vals.as_ptr() as *const f64).add(i).read() };
+    // //     if val == 0. {
+    // //         z += 1;
+    // //     }
+    // // }
+    // // println!("found {z} zeroes");
+    // let mut e = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, node_count, true)?;
+    // for u in 0..node_count {
+    //     if u % 1000 == 0 {
+    //         println!("reached {u} of {node_count}");
+    //     }
+    //     let bfs = BFSDists::new(&graph_mmaped, u)?;
+    //     if bfs.recheable() <= 1 || bfs.total_distances() == 0. {
+    //         println!("found isolated node at {u}");
+    //         *e.get_mut(u) = 0.0;
+    //     } else {
+    //         *e.get_mut(u) = bfs.recheable() as f64 / bfs.total_distances();
+    //     }
+    // }
+    // e.flush()?;
+    // let mut i = 0;
+    // loop {
+    //     if i >= graph_mmaped.size() {
+    //         break;
+    //     }
+    //     let time = Instant::now();
+    //     let mut bfs = BFSDists::new(&graph_mmaped, i)?;
+    //     println!(
+    //         "source {i} -> bfs reacheable {} total_dist {}",
+    //         bfs.recheable(),
+    //         bfs.total_distances()
+    //     );
+    //     println!("bfs computed in {:?}", time.elapsed());
+    //     println!();
+    //     i += 10340;
+    //     bfs.drop_cache()?;
+    // }
 
     let time = Instant::now();
     let mut _dfs = DFS::new(&graph_mmaped, 0)?;
@@ -310,26 +346,26 @@ fn parse_bytes_mmaped<
     // println!("harmonic centrality {:?}", time.elapsed());
     // println!();
     //
-    // let mut i = 0;
-    // while i < graph_mmaped.size().map_or(0, |s| s) {
-    //     let time = Instant::now();
-    //     let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
-    //     let _ = hk_relax.compute()?;
-    //     println!("HKRelax {:?}", time.elapsed());
-    //     i += 1234600;
-    // }
-    //
-    // let time = Instant::now();
-    // let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    // println!("found {} communities", _louvain.community_count());
-    // println!("partition modularity {} ", _louvain.partition_modularity());
-    // println!("louvain finished in {:?}", time.elapsed());
-    // println!(
-    //     "partition modularity according to graph_mmaped method {}",
-    //     graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
-    // );
-    // println!();
-    // _louvain.drop_cache()?;
+    let mut i = 0;
+    while i < graph_mmaped.size() {
+        let time = Instant::now();
+        let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.00001, vec![i], None, None)?;
+        let _ = hk_relax.compute()?;
+        println!("HKRelax {:?}", time.elapsed());
+        i += 1234600;
+    }
+
+    let time = Instant::now();
+    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    println!("found {} communities", _louvain.community_count());
+    println!("partition modularity {} ", _louvain.partition_modularity());
+    println!("louvain finished in {:?}", time.elapsed());
+    println!(
+        "partition modularity according to graph_mmaped method {}",
+        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    );
+    println!();
+    _louvain.drop_cache()?;
     //
     // let time = Instant::now();
     // let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
@@ -344,11 +380,11 @@ fn parse_bytes_mmaped<
     // println!("clustering coefficient finished in {:?}", time.elapsed());
     // println!();
 
-    // let time = Instant::now();
-    // let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    // println!("k-core liu et al {:?}", time.elapsed());
-    // println!();
-    // _liu_et_al.drop_cache()?;
+    let time = Instant::now();
+    let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
+    println!();
+    _liu_et_al.drop_cache()?;
     //
     // let time = Instant::now();
     // let mut _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;

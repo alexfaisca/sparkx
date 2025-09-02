@@ -2,7 +2,7 @@ use crate::graph::utils::{
     CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name, cache_file_name_from_id,
     id_from_filename,
 };
-use crate::trails::bfs_dists::BFSDists;
+use crate::trails::bfs::BFSDists;
 use crate::{
     graph::{
         GenericEdge, GenericEdgeType, GraphMemoryMap,
@@ -169,6 +169,7 @@ pub(crate) fn get_or_init_dataset_exact_value<
                 eprintln!("found exact vals for {:?} at {e_fn}", graph_path);
                 Ok(e_fn)
             } else {
+                // return Err(format!("no entry {e_fn}").into());
                 eprintln!("built exact vals for {:?}", graph_path);
                 eprintln!("built in {:?} {e_fn}", exact_value_dir());
                 match value_type {

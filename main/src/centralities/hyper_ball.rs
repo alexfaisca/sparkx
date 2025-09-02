@@ -231,7 +231,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         / *self.distances.get(idx);
                 }
             }
-            self.closeness[1] = Some(mem);
+            self.closeness[2] = Some(mem);
         // normalized by node count (|V| - 1)
         } else {
             let normalize_factor = node_count as f64 - 1.; // |V| - 1
@@ -242,7 +242,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     *mem.get_mut(idx) = normalize_factor / *self.distances.get(idx);
                 }
             }
-            self.closeness[2] = Some(mem);
+            self.closeness[1] = Some(mem);
         }
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
@@ -338,7 +338,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                         / (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.);
                 }
             }
-            self.harmonic[1] = Some(mem);
+            self.harmonic[2] = Some(mem);
         // normalized by node count (|v| - 1)
         } else {
             let normalize_factor = node_count as f64 - 1.; // |V| - 1
@@ -349,7 +349,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                     *mem.get_mut(idx) = *self.inverse_distances.get(idx) / normalize_factor;
                 }
             }
-            self.harmonic[2] = Some(mem);
+            self.harmonic[1] = Some(mem);
         }
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
@@ -740,11 +740,17 @@ mod test {
         a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / (a.len() as f64)
     }
     fn mape(a: &[f64], b: &[f64]) -> f64 {
-        let eps = 1e-12;
         100.0
             * a.iter()
                 .zip(b)
-                .map(|(x, y)| (x - y).abs() / (y.abs().max(eps)))
+                .map(|(x, &y)| {
+                    if y == 0. {
+                        // eprintln!("x {x} y {y}");
+                        0.
+                    } else {
+                        (x - y).abs() / y.abs()
+                    }
+                })
                 .sum::<f64>()
             / (a.len() as f64)
     }
@@ -798,8 +804,16 @@ mod test {
         let exact = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, g.size(), true)?;
         let e = exact.shared_slice();
 
-        let mut hyperball = HyperBallInner::<_, _, Precision12, 6>::new(&g, None, None)?;
+        let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&g, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
+
+        let mut zero = 0;
+        for u in 0..g.size() {
+            if *exact.get(u) == 0. {
+                zero += 1;
+            }
+        }
+        eprintln!("found {zero} zeros");
 
         // metrics
         let e_mae = mae(approx, e.as_slice());

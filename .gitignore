@@ -3,6 +3,9 @@
 */.cache/
 */.test_cache/
 datasets/
+dog/
+drosophilia/
+mus/
 main/datasets/
 /exact_values_backup
 /thesis_template
