@@ -142,6 +142,7 @@ pub fn cache_file_name(
             )
             .as_str());
     }
+    // If in test or bench mode store/lookup exact values in dir {cache}/exact_values/
     #[cfg(any(test, feature = "bench"))]
     if target_type == FileType::ExactClosenessCentrality(H::H)
         || target_type == FileType::ExactHarmonicCentrality(H::H)
@@ -242,9 +243,7 @@ pub enum FileType {
     #[cfg(any(test, feature = "bench"))]
     Test(H),
     ExactClosenessCentrality(H),
-    #[cfg(any(test, feature = "bench"))]
     ExactHarmonicCentrality(H),
-    #[cfg(any(test, feature = "bench"))]
     ExactLinCentrality(H),
 }
 
@@ -302,13 +301,11 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
     static SUFFIX_FOR_HYPERBALL_HARMONIC_CENTRALITY: &str = "hyperballharmonic";
     static SUFFIX_FOR_HYPERBALL_LIN_CENTRALITY: &str = "hyperballlin";
     static SUFFIX_FOR_GVE_LOUVAIN: &str = "louvain";
+    static SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY: &str = "exactclosenesscentrality";
+    static SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY: &str = "exactharmoniccentrality";
+    static SUFFIX_FOR_EXACT_LIN_CENTRALITY: &str = "exactlincentrality";
     #[cfg(any(test, feature = "bench"))]
     static SUFFIX_FOR_TEST: &str = "test";
-    static SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY: &str = "exactclosenesscentrality";
-    #[cfg(any(test, feature = "bench"))]
-    static SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY: &str = "exactharmoniccentrality";
-    #[cfg(any(test, feature = "bench"))]
-    static SUFFIX_FOR_EXACT_LIN_CENTRALITY: &str = "exactlincentrality";
 
     match target_type {
         FileType::General => SUFFIX_FOR_GENERAL,
@@ -333,13 +330,11 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
         FileType::HyperBallHarmonicCentrality(_) => SUFFIX_FOR_HYPERBALL_HARMONIC_CENTRALITY,
         FileType::HyperBallLinCentrality(_) => SUFFIX_FOR_HYPERBALL_LIN_CENTRALITY,
         FileType::GVELouvain(_) => SUFFIX_FOR_GVE_LOUVAIN,
+        FileType::ExactClosenessCentrality(_) => SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY,
+        FileType::ExactHarmonicCentrality(_) => SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY,
+        FileType::ExactLinCentrality(_) => SUFFIX_FOR_EXACT_LIN_CENTRALITY,
         #[cfg(any(test, feature = "bench"))]
         FileType::Test(_) => SUFFIX_FOR_TEST,
-        FileType::ExactClosenessCentrality(_) => SUFFIX_FOR_EXACT_CLOSENESS_CENTRALITY,
-        #[cfg(any(test, feature = "bench"))]
-        FileType::ExactHarmonicCentrality(_) => SUFFIX_FOR_EXACT_HARMONIC_CENTRALITY,
-        #[cfg(any(test, feature = "bench"))]
-        FileType::ExactLinCentrality(_) => SUFFIX_FOR_EXACT_LIN_CENTRALITY,
     }
 }
 
@@ -420,13 +415,11 @@ impl std::fmt::Display for FileType {
             FileType::HyperBallHarmonicCentrality(_) => "HyperBallHarmonicCentrality",
             FileType::HyperBallLinCentrality(_) => "HyperBallLinCentrality",
             FileType::GVELouvain(_) => "Louvain",
+            FileType::ExactClosenessCentrality(_) => "ExactClosenessCentrality",
+            FileType::ExactHarmonicCentrality(_) => "ExactHarmonicCentrality",
+            FileType::ExactLinCentrality(_) => "ExactLinCentrality",
             #[cfg(any(test, feature = "bench"))]
             FileType::Test(_) => "Test",
-            FileType::ExactClosenessCentrality(_) => "ExactClosenessCentrality",
-            #[cfg(any(test, feature = "bench"))]
-            FileType::ExactHarmonicCentrality(_) => "ExactHarmonicCentrality",
-            #[cfg(any(test, feature = "bench"))]
-            FileType::ExactLinCentrality(_) => "ExactLinCentrality",
         };
         write!(f, "FileType {{{}}}", s)
     }

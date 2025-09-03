@@ -1,4 +1,5 @@
 use crate::{
+    centralities::exact::{ExactClosenessCentrality, ExactHarmonicCentrality, ExactLinCentrality},
     graph::{
         GenericEdge, GenericEdgeType, GraphMemoryMap,
         cache::{
@@ -10,8 +11,6 @@ use crate::{
         },
         edge::{TinyEdgeType, TinyLabelStandardEdge},
     },
-    shared_slice::SharedSliceMut,
-    trails::bfs::BFSDists,
 };
 
 use dashmap::DashMap;
@@ -176,29 +175,16 @@ pub(crate) fn get_or_init_dataset_exact_value<
                 eprintln!("built in {:?} {e_fn}", exact_value_dir());
                 match value_type {
                     FileType::ExactClosenessCentrality(H::H) => {
-                        let node_count = graph.size();
                         println!("compute closeness centrality");
-                        let mut e = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, node_count, true)?;
-                        for u in 0..node_count {
-                            if u % 1000 == 0 {
-                                println!("reached {u} of {node_count}");
-                            }
-                            let bfs = BFSDists::new(graph, u)?;
-                            if bfs.recheable() <= 1 || bfs.total_distances() == 0. {
-                                *e.get_mut(u) = 0.0;
-                            } else {
-                                *e.get_mut(u) = bfs.recheable() as f64 / bfs.total_distances();
-                            }
-                        }
-                        e.flush()?;
+                        ExactClosenessCentrality::new(graph, Some(true))?;
                     }
                     FileType::ExactHarmonicCentrality(H::H) => {
-                        // FIXME: find out how!
-                        return Err("error can't compute harmonic centrality values".into());
+                        println!("compute harmonic centrality");
+                        ExactHarmonicCentrality::new(graph, Some(true))?;
                     }
                     FileType::ExactLinCentrality(H::H) => {
-                        // FIXME: find out how!
-                        return Err("error can't compute lin's centrality values".into());
+                        println!("compute lin's centrality");
+                        ExactLinCentrality::new(graph)?;
                     }
                     _ => {}
                 };

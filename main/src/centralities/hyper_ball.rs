@@ -216,7 +216,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                 if !self.distances.get(idx).is_normal() {
                     *mem.get_mut(idx) = 0.;
                 } else {
-                    *mem.get_mut(idx) = 1. / *self.distances.get(idx);
+                    *mem.get_mut(idx) = *self.distances.get(idx);
                 }
             }
             self.closeness[0] = Some(mem);
@@ -801,24 +801,16 @@ mod test {
         )?;
 
         let e_fn = get_or_init_dataset_exact_value(p.as_ref(), &g, ExactClosenessCentrality(H::H))?;
-        let exact = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
-        let e = exact.as_slice();
+        let exact_mmaped = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
+        let exact = exact_mmaped.as_slice();
 
         let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&g, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
 
-        let mut zero = 0;
-        for u in 0..g.size() {
-            if *exact.get(u) == 0. {
-                zero += 1;
-            }
-        }
-        eprintln!("found {zero} zeros");
-
         // metrics
-        let e_mae = mae(approx, e);
-        let e_mape = mape(approx, e);
-        let rho = spearman_rho(approx, e);
+        let e_mae = mae(approx, exact);
+        let e_mape = mape(approx, exact);
+        let rho = spearman_rho(approx, exact);
 
         eprintln!(
             "dataset={:?}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}",
@@ -852,7 +844,7 @@ mod test {
         ggcat_2_10 => "./datasets/graphs/graph_2_10.lz4",
         ggcat_3_10 => "./datasets/graphs/graph_3_10.lz4",
         ggcat_4_10 => "./datasets/graphs/graph_4_10.lz4",
-        // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
+        ggcat_5_10 => "./datasets/graphs/graph_5_10.lz4",
         // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
         // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
         // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",

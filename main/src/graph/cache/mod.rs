@@ -988,6 +988,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             CacheFile::HyperBallHarmonicCentrality => FileType::HyperBallHarmonicCentrality(H::H),
             CacheFile::HyperBallLinCentrality => FileType::HyperBallLinCentrality(H::H),
             CacheFile::GVELouvain => FileType::GVELouvain(H::H),
+            CacheFile::ExactCloseness => FileType::ExactClosenessCentrality(H::H),
+            CacheFile::ExactHarmonic => FileType::ExactHarmonicCentrality(H::H),
+            CacheFile::ExactLin => FileType::ExactLinCentrality(H::H),
         }
     }
 

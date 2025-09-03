@@ -12,7 +12,6 @@ pub mod test_utils;
 
 use crate::graph::cache::GraphCache;
 use crate::shared_slice::AbstractedProceduralMemory;
-use cache::utils::{H, cache_file_name};
 pub use graph_derive::{GenericEdge, GenericEdgeType};
 use std::mem::ManuallyDrop;
 use std::path::Path;
@@ -96,6 +95,9 @@ pub enum CacheFile {
     HyperBallHarmonicCentrality,
     HyperBallLinCentrality,
     GVELouvain,
+    ExactCloseness,
+    ExactHarmonic,
+    ExactLin,
 }
 
 enum GraphFile {
