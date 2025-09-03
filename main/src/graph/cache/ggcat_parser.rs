@@ -44,11 +44,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let in_fst = in_fst.unwrap_or(|_id: usize| -> bool { false });
         let (input, tmp_path) = Self::read_input_file(path)?;
 
-        println!("init");
         // init cache
         let mut cache = Self::init_with_id(&id, batching)?;
 
-        println!("init done");
         // parse and cache input
         cache.parallel_parse_ggcat_bytes_mmap(&input[..], in_fst)?;
 
@@ -230,10 +228,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             let mut end = std::cmp::min((tid + 1) * thread_load, input.len());
 
             // find beginning of next node entry after end of slice (marked by '>')
-            while end < input.len() && input[end] != b'\n' {
-                end += 1;
-            }
-            if end < input.len() - 1 {
+            while end < input.len() && input[end] != b'>' {
                 end += 1;
             }
             previous_end = end;

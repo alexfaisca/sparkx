@@ -4,7 +4,7 @@ mod nodes_edges_parser;
 #[cfg(feature = "mtx")]
 mod mtx_parser;
 #[cfg(feature = "ggcat")]
-mod ggcaat_parser;
+mod ggcat_parser;
 
 use super::{
     CacheFile, GraphFile, GenericEdge, GenericEdgeType,

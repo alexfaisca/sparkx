@@ -345,6 +345,7 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
 
 /// Given a path to `unitig_{name}.edges`,
 /// return the companion `unitig_annotated_{name}.nodes`.
+#[cfg(feature = "nodes_edges")]
 pub(super) fn edges_to_nodes<P: AsRef<Path>>(edges_file: P) -> Option<PathBuf> {
     let path = edges_file.as_ref();
 
@@ -370,6 +371,7 @@ pub(super) fn edges_to_nodes<P: AsRef<Path>>(edges_file: P) -> Option<PathBuf> {
 
 /// Given a path to `unitig_annotated_{name}.nodes`,
 /// return the companion `unitig_{name}.edges`.
+#[cfg(feature = "nodes_edges")]
 pub(super) fn nodes_to_edges<P: AsRef<Path>>(nodes_file: P) -> Option<PathBuf> {
     let path = nodes_file.as_ref();
 

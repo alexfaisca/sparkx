@@ -10,11 +10,12 @@ use std::{
 };
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct AbstractedProceduralMemory<T> {
     slice: SharedSlice<T>,
-    _mmap: Mmap,
+    mmap: Mmap,
     _vec: Vec<T>,
-    _mmapped: bool,
+    mmapped: bool,
 }
 
 #[derive(Debug)]
@@ -77,6 +78,21 @@ impl<T> Clone for SharedSliceMut<T> {
 
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemory<T> {
+    pub(crate) fn from_file_name(file_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .truncate(false)
+            .write(false)
+            .open(file_name)?;
+        let (slice, mmap) = SharedSlice::<T>::from_file(&file)?;
+
+        Ok(AbstractedProceduralMemory {
+            slice,
+            mmap,
+            _vec: Vec::new(),
+            mmapped: true,
+        })
+    }
     #[inline(always)]
     pub(crate) fn shared_slice(&self) -> SharedSlice<T> {
         self.slice.clone()
@@ -243,7 +259,8 @@ impl<T> SharedSlice<T> {
     }
 
     pub(crate) fn from_file(file: &File) -> Result<(Self, Mmap), Box<dyn std::error::Error>> {
-        let mmap = unsafe { MmapOptions::new().map(file)? };
+        let file_len = file.metadata()?.len();
+        let mmap = unsafe { MmapOptions::new().len(file_len as usize).map(file)? };
         let mmap_len = mmap.len();
 
         // Ensure the memory is properly aligned
@@ -336,8 +353,8 @@ impl<T> SharedSlice<T> {
         Ok(AbstractedProceduralMemory {
             slice,
             _vec: vec,
-            _mmap: mmap,
-            _mmapped: mmapped,
+            mmap,
+            mmapped,
         })
     }
 }

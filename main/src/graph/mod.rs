@@ -12,6 +12,7 @@ pub mod test_utils;
 
 use crate::graph::cache::GraphCache;
 use crate::shared_slice::AbstractedProceduralMemory;
+use cache::utils::{H, cache_file_name};
 pub use graph_derive::{GenericEdge, GenericEdgeType};
 use std::mem::ManuallyDrop;
 use std::path::Path;
@@ -169,6 +170,14 @@ where
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let graph_cache = GraphCache::<EdgeType, Edge>::from_file(p, id, batch, in_fst)?;
+        // println!(
+        //     "{:?}",
+        //     cache_file_name(
+        //         &graph_cache.graph_filename,
+        //         cache::utils::FileType::ExactClosenessCentrality(H::H),
+        //         None
+        //     )?
+        // );
         Self::init_from_cache(graph_cache, thread_count)
     }
 

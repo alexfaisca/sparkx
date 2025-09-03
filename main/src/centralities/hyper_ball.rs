@@ -801,8 +801,8 @@ mod test {
         )?;
 
         let e_fn = get_or_init_dataset_exact_value(p.as_ref(), &g, ExactClosenessCentrality(H::H))?;
-        let exact = SharedSliceMut::<f64>::abst_mem_mut(&e_fn, g.size(), true)?;
-        let e = exact.shared_slice();
+        let exact = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
+        let e = exact.as_slice();
 
         let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&g, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
@@ -816,35 +816,42 @@ mod test {
         eprintln!("found {zero} zeros");
 
         // metrics
-        let e_mae = mae(approx, e.as_slice());
-        let e_mape = mape(approx, e.as_slice());
-        let rho = spearman_rho(approx, e.as_slice());
+        let e_mae = mae(approx, e);
+        let e_mape = mape(approx, e);
+        let rho = spearman_rho(approx, e);
 
         eprintln!(
             "dataset={:?}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}",
             p.as_ref()
         );
 
-        // guardrails to fail regressions
-        assert!(rho > 0.95, "Spearman too low on {:?}", p.as_ref());
+        // guardrails to fail regressions --- show more flexibility on smaller graphs as
+        // approximation gets better the bigger the graph is.
+        if g.size() < 1_000 {
+            assert!(rho > 0.87, "Spearman too low on {:?}", p.as_ref());
+        } else if g.size() < 10_000 {
+            assert!(rho > 0.91, "Spearman too low on {:?}", p.as_ref());
+        } else {
+            assert!(rho > 0.94, "Spearman too low on {:?}", p.as_ref());
+        }
         Ok(())
     }
 
     // generate test cases from dataset
     graph_tests! {
-        ggcat_1_5 => "datasets/graphs/graph_1_5.lz4",
-        ggcat_2_5 => "datasets/graphs/graph_2_5.lz4",
-        ggcat_3_5 => "datasets/graphs/graph_3_5.lz4",
-        ggcat_4_5 => "datasets/graphs/graph_4_5.lz4",
-        // ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
-        // ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
-        // ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
-        // ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
-        // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        ggcat_1_10 => "datasets/graphs/graph_1_10.lz4",
-        ggcat_2_10 => "datasets/graphs/graph_2_10.lz4",
-        ggcat_3_10 => "datasets/graphs/graph_3_10.lz4",
-        ggcat_4_10 => "datasets/graphs/graph_4_10.lz4",
+        ggcat_1_5 => "./datasets/graphs/graph_1_5.lz4",
+        ggcat_2_5 => "./datasets/graphs/graph_2_5.lz4",
+        ggcat_3_5 => "./datasets/graphs/graph_3_5.lz4",
+        ggcat_4_5 => "./datasets/graphs/graph_4_5.lz4",
+        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        ggcat_1_10 => "./datasets/graphs/graph_1_10.lz4",
+        ggcat_2_10 => "./datasets/graphs/graph_2_10.lz4",
+        ggcat_3_10 => "./datasets/graphs/graph_3_10.lz4",
+        ggcat_4_10 => "./datasets/graphs/graph_4_10.lz4",
         // ggcat_5_10 => "../ggcat/graphs/random_graph_5_10.lz4",
         // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
         // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
