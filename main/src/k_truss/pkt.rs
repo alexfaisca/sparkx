@@ -151,8 +151,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(&s_fn, edge_count, true)?;
 
         // pre-initialize the memmapped files if they don't exist
-        let _edge_reciprocal = self.g.get_edge_reciprocal()?;
-        let _edge_out = self.g.get_edge_dest_id_over_source()?;
+        let _edge_reciprocal = self.g.edge_reciprocal()?;
+        let _edge_out = self.g.edge_over()?;
 
         Ok((curr, next, processed, in_curr, in_next, s))
     }
@@ -172,8 +172,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
         // Shared arrays
         let (curr, next, processed, in_curr, in_next, s) = proc_mem;
-        let edge_reciprocal = self.g.get_edge_reciprocal()?;
-        let edge_out = self.g.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = self.g.edge_reciprocal()?;
+        let edge_out = self.g.edge_over()?;
 
         // Allocate memory for thread local arrays
         let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();

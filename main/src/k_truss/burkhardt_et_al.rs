@@ -161,8 +161,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let stack = SharedSliceMut::<(usize, usize)>::abst_mem_mut(&s_fn, edge_count2, true)?;
 
         // pre-initialize the memmapped files if they don't exist
-        let _edge_reciprocal = self.g.get_edge_reciprocal()?;
-        let _edge_out = self.g.get_edge_dest_id_over_source()?;
+        let _edge_reciprocal = self.g.edge_reciprocal()?;
+        let _edge_out = self.g.edge_over()?;
 
         Ok((tri_count, edge_list, edge_index, stack))
     }
@@ -181,8 +181,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let (triangle_count, edges, edge_index, e_stack) = proc_mem;
         let mut trussness = self.k_trusses.shared_slice();
 
-        let edge_reciprocal = self.g.get_edge_reciprocal()?;
-        let edge_out = self.g.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = self.g.edge_reciprocal()?;
+        let edge_out = self.g.edge_over()?;
 
         // Algorithm 1 - adjusted for directed scheme
         thread::scope(|scope| {

@@ -7,7 +7,7 @@ where
     Edge: GenericEdge<EdgeType>,
 {
     #[inline(always)]
-    pub(super) fn is_neighbour(&self, u: usize, v: usize) -> Option<usize> {
+    pub(super) fn is_neighbour_impl(&self, u: usize, v: usize) -> Option<usize> {
         assert!(
             u < self.size(),
             "{} is not smaller than max node id |V| = {} --- node doesn't exist",
@@ -33,7 +33,7 @@ where
         }
     }
 
-    pub(super) fn is_triangle(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
+    pub(super) fn is_triangle_impl(&self, u: usize, v: usize, w: usize) -> Option<(usize, usize)> {
         let mut index_a = None;
         let mut index_b = None;
         let switch = v < u;

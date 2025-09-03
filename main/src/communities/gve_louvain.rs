@@ -224,14 +224,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
 
-        let threads = self.g.thread_num().max(get_physical());
         // initialize
         thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
             // initializations always uses at least two threads per core
+            let threads = self.g.thread_num().max(get_physical() * 2);
             let node_load = node_count.div_ceil(threads);
 
             let mut threads_res = vec![];
-            let threads = self.g.thread_num();
             for tid in 0..threads {
                 let processed = processed.shared_slice();
 

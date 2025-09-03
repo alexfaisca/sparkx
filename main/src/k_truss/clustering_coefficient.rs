@@ -109,8 +109,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         // Shared atomic & simple arrays for counts and trussness
         let triangle_count = self.init_procedural_memory_burkhardt_et_al(mmap)?.0;
 
-        let edge_reciprocal = self.g.get_edge_reciprocal()?;
-        let edge_out = self.g.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = self.g.edge_reciprocal()?;
+        let edge_out = self.g.edge_over()?;
 
         // Thread syncronization
         let synchronize = Arc::new(Barrier::new(threads));

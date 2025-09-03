@@ -40,7 +40,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
-    pub fn from_mtx_file_impl<P: AsRef<Path>>(
+    pub(super) fn from_mtx_file_impl<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
         batch: Option<usize>,

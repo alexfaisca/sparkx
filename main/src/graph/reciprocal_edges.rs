@@ -125,7 +125,7 @@ where
         Ok((er, eo))
     }
 
-    pub(crate) fn get_edge_reciprocal(
+    pub(super) fn get_edge_reciprocal_impl(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
@@ -149,7 +149,7 @@ where
         }
     }
 
-    pub(crate) fn get_edge_dest_id_over_source(
+    pub(super) fn get_edge_over_impl(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;

@@ -55,8 +55,8 @@ mod _verify {
         let sct_fn = cache_file_name("", FileType::Test(H::H), None)?;
         let support = SharedSliceMut::<AtomicU8>::abst_mem_mut(&sct_fn, edge_count, true)?;
 
-        let edge_reciprocal = graph.get_edge_reciprocal()?;
-        let edge_out = graph.get_edge_dest_id_over_source()?;
+        let edge_reciprocal = graph.edge_reciprocal()?;
+        let edge_out = graph.edge_over()?;
 
         let synchronize = Arc::new(Barrier::new(threads));
 

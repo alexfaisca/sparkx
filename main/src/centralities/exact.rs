@@ -14,6 +14,7 @@ pub struct ExactClosenessCentrality<'a, EdgeType: GenericEdgeType, Edge: Generic
     /// Normalization flag.
     normalized: Option<bool>,
 }
+
 #[allow(dead_code)]
 impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     ExactClosenessCentrality<'a, EdgeType, Edge>

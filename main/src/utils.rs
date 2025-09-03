@@ -1,6 +1,7 @@
 use std::any::type_name;
 
-fn _type_of<T>(_: T) -> &'static str {
+#[allow(dead_code)]
+fn type_of<T>(_: T) -> &'static str {
     type_name::<T>()
 }
 
