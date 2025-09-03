@@ -1,10 +1,10 @@
 pub(crate) mod utils;
 #[cfg(feature = "nodes_edges")]
-mod nodes_edges_parser;
+mod parser_nodes_edges;
 #[cfg(feature = "mtx")]
-mod mtx_parser;
+mod parser_mtx;
 #[cfg(feature = "ggcat")]
-mod ggcat_parser;
+mod parser_ggcat;
 
 use super::{
     CacheFile, GraphFile, GenericEdge, GenericEdgeType,

@@ -1,15 +1,15 @@
 pub(crate) mod cache;
 pub mod edge;
-mod graph_miscelanious;
-pub(crate) mod impl_t;
-mod induced_subgraph;
-mod partition;
-mod reciprocal_edges;
+mod export_induced_subgraph;
+mod impl_miscelanious;
+mod impl_partition;
+mod impl_reciprocal_edges;
+pub(crate) mod impl_traits;
 
 #[cfg(feature = "petgraph")]
-mod petgraph_export;
+mod export_petgraph;
 #[cfg(feature = "rustworkx")]
-mod rustworkx_core_export;
+mod export_rustworkx_core;
 #[cfg(any(test, feature = "bench"))]
 pub mod test_utils;
 
