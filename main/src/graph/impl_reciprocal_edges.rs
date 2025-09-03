@@ -15,6 +15,54 @@ where
     EdgeType: GenericEdgeType,
     Edge: GenericEdge<EdgeType>,
 {
+    pub(super) fn get_edge_reciprocal_impl(
+        &self,
+    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
+        let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
+        let dud = Vec::new();
+        match OpenOptions::new().read(true).open(er_fn.as_str()) {
+            Ok(i) => {
+                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
+            }
+            Err(_) => {
+                self.build_reciprocal_edge_index()?;
+                match OpenOptions::new().read(true).open(er_fn.as_str()) {
+                    Ok(i) => {
+                        let len =
+                            i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                        SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
+                    }
+                    Err(e) => Err(format!("error can't abst mem for edge_reciprocal {e}").into()),
+                }
+            }
+        }
+    }
+
+    pub(super) fn get_edge_over_impl(
+        &self,
+    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
+        let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
+        let dud = Vec::new();
+        match OpenOptions::new().read(true).open(eo_fn.as_str()) {
+            Ok(i) => {
+                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
+            }
+            Err(_) => {
+                self.build_reciprocal_edge_index()?;
+                match OpenOptions::new().read(true).open(eo_fn.as_str()) {
+                    Ok(i) => {
+                        let len =
+                            i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+                        SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
+                    }
+                    Err(e) => Err(format!("error can't abst mem for edge_over {e}").into()),
+                }
+            }
+        }
+    }
+
     fn init_procedural_memory_build_reciprocal(
         &self,
     ) -> Result<
@@ -123,53 +171,5 @@ where
         eo.flush()?;
 
         Ok((er, eo))
-    }
-
-    pub(super) fn get_edge_reciprocal_impl(
-        &self,
-    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
-        let er_fn = self.build_cache_filename(CacheFile::EdgeReciprocal, None)?;
-        let dud = Vec::new();
-        match OpenOptions::new().read(true).open(er_fn.as_str()) {
-            Ok(i) => {
-                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
-            }
-            Err(_) => {
-                self.build_reciprocal_edge_index()?;
-                match OpenOptions::new().read(true).open(er_fn.as_str()) {
-                    Ok(i) => {
-                        let len =
-                            i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                        SharedSlice::<usize>::abstract_mem(&er_fn, dud, len, true)
-                    }
-                    Err(e) => Err(format!("error can't abst mem for edge_reciprocal {e}").into()),
-                }
-            }
-        }
-    }
-
-    pub(super) fn get_edge_over_impl(
-        &self,
-    ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
-        let eo_fn = self.build_cache_filename(CacheFile::EdgeOver, None)?;
-        let dud = Vec::new();
-        match OpenOptions::new().read(true).open(eo_fn.as_str()) {
-            Ok(i) => {
-                let len = i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
-            }
-            Err(_) => {
-                self.build_reciprocal_edge_index()?;
-                match OpenOptions::new().read(true).open(eo_fn.as_str()) {
-                    Ok(i) => {
-                        let len =
-                            i.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-                        SharedSlice::<usize>::abstract_mem(&eo_fn, dud, len, true)
-                    }
-                    Err(e) => Err(format!("error can't abst mem for edge_over {e}").into()),
-                }
-            }
-        }
     }
 }

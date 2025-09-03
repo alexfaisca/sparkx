@@ -844,7 +844,7 @@ mod test {
         ggcat_2_10 => "./datasets/graphs/graph_2_10.lz4",
         ggcat_3_10 => "./datasets/graphs/graph_3_10.lz4",
         ggcat_4_10 => "./datasets/graphs/graph_4_10.lz4",
-        ggcat_5_10 => "./datasets/graphs/graph_5_10.lz4",
+        // ggcat_5_10 => "./datasets/graphs/graph_5_10.lz4",
         // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
         // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
         // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",

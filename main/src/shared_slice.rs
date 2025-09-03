@@ -9,11 +9,11 @@ use std::{
     },
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct AbstractedProceduralMemory<T> {
     slice: SharedSlice<T>,
-    mmap: Mmap,
+    mmap: Arc<Mmap>,
     _vec: Vec<T>,
     mmapped: bool,
 }
@@ -85,6 +85,7 @@ impl<T> AbstractedProceduralMemory<T> {
             .write(false)
             .open(file_name)?;
         let (slice, mmap) = SharedSlice::<T>::from_file(&file)?;
+        let mmap = Arc::new(mmap);
 
         Ok(AbstractedProceduralMemory {
             slice,
@@ -333,6 +334,7 @@ impl<T> SharedSlice<T> {
     ) -> Result<AbstractedProceduralMemory<T>, Box<dyn std::error::Error>> {
         let file = OpenOptions::new().read(true).open(mfn)?;
         let mmap = unsafe { MmapOptions::new().map(&file)? };
+        let mmap = Arc::new(mmap);
 
         // Ensure the memory is properly aligned
         if mmapped && mmap.len() < size_of::<T>() * len {
