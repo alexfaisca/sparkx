@@ -243,17 +243,69 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                                     break;
                                 }
 
-                                let w_u = match x.get(w).cmp(&0) {
+                                // edges are taken as directed so let's be pedantic, we stored u_w
+                                // not w_u --- get it from edge_reverse.
+                                let u_w = match x.get(w).cmp(&0) {
                                     std::cmp::Ordering::Equal => continue,
                                     _ => *x.get(w) - 1,
                                 };
+                                let w_u = *er.get(u_w);
 
-                                s.get(u_v).fetch_add(1, Ordering::Relaxed);
-                                s.get(v_w).fetch_add(1, Ordering::Relaxed);
-                                s.get(w_u).fetch_add(1, Ordering::Relaxed);
-                                s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
-                                s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
-                                s.get(*er.get(w_u)).fetch_add(1, Ordering::Relaxed);
+                                if s.get(u_v).fetch_add(1, Ordering::Relaxed) > 10 {
+                                    // println!(
+                                    //     "{u} {v} {w} u_v {u_v} has {} triangles",
+                                    //     s.get(u_v).load(Ordering::Relaxed)
+                                    // );
+                                }
+                                if s.get(v_w).fetch_add(1, Ordering::Relaxed) > 10 {
+                                    // println!(
+                                    //     "{u} {v} {w} v_w {v_w} has {} triangles",
+                                    //     s.get(v_w).load(Ordering::Relaxed)
+                                    // );
+                                };
+                                if s.get(w_u).fetch_add(1, Ordering::Relaxed) > 10 {
+                                    // println!(
+                                    //     "{u} {v} {w} w_u {w_u} has {} triangles",
+                                    //     s.get(w_u).load(Ordering::Relaxed)
+                                    // );
+                                };
+                                if graph_ptr.get(*er.get(u_v)).dest() != u {
+                                    println!(
+                                        "er uv ({u_v}) {u} {v} has dest {}",
+                                        graph_ptr.get(*er.get(u_v)).dest()
+                                    );
+                                }
+                                if s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed) > 10 {
+                                    // println!(
+                                    //     "{u} {v} {w} u_v r {u_v} has {} triangles",
+                                    //     s.get(*er.get(u_v)).load(Ordering::Relaxed)
+                                    // );
+                                };
+                                if graph_ptr.get(*er.get(v_w)).dest() != v {
+                                    println!(
+                                        "er vw ({v_w}) {v} {w} has dest {}",
+                                        graph_ptr.get(*er.get(v_w)).dest()
+                                    );
+                                }
+                                if s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed) > 10 {
+                                    // println!(
+                                    //     "{u} {v} {w} v_w r {v_w} has {} triangles",
+                                    //     s.get(*er.get(v_w)).load(Ordering::Relaxed)
+                                    // );
+                                };
+                                if graph_ptr.get(*er.get(w_u)).dest() != w {
+                                    println!(
+                                        "er wu ({w_u}) {w} {u} has dest wu r {} wu {}",
+                                        graph_ptr.get(*er.get(w_u)).dest(),
+                                        graph_ptr.get(w_u).dest()
+                                    );
+                                }
+                                if s.get(*er.get(w_u)).fetch_add(1, Ordering::Relaxed) > 10 {
+                                    // println!(
+                                    //     "{u} {v} {w} w_u r {w_u} has {} triangles",
+                                    //     s.get(*er.get(w_u)).load(Ordering::Relaxed)
+                                    // );
+                                };
                             }
                         }
 
@@ -503,6 +555,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                             };
                             synchronize.wait();
                         }
+
+                        synchronize.wait();
+
+                        for e in begin..end {
+                            s.get(e).add(2, Ordering::Relaxed);
+                        }
                         Ok(res.into_boxed_slice())
                     },
                 ));
@@ -516,9 +574,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
             let verbose: bool = env_verbose_val == "1";
             if verbose {
                 let mut r = vec![0usize; u8::MAX as usize];
-                for i in 0..u8::MAX as usize {
+                for i in 0..u8::MAX as usize - 2 {
                     for v in joined_res.clone() {
-                        r[i] += v[i];
+                        r[i + 2] += v[i];
                     }
                 }
 

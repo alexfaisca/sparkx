@@ -1,18 +1,16 @@
-use std::{path::Path, sync::Arc};
-
-use crossbeam::thread;
-use num_cpus::get_physical;
-use portable_atomic::{AtomicUsize, Ordering};
-
+use super::{
+    GraphCache, MultithreadedParserIndexBounds,
+    utils::{FileType, H, cache_file_name},
+};
 use crate::{
     graph::{GenericEdge, GenericEdgeType},
     shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
 };
 
-use super::{
-    GraphCache, MultithreadedParserIndexBounds,
-    utils::{FileType, H, cache_file_name},
-};
+use crossbeam::thread;
+use num_cpus::get_physical;
+use portable_atomic::{AtomicUsize, Ordering};
+use std::{path::Path, sync::Arc};
 
 #[allow(dead_code)]
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
@@ -129,9 +127,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let mut previous_end = 0usize;
 
         (0..threads).try_for_each(|tid| -> Result<(), Box<dyn std::error::Error>> {
-            let begin = previous_end;
+            let mut begin = previous_end;
             if begin != input.len() && begin != 0 && input[begin] != b'\n' {
                 return Err(format!("error getting threads bounds for thread {tid}: input[{{thread_begin: {begin}}}] = {} (should equal {})", stringify!(input[begin]), stringify!('\n')).into());
+            }
+            if begin < input.len() - 1 && input[begin] == b'\n' {
+                begin += 1
             }
             let mut end = std::cmp::min((tid + 1) * thread_load, input.len());
 
@@ -295,6 +296,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                             let mut node = node.iter().peekable();
 
                             let id: usize = node.next().unwrap().parse()?;
+                            if id == 37931 {
+                                println!("{tid} -> {id} {line_str}");
+                            }
                             offsets.get(id).add(1, Ordering::Relaxed);
                         }
                         Ok(())
@@ -346,8 +350,54 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
                 handles.push(s.spawn(
                     move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                        // this assumes UTF-8 but avoids full conversion
-                        for line in input.split(|&b| b == b'\n') {
+                        let mut input_lines = input.split(|&b| b == b'\n');
+
+                        // parse first node's edges: guarantee edges are stored in ascending order even
+                        // when a node's parsing is split between threads
+                        let mut first_node = None;
+                        let mut queue = Vec::with_capacity(256);
+                        while let Some(line) = input_lines.next() {
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let line_str = std::str::from_utf8(line)?;
+
+                            let node = line_str.split_whitespace().collect::<Vec<&str>>();
+                            let mut node = node.iter().peekable();
+
+                            let orig_id: usize = node.next().unwrap().parse()?;
+                            let dest_id: usize = node.next().unwrap().parse()?;
+                            let dir = node.next().unwrap();
+                            let dir = Self::parse_node_edge_direction(dir).map_err(
+                                |e| -> Box<dyn std::error::Error + Send + Sync> {
+                                    format!("error in thread {tid}: {e}").into()
+                                },
+                            )?;
+                            if let Some(id) = first_node {
+                                if orig_id == id {
+                                    queue.push((dest_id, dir));
+                                } else {
+                                    *edges.get_mut(
+                                        offsets.get(orig_id).load(Ordering::Relaxed)
+                                            + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
+                                    ) = Edge::new(dest_id as u64, dir);
+                                }
+                            } else {
+                                first_node = Some(orig_id);
+                                queue.push((dest_id, dir));
+                            }
+                        }
+                        // now write edges of first node taking into account the missing ones
+                        if let Some(id) = first_node {
+                            let _begin = offsets.get(id + 1).load(Ordering::Relaxed) - queue.len();
+                            for (offset, (dest, dir)) in
+                                (_begin..offsets.get(id + 1).load(Ordering::Relaxed)).zip(queue)
+                            {
+                                *edges.get_mut(offset) = Edge::new(dest as u64, dir);
+                            }
+                        }
+                        // parse rest of the thread's edges
+                        for line in input_lines {
                             if line.is_empty() {
                                 continue;
                             }

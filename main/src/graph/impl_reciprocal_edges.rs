@@ -107,7 +107,8 @@ where
 
         let synchronize = Arc::new(Barrier::new(threads));
 
-        thread::scope(|scope| {
+        thread::scope(|scope|-> Result<(), Box<dyn std::error::Error>> {
+            let mut threads_res = vec![];
             for tid in 0..threads {
                 let mut er = er.shared_slice();
                 let mut eo = eo.shared_slice();
@@ -116,7 +117,7 @@ where
 
                 let begin = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(begin + thread_load, node_count);
-                scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                threads_res.push(scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     let mut edges_start = *index_ptr.get(begin);
                     for u in begin..end {
                         let mut eo_at_end = true;
@@ -128,44 +129,74 @@ where
                                 *eo.get_mut(u) = edge_offset;
                                 break;
                             }
-                            // FIXME: add section u == v to update edge_reciprocal array?
                         }
                         if eo_at_end {
                             *eo.get_mut(u) = edges_stop;
                         }
+                        // if *eo.get(u) > *index_ptr.get(u + 1) {
+                        //     println!("eo {u} > indx u + 1");
+                        // }
+                        // if *eo.get(u) < *index_ptr.get(u) {
+                        //     println!("eo {u} < indx u");
+                        // }
                         edges_start = edges_stop;
                     }
 
                     synchronize.wait();
 
                     for u in begin..end {
-                        for edge_offset in *eo.get(u)..*index_ptr.get(u + 1) {
+                        // if *eo.get(u) > *index_ptr.get(u + 1) {
+                        //     println!("eo {u} > indx u + 1");
+                        // }
+                        // if *eo.get(u) < *index_ptr.get(u) {
+                        //     println!("eo {u} < indx u");
+                        // }
+                        for edge_offset in *index_ptr.get(u)..*eo.get(u) {
                             let v = graph_ptr.get(edge_offset).dest();
-                            let mut floor = *index_ptr.get(v);
-                            let mut ceil = *eo.get(v);
                             // binary search on neighbours w, where w < v
-                            let reciprocal = loop {
-                                if floor > ceil {
-                                    return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})").into());
-                                }
-                                let m = floor + (ceil - floor).div_floor(2);
-                                let dest = graph_ptr.get(m).dest();
-                                match dest.cmp(&u) {
-                                    std::cmp::Ordering::Greater => ceil = m - 1,
-                                    std::cmp::Ordering::Less => floor = m + 1,
-                                    _ => break m,
-                                }
-                            };
-                            *er.get_mut(edge_offset) = reciprocal;
-                            *er.get_mut(reciprocal) = edge_offset;
+                            if u == v {
+                                // self loops are their own reciprocals
+                                *er.get_mut(edge_offset) = edge_offset;
+                            } else {
+                                let mut floor = *eo.get(v);
+                                let mut ceil = *index_ptr.get(v + 1);
+                                let reciprocal =  loop {
+                                    if floor > ceil {
+                                        // println!("tid {tid} {u}->{v}: {} {} {} {} {}", graph_ptr.get(floor - 3).dest(), graph_ptr.get(floor - 2).dest(), graph_ptr.get(floor - 1).dest(), graph_ptr.get(floor).dest(), graph_ptr.get(floor + 1).dest());
+                                        return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})").into());
+                                    }
+
+                                    let m = floor + (ceil - floor) / 2;
+                                    let dest = graph_ptr.get(m).dest();
+
+                                    match dest.cmp(&u) {
+                                        std::cmp::Ordering::Equal => break m,
+                                        std::cmp::Ordering::Greater => ceil = m - 1,
+                                        std::cmp::Ordering::Less => floor = m + 1,
+                                    }
+                                };
+
+                                *er.get_mut(edge_offset) = reciprocal;
+                                *er.get_mut(reciprocal) = edge_offset;
+                            }
                         }
                     }
 
                     Ok(())
-                });
+                }));
             }
+
+            // check for errors
+            for (tid, r) in threads_res.into_iter().enumerate() {
+                r.join()
+                    .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
+                    .map_err(|e| -> Box<dyn std::error::Error> {
+                        format!("error in initialization (thread {tid}): {:?}", e).into()
+                    })?;
+            }
+            Ok(())
         })
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
         er.flush()?;
         eo.flush()?;

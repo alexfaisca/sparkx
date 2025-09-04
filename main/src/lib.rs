@@ -1,4 +1,3 @@
-#![feature(int_roundings)]
 #![feature(once_cell_try)]
 // This library can only be used in linux
 #![cfg(target_os = "linux")]

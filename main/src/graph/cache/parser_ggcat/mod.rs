@@ -1,12 +1,10 @@
-use std::{path::{Path, PathBuf}, sync::Arc};
+use super::{GraphCache, MultithreadedParserIndexBounds};
+use crate::{graph::{GenericEdge, GenericEdgeType}, shared_slice::{AbstractedProceduralMemoryMut, SharedSlice}};
 
 use crossbeam::thread;
 use num_cpus::get_physical;
 use portable_atomic::{AtomicUsize, Ordering};
-
-use crate::{graph::{GenericEdge, GenericEdgeType}, shared_slice::{AbstractedProceduralMemoryMut, SharedSlice}};
-
-use super::{GraphCache, MultithreadedParserIndexBounds};
+use std::{path::{Path, PathBuf}, sync::Arc};
 
 #[allow(dead_code)]
 impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {

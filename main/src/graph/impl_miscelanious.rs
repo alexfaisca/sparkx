@@ -23,12 +23,12 @@ where
             if floor > ceil {
                 return None;
             }
-            let m = floor + (ceil - floor).div_floor(2);
+            let m = floor + (ceil - floor) / 2;
             let dest = unsafe { (self.graph.as_ptr() as *const Edge).add(m).read().dest() };
             match dest.cmp(&v) {
+                std::cmp::Ordering::Equal => break Some(m),
                 std::cmp::Ordering::Greater => ceil = m - 1,
                 std::cmp::Ordering::Less => floor = m + 1,
-                _ => break Some(m),
             }
         }
     }

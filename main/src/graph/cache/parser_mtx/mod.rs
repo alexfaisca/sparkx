@@ -1,20 +1,19 @@
-use std::{
-    fs::File,
-    io::{BufRead, BufReader, Seek, SeekFrom},
-    path::Path,
-    sync::Arc,
-};
-
-use crossbeam::thread;
-use num_cpus::get_physical;
-use portable_atomic::{AtomicUsize, Ordering};
-
 use crate::{
     graph::{
         GenericEdge, GenericEdgeType,
         cache::utils::{FileType, H, cache_file_name},
     },
     shared_slice::SharedSliceMut,
+};
+
+use crossbeam::thread;
+use num_cpus::get_physical;
+use portable_atomic::{AtomicUsize, Ordering};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader, Seek, SeekFrom},
+    path::Path,
+    sync::Arc,
 };
 
 use super::GraphCache;
@@ -46,6 +45,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch: Option<usize>,
     ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
+        let threads = (get_physical() * 2).max(1);
 
         if std::mem::size_of::<Edge>() % std::mem::size_of::<usize>() != 0 {
             return Err(format!("Error type `{}` has a  size of {}, which will lead to unaligned memory read/write for graph edges. Currently we don't support this type of memory access for graphs from .matx files. :(", std::any::type_name::<Edge>(), std::mem::size_of::<Edge>()).into());
@@ -60,33 +60,46 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 .to_string(),
         );
 
-        let (nr, _, _) = Self::parse_mtx_header(path.as_ref())?;
+        let (node_count, _, _) = Self::parse_mtx_header(path.as_ref())?;
 
         let e_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
         let i_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
         let offsets_fn = cache_file_name(&e_fn, FileType::Helper(H::H), Some(0))?;
-        let index = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&i_fn, nr + 1, true)?;
-        let offsets = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&offsets_fn, nr, true)?;
+        let offset_size = match node_count.overflowing_add(1) {
+            (_, true) => {
+                return Err(
+                    format!("error calculating offsets size: {node_count} + 1 overflowed").into(),
+                );
+            }
+            (r, false) => r,
+        };
+        let index = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&i_fn, offset_size, true)?;
+        let offsets = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&offsets_fn, node_count, true)?;
 
         // accumulate node degrees on index
         let edge_count = Arc::new(AtomicUsize::new(0));
         {
-            Self::parallel_parse_mtx_with(path.as_ref(), {
-                let edge_count = edge_count.clone();
-                let index = index.shared_slice().clone();
-                move |u, _v, _w| {
-                    edge_count.add(1, Ordering::Relaxed);
-                    index.get(u).add(1, Ordering::Relaxed);
-                }
-            })?;
+            Self::parallel_parse_mtx_with(
+                path.as_ref(),
+                {
+                    let edge_count = edge_count.clone();
+                    let index = index.shared_slice().clone();
+                    move |u, _v, _w| {
+                        edge_count.add(1, Ordering::Relaxed);
+                        index.get(u).add(1, Ordering::Relaxed);
+                    }
+                },
+                |_, _| {},
+                threads,
+            )?;
         }
-        let edges =
+        let mut edges =
             SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, edge_count.load(Ordering::Relaxed), true)?;
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
         // this works because after aloc memmaped files are zeroed (so index[nr] = 0)
-        for u in 0..=nr {
+        for u in 0..offset_size {
             let deg_u = index.get(u).load(Ordering::Relaxed);
             if deg_u > max_degree {
                 max_degree = deg_u;
@@ -94,19 +107,22 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             index.get(u).store(sum, Ordering::Relaxed);
             sum += deg_u;
         }
-        println!(
-            "|V| == {}, |E| == {}",
-            nr,
-            index.get(nr).load(Ordering::Relaxed)
-        );
+        // println!(
+        //     "|V| == {}, |E| == {}",
+        //     node_count,
+        //     index.get(node_count).load(Ordering::Relaxed)
+        // );
 
         if max_degree >= u8::MAX as usize {
             return Err(format!("Error graph has a max_degree of {max_degree} which, unforturnately, is bigger than {}, our current maximum supported size. If you feel a mistake has been made or really need this feature, please contact the developer team. We sincerely apologize.", u8::MAX).into());
         }
 
-        // write edges
-        {
-            Self::parallel_parse_mtx_with(path.as_ref(), {
+        // let firsts_atomic: Arc<Vec<AtomicUsize>> =
+        //     Arc::new((0..threads).map(|_| AtomicUsize::new(usize::MAX)).collect());
+
+        Self::parallel_parse_mtx_with(
+            path.as_ref(),
+            {
                 let mut edges = edges.shared_slice();
                 let index = index.shared_slice();
                 let offsets = offsets.shared_slice();
@@ -116,11 +132,49 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                             + offsets.get(u).fetch_add(1, Ordering::Relaxed),
                     ) = Edge::new(v, w);
                 }
-            })?;
+            },
+            {
+                // let firsts_atomic = Arc::clone(&firsts_atomic);
+                // move |tid, first| {
+                //     // each thread writes its slot exactly once
+                //     firsts_atomic[tid].store(first, Ordering::Relaxed);
+                // }
+                |_, _| {}
+            },
+            threads,
+        )?;
+
+        // // materialize the result Vec<(tid, first)>
+        // let mut firsts = HashSet::new();
+        // for (_tid, a) in firsts_atomic.iter().enumerate() {
+        //     let v = a.load(Ordering::Relaxed);
+        //     if v != usize::MAX {
+        //         firsts.insert(v);
+        //     }
+        // }
+        //
+        // println!("firsts {:?}", firsts);
+
+        // order edges by dest node id
+        for node in 0..node_count {
+            let begin = index.get(node).load(Ordering::Relaxed);
+            let end = index.get(node + 1).load(Ordering::Relaxed);
+            let node_edges =
+                edges
+                    .mut_slice(begin, end)
+                    .ok_or_else(|| -> Box<dyn std::error::Error> {
+                        format!("error getting node {node}'s edges as a mut slice for ordering")
+                            .into()
+                    })?;
+            // println!("edges before {:?}", node_edges);
+            node_edges.sort_by(|a, b| a.dest().cmp(&b.dest()));
+            // println!("edges after {:?}", node_edges);
         }
 
         edges.flush()?;
         index.flush()?;
+
+        std::fs::remove_file(&offsets_fn)?;
 
         Self::open(&e_fn, batch)
     }
@@ -183,14 +237,16 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Ok((nrows, ncols, nnz_declared))
     }
 
-    fn parallel_parse_mtx_with<F, P: AsRef<Path>>(
+    fn parallel_parse_mtx_with<F, FF, P: AsRef<Path>>(
         path: P,
         emit: F,
+        emit_first: FF,
+        threads: usize,
     ) -> Result<(), Box<dyn std::error::Error>>
     where
         F: FnMut(usize, u64, u64) + Send + Sync + Clone,
+        FF: FnMut(usize, usize) + Send + Sync + Clone,
     {
-        let threads = (get_physical() * 2).max(1);
         let f = File::open(path.as_ref())?;
         let file_len = f.metadata()?.len();
         let mut rdr = BufReader::new(f);
@@ -266,6 +322,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let p = path.as_ref();
 
                 let seen = seen.clone();
+                let mut emit_first = emit_first.clone();
                 let mut emit = emit.clone();
 
                 let handle = s.spawn(
@@ -286,6 +343,92 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         }
 
                         let mut line = String::new();
+                        if seen.load(Ordering::Relaxed) < nnz_declared && end_pos > cur_pos {
+                            line.clear();
+
+                            let n = rdr.read_line(&mut line)?;
+                            if n == 0 {
+                                // Some files under-report nnz in the header; we stop if EOF reached
+                                return Ok(());
+                            } else {
+                                cur_pos += n;
+                            }
+
+                            let mut t = line.trim();
+                            while t.is_empty() || t.starts_with('%') {
+                                let n = rdr.read_line(&mut line)?;
+                                if n == 0 {
+                                    // Some files under-report nnz in the header; we stop if EOF reached
+                                    return Ok(());
+                                } else {
+                                    cur_pos += n;
+                                }
+                                t = line.trim()
+                            }
+
+                            let mut it = t.split_whitespace();
+
+                            // 1st two tokens must be i j (1-based)
+                            let i1: usize = match it.next() {
+                                Some(s) => s.parse()?,
+                                None => {
+                                    return Err(format!(
+                                        "error in thread {tid}: error getting first node's id"
+                                    )
+                                    .into());
+                                } // malformed line
+                            };
+
+                            let j1: u64 = match it.next() {
+                                Some(s) => s.parse()?,
+                                None => {
+                                    return Err(format!(
+                                        "error in thread {tid}: error getting first edge's dest id"
+                                    )
+                                    .into());
+                                } // malformed line
+                            };
+
+                            // Convert to 0-based, also ensure in-bounds
+                            if i1 == 0 || j1 == 0 {
+                                return Err(format!(
+                                    "MatrixMarket indices are 1-based; found 0 ({line})"
+                                )
+                                .into());
+                            }
+
+                            let i = i1 - 1;
+                            let j = j1 - 1;
+
+                            let w: u64 = if pattern {
+                                0
+                            } else {
+                                match it.next() {
+                                    Some(s) => s.parse()?,
+                                    None => 0, // malformed line; skip
+                                }
+                            };
+
+                            if i >= nrows || j as usize >= ncols {
+                                return Err(format!(
+                                    "Entry out of bounds: ({i},{j}) not in [{nrows}x{ncols}]"
+                                )
+                                .into());
+                            }
+
+                            // Emit edges:
+                            // first directed edge i --(w)--> j
+                            emit_first(tid, i);
+                            emit(i, j, w);
+
+                            // second directed edge (if symmetrical) j --(w)--> i
+                            if symmetric && i != j as usize {
+                                emit(j as usize, i as u64, w);
+                            }
+
+                            seen.add(1, Ordering::Relaxed);
+                        }
+
                         while seen.load(Ordering::Relaxed) < nnz_declared && end_pos > cur_pos {
                             line.clear();
 

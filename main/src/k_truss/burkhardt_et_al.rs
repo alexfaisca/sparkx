@@ -304,7 +304,9 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     *edges.get_mut(e_index) = r_index;
                     // store edge trussness
                     *trussness.get_mut(edge_offset) = k - 1;
-                    test[k as usize - 1] += 1;
+                    if k == 1 {
+                        test[2] += 1;
+                    }
                     continue;
                 } else {
                     idx = match idx.overflowing_add(1) {
@@ -320,6 +322,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
             while let Some((u, offset)) = stack.pop() {
                 tris.get(offset).store(0, Ordering::Relaxed);
+                test[k as usize + 2] += 1;
                 let v = graph_ptr.get(offset).dest();
                 for u_w in *index_ptr.get(u)..*index_ptr.get(u + 1) {
                     let w = graph_ptr.get(u_w).dest();
