@@ -1,8 +1,15 @@
+use smallvec::SmallVec;
 use std::any::type_name;
 
 #[allow(dead_code)]
 fn type_of<T>(_: T) -> &'static str {
     type_name::<T>()
+}
+
+#[derive(Debug)]
+pub(crate) enum OneOrMany<T: Sized> {
+    One(T),
+    Many(SmallVec<[T; 4]>),
 }
 
 /// Checks if a `val` is a normal `f64`. Outputs a result with a custom error message.

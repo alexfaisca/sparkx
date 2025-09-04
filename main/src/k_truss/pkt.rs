@@ -1,8 +1,11 @@
 use crate::graph::*;
 use crate::shared_slice::*;
+use crate::utils::OneOrMany;
 
 use crossbeam::thread;
 use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
+use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Barrier};
 
@@ -175,18 +178,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let edge_reciprocal = self.g.edge_reciprocal()?;
         let edge_out = self.g.edge_over()?;
 
-        // Allocate memory for thread local arrays
-        let mut x: Vec<AbstractedProceduralMemoryMut<usize>> = Vec::new();
-        for i in 0..threads {
-            let x_fn = self
-                .g
-                .build_cache_filename(CacheFile::KTrussPKT, Some(8 + i))?;
-            x.push(SharedSliceMut::<usize>::abst_mem_mut(
-                &x_fn, node_count, true,
-            )?)
-        }
-        let x = Arc::new(x);
-
         // Thread syncronization
         let synchronize = Arc::new(Barrier::new(threads));
 
@@ -197,7 +188,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
             for tid in 0..threads {
                 // eid is unnecessary as graph + index alwready do the job
-                let mut x = x[tid].shared_slice();
                 let eo = edge_out.shared_slice();
                 let mut s = s.shared_slice();
                 let er = edge_reciprocal.shared_slice();
@@ -210,8 +200,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
                 let init_begin = std::cmp::min(tid * edge_load, edge_count);
                 let init_end = std::cmp::min(init_begin + edge_load, edge_count);
-                let begin = std::cmp::min(tid * node_load, node_count - 1); // is node and edge
-                let end = std::cmp::min(begin + node_load, node_count - 1); // limit accurate?
+                let begin = std::cmp::min(tid * node_load, node_count); // is node and edge
+                let end = std::cmp::min(begin + node_load, node_count); // limit accurate?
                 scope.spawn(move |_| {
                     // initialize s, edge_out, x, curr, next, in_curr, in_next & processed
                     for edge_offset in init_begin..init_end {
@@ -221,97 +211,70 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                         *in_curr.get_mut(edge_offset) = false;
                         *in_next.get_mut(edge_offset) = false;
                         *processed.get_mut(edge_offset) = false;
-                        *x.get_mut(graph_ptr.get(edge_offset).dest()) = 0;
                     }
 
                     synchronize.wait();
 
+                    let mut neighbours = HashMap::<usize, OneOrMany<usize>>::new();
                     for u in begin..end {
-                        let edges_stop = *index_ptr.get(u + 1);
-                        let eo_u = *eo.get(u);
-                        for j in eo_u..edges_stop {
-                            *x.get_mut(graph_ptr.get(j).dest()) = j + 1;
+                        for j in *eo.get(u)..*index_ptr.get(u + 1) {
+                            let w = *graph_ptr.get(j);
+                            match neighbours.entry(w.dest()) {
+                                std::collections::hash_map::Entry::Vacant(e) => {
+                                    e.insert(OneOrMany::One(j));
+                                }
+                                std::collections::hash_map::Entry::Occupied(mut e) => {
+                                    match e.get_mut() {
+                                        OneOrMany::One(i) => {
+                                            let mut sv: SmallVec<[usize; 4]> = SmallVec::new();
+                                            sv.push(*i);
+                                            sv.push(j);
+                                            *e.get_mut() = OneOrMany::Many(sv);
+                                        }
+                                        OneOrMany::Many(sv) => sv.push(j),
+                                    }
+                                }
+                            }
                         }
-                        for u_v in *index_ptr.get(u)..eo_u {
-                            let v = graph_ptr.get(u_v).dest();
-                            if v == u {
-                                break;
+                        for u_v in *index_ptr.get(u)..*eo.get(u) {
+                            let v = *graph_ptr.get(u_v);
+                            let v = v.dest();
+                            if u == v {
+                                continue;
                             }
                             for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
                                 let w = graph_ptr.get(v_w).dest();
                                 if w <= u {
                                     break;
                                 }
-
-                                // edges are taken as directed so let's be pedantic, we stored u_w
-                                // not w_u --- get it from edge_reverse.
-                                let u_w = match x.get(w).cmp(&0) {
-                                    std::cmp::Ordering::Equal => continue,
-                                    _ => *x.get(w) - 1,
-                                };
-                                let w_u = *er.get(u_w);
-
-                                if s.get(u_v).fetch_add(1, Ordering::Relaxed) > 10 {
-                                    // println!(
-                                    //     "{u} {v} {w} u_v {u_v} has {} triangles",
-                                    //     s.get(u_v).load(Ordering::Relaxed)
-                                    // );
-                                }
-                                if s.get(v_w).fetch_add(1, Ordering::Relaxed) > 10 {
-                                    // println!(
-                                    //     "{u} {v} {w} v_w {v_w} has {} triangles",
-                                    //     s.get(v_w).load(Ordering::Relaxed)
-                                    // );
-                                };
-                                if s.get(w_u).fetch_add(1, Ordering::Relaxed) > 10 {
-                                    // println!(
-                                    //     "{u} {v} {w} w_u {w_u} has {} triangles",
-                                    //     s.get(w_u).load(Ordering::Relaxed)
-                                    // );
-                                };
-                                if graph_ptr.get(*er.get(u_v)).dest() != u {
-                                    println!(
-                                        "er uv ({u_v}) {u} {v} has dest {}",
-                                        graph_ptr.get(*er.get(u_v)).dest()
-                                    );
-                                }
-                                if s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed) > 10 {
-                                    // println!(
-                                    //     "{u} {v} {w} u_v r {u_v} has {} triangles",
-                                    //     s.get(*er.get(u_v)).load(Ordering::Relaxed)
-                                    // );
-                                };
-                                if graph_ptr.get(*er.get(v_w)).dest() != v {
-                                    println!(
-                                        "er vw ({v_w}) {v} {w} has dest {}",
-                                        graph_ptr.get(*er.get(v_w)).dest()
-                                    );
-                                }
-                                if s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed) > 10 {
-                                    // println!(
-                                    //     "{u} {v} {w} v_w r {v_w} has {} triangles",
-                                    //     s.get(*er.get(v_w)).load(Ordering::Relaxed)
-                                    // );
-                                };
-                                if graph_ptr.get(*er.get(w_u)).dest() != w {
-                                    println!(
-                                        "er wu ({w_u}) {w} {u} has dest wu r {} wu {}",
-                                        graph_ptr.get(*er.get(w_u)).dest(),
-                                        graph_ptr.get(w_u).dest()
-                                    );
-                                }
-                                if s.get(*er.get(w_u)).fetch_add(1, Ordering::Relaxed) > 10 {
-                                    // println!(
-                                    //     "{u} {v} {w} w_u r {w_u} has {} triangles",
-                                    //     s.get(*er.get(w_u)).load(Ordering::Relaxed)
-                                    // );
+                                match neighbours.get(&w) {
+                                    Some(i) => match i {
+                                        OneOrMany::One(u_w) => {
+                                            let w_u = *er.get(*u_w);
+                                            s.get(u_v).fetch_add(1, Ordering::Relaxed);
+                                            s.get(v_w).fetch_add(1, Ordering::Relaxed);
+                                            s.get(*u_w).fetch_add(1, Ordering::Relaxed);
+                                            s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
+                                            s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
+                                            s.get(w_u).fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        OneOrMany::Many(u_ws) => {
+                                            for &u_w in u_ws {
+                                                let w_u = *er.get(u_w);
+                                                s.get(u_v).fetch_add(1, Ordering::Relaxed);
+                                                s.get(v_w).fetch_add(1, Ordering::Relaxed);
+                                                s.get(u_w).fetch_add(1, Ordering::Relaxed);
+                                                s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
+                                                s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
+                                                s.get(w_u).fetch_add(1, Ordering::Relaxed);
+                                            }
+                                        }
+                                    },
+                                    None => continue,
                                 };
                             }
                         }
-
-                        for j in eo_u..edges_stop {
-                            *x.get_mut(graph_ptr.get(j).dest()) = 0;
-                        }
+                        neighbours.clear();
                     }
                 });
             }
@@ -328,7 +291,6 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
             let mut res = Vec::new();
             for tid in 0..threads {
                 let mut todo = edge_count;
-                let mut x = x[tid].shared_slice();
 
                 let s = s.shared_slice();
                 let mut curr = curr.clone();
@@ -375,6 +337,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                         };
 
                         // println!("triangles removed");
+                        let mut neighbours = HashMap::<usize, OneOrMany<usize>>::new();
                         while todo > 0 {
                             for e in begin..end {
                                 if s.get(e).load(Ordering::Relaxed) == l {
@@ -429,95 +392,116 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                                     // mark u neighbours
                                     for u_w in edges_start..edges_stop {
                                         let w = graph_ptr.get(u_w).dest();
-                                        if w != u {
-                                            *x.get_mut(w) = *er.get(u_w) + 1;
+                                        if w != u && w != v {
+                                            match neighbours.entry(w) {
+                                                std::collections::hash_map::Entry::Vacant(e) => {
+                                                    e.insert(OneOrMany::One(u_w));
+                                                }
+                                                std::collections::hash_map::Entry::Occupied(
+                                                    mut e,
+                                                ) => match e.get_mut() {
+                                                    OneOrMany::One(prev_u_w) => {
+                                                        let mut u_ws: SmallVec<[usize; 4]> =
+                                                            SmallVec::new();
+                                                        u_ws.push(*prev_u_w);
+                                                        u_ws.push(u_w);
+                                                        *e.get_mut() = OneOrMany::Many(u_ws);
+                                                    }
+                                                    OneOrMany::Many(u_ws) => u_ws.push(u_w),
+                                                },
+                                            }
                                         }
                                     }
 
                                     for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
                                         let w = graph_ptr.get(v_w).dest();
-                                        if *x.get(w) == 0 {
-                                            continue;
-                                        }
-                                        let w_u = *x.get(w) - 1;
-                                        if *processed.get(v_w) || *processed.get(w_u) {
-                                            continue;
-                                        }
+                                        let u_ws = match neighbours.get(&w) {
+                                            Some(i) => match i {
+                                                OneOrMany::One(u_w) => Box::new([*u_w]),
+                                                OneOrMany::Many(u_ws) => {
+                                                    u_ws.clone().into_boxed_slice()
+                                                }
+                                            },
+                                            None => Box::new([]),
+                                        };
+                                        for u_w in u_ws {
+                                            let w_u = *er.get(u_w);
+                                            if *processed.get(v_w) || *processed.get(w_u) {
+                                                continue;
+                                            }
 
-                                        if s.get(v_w).load(Ordering::Relaxed) > l
-                                            && s.get(w_u).load(Ordering::Relaxed) > l
-                                        {
-                                            let prev_l_v_w =
-                                                s.get(v_w).fetch_sub(1, Ordering::SeqCst);
-                                            if prev_l_v_w == l + 1 {
-                                                *in_next.get_mut(v_w) = true;
-                                                buff[i] = v_w;
-                                                i += 1;
-                                                if i == buff_size {
-                                                    next.push_slice(&buff[..]);
-                                                    i = 0;
+                                            if s.get(v_w).load(Ordering::Relaxed) > l
+                                                && s.get(w_u).load(Ordering::Relaxed) > l
+                                            {
+                                                let prev_l_v_w =
+                                                    s.get(v_w).fetch_sub(1, Ordering::Relaxed);
+                                                if prev_l_v_w == l + 1 {
+                                                    *in_next.get_mut(v_w) = true;
+                                                    buff[i] = v_w;
+                                                    i += 1;
+                                                    if i == buff_size {
+                                                        next.push_slice(&buff[..]);
+                                                        i = 0;
+                                                    }
                                                 }
-                                            }
-                                            if prev_l_v_w <= l {
-                                                s.get(v_w).fetch_add(1, Ordering::SeqCst);
-                                            }
-                                            let prev_l_w_u =
-                                                s.get(w_u).fetch_sub(1, Ordering::SeqCst);
-                                            if prev_l_w_u == l + 1 {
-                                                *in_next.get_mut(w_u) = true;
-                                                buff[i] = w_u;
-                                                i += 1;
-                                                if i == buff_size {
-                                                    next.push_slice(&buff[..]);
-                                                    i = 0;
+                                                if prev_l_v_w <= l {
+                                                    s.get(v_w).store(l, Ordering::Relaxed);
                                                 }
-                                            }
-                                            if prev_l_w_u <= l {
-                                                s.get(w_u).fetch_add(1, Ordering::SeqCst);
-                                            }
-                                        } else if s.get(v_w).load(Ordering::Relaxed) > l
-                                            && ((u_v < w_u && *in_curr.get(w_u))
-                                                || !*in_curr.get(w_u))
-                                        {
-                                            let prev_l_v_w =
-                                                s.get(v_w).fetch_sub(1, Ordering::SeqCst);
-                                            if prev_l_v_w == l + 1 {
-                                                *in_next.get_mut(v_w) = true;
-                                                buff[i] = v_w;
-                                                i += 1;
-                                                if i == buff_size {
-                                                    next.push_slice(&buff[..]);
-                                                    i = 0;
+                                                let prev_l_w_u =
+                                                    s.get(w_u).fetch_sub(1, Ordering::Relaxed);
+                                                if prev_l_w_u == l + 1 {
+                                                    *in_next.get_mut(w_u) = true;
+                                                    buff[i] = w_u;
+                                                    i += 1;
+                                                    if i == buff_size {
+                                                        next.push_slice(&buff[..]);
+                                                        i = 0;
+                                                    }
                                                 }
-                                            }
-                                            if prev_l_v_w <= l {
-                                                s.get(v_w).fetch_add(1, Ordering::SeqCst);
-                                            }
-                                        } else if s.get(w_u).load(Ordering::Relaxed) > l
-                                            && ((u_v < v_w && *in_curr.get(v_w))
-                                                || !*in_curr.get(v_w))
-                                        {
-                                            let prev_l_w_u =
-                                                s.get(w_u).fetch_sub(1, Ordering::SeqCst);
-                                            if prev_l_w_u == l + 1 {
-                                                *in_next.get_mut(w_u) = true;
-                                                buff[i] = w_u;
-                                                i += 1;
-                                                if i == buff_size {
-                                                    next.push_slice(&buff[..]);
-                                                    i = 0;
+                                                if prev_l_w_u <= l {
+                                                    s.get(w_u).store(l, Ordering::Relaxed);
                                                 }
-                                            }
-                                            if prev_l_w_u <= l {
-                                                s.get(w_u).fetch_add(1, Ordering::SeqCst);
+                                            } else if s.get(v_w).load(Ordering::Relaxed) > l
+                                                && ((u_v < w_u && *in_curr.get(w_u))
+                                                    || !*in_curr.get(w_u))
+                                            {
+                                                let prev_l_v_w =
+                                                    s.get(v_w).fetch_sub(1, Ordering::Relaxed);
+                                                if prev_l_v_w == l + 1 {
+                                                    *in_next.get_mut(v_w) = true;
+                                                    buff[i] = v_w;
+                                                    i += 1;
+                                                    if i == buff_size {
+                                                        next.push_slice(&buff[..]);
+                                                        i = 0;
+                                                    }
+                                                }
+                                                if prev_l_v_w <= l {
+                                                    s.get(v_w).store(l, Ordering::Relaxed);
+                                                }
+                                            } else if s.get(w_u).load(Ordering::Relaxed) > l
+                                                && ((u_v < v_w && *in_curr.get(v_w))
+                                                    || !*in_curr.get(v_w))
+                                            {
+                                                let prev_l_w_u =
+                                                    s.get(w_u).fetch_sub(1, Ordering::Relaxed);
+                                                if prev_l_w_u == l + 1 {
+                                                    *in_next.get_mut(w_u) = true;
+                                                    buff[i] = w_u;
+                                                    i += 1;
+                                                    if i == buff_size {
+                                                        next.push_slice(&buff[..]);
+                                                        i = 0;
+                                                    }
+                                                }
+                                                if prev_l_w_u <= l {
+                                                    s.get(w_u).store(l, Ordering::Relaxed);
+                                                }
                                             }
                                         }
                                     }
 
-                                    // unmark u neighbours
-                                    for u_w in edges_start..edges_stop {
-                                        *x.get_mut(graph_ptr.get(u_w).dest()) = 0;
-                                    }
+                                    neighbours.clear();
                                 }
                                 if i > 0 {
                                     next.push_slice(&buff[0..i]);
@@ -558,6 +542,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 
                         synchronize.wait();
 
+                        // by definition any non-trivial subgraph is at least a 2-truss: other
+                        // values go up from there.
                         for e in begin..end {
                             s.get(e).add(2, Ordering::Relaxed);
                         }
@@ -567,7 +553,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
             }
             let joined_res: Vec<Box<[usize]>> = res
                 .into_iter()
-                .map(|v| v.join().expect("error thread panicked").expect("error ??1"))
+                .map(|v| v.join().expect("error thread panicked").expect("error"))
                 .collect();
             let env_verbose_val =
                 std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());

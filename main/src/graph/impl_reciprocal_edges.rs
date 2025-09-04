@@ -1,9 +1,13 @@
 use super::{CacheFile, GenericEdge, GenericEdgeType, GraphMemoryMap};
-use crate::shared_slice::{
-    AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
+use crate::{
+    shared_slice::{
+        AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
+    },
+    utils::OneOrMany,
 };
 
 use crossbeam::thread;
+use smallvec::SmallVec;
 use std::{
     fs::OpenOptions,
     sync::{Arc, Barrier},
@@ -133,36 +137,91 @@ where
                         if eo_at_end {
                             *eo.get_mut(u) = edges_stop;
                         }
-                        // if *eo.get(u) > *index_ptr.get(u + 1) {
-                        //     println!("eo {u} > indx u + 1");
-                        // }
-                        // if *eo.get(u) < *index_ptr.get(u) {
-                        //     println!("eo {u} < indx u");
-                        // }
                         edges_start = edges_stop;
                     }
 
                     synchronize.wait();
 
+                    let mut prev = OneOrMany::<(usize, usize)>::One((node_count, 0usize));
                     for u in begin..end {
-                        // if *eo.get(u) > *index_ptr.get(u + 1) {
-                        //     println!("eo {u} > indx u + 1");
-                        // }
-                        // if *eo.get(u) < *index_ptr.get(u) {
-                        //     println!("eo {u} < indx u");
-                        // }
                         for edge_offset in *index_ptr.get(u)..*eo.get(u) {
                             let v = graph_ptr.get(edge_offset).dest();
                             // binary search on neighbours w, where w < v
                             if u == v {
                                 // self loops are their own reciprocals
                                 *er.get_mut(edge_offset) = edge_offset;
-                            } else {
+                                // reset
+                                prev = OneOrMany::One((v, edge_offset));
+                                continue;
+                            } else if let OneOrMany::One((prev_v, prev_offset)) = prev {
+                                if prev_v == v {
+                                    // find reciprocal, dest is the same, offset is different
+                                    // make entry into list and record
+                                    let reciprocal = 'outer: loop {
+                                        // search forwards
+                                        if prev_offset < edge_count - 1 && graph_ptr.get(prev_offset + 1).dest() == u {
+                                            break 'outer prev_offset + 1;
+                                        } /*else if prev_offset < edge_count - 1 {
+                                            println!("after {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset + 1).dest());
+                                        }*/
+                                        // search backwards
+                                        if prev_offset > 0 && graph_ptr.get(prev_offset - 1).dest() == u {
+                                            break 'outer prev_offset - 1;
+                                        } /*else if prev_offset > 0 {
+                                            println!("before {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset - 1).dest());
+                                        }*/
+                                        return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
+                                    };
+                                    let mut vs: SmallVec<[(usize, usize); 4]> = SmallVec::new();
+                                    vs.push((prev_v, prev_offset));
+                                    vs.push((v, reciprocal));
+                                    prev = OneOrMany::Many(vs);
+                                    *er.get_mut(edge_offset) = reciprocal;
+                                    *er.get_mut(reciprocal) = edge_offset;
+                                    continue;
+                                }
+                            } else if let OneOrMany::Many(ref mut vs) = prev {
+                                if vs[0].0 == v {
+                                    // find reciprocal, dest is the same, offset is different from
+                                    // any of the recorded offsets
+                                    // greedy lookup
+                                    let reciprocal = 'outer: loop {
+                                        // search forwards
+                                        let mut res = vs[0].1;
+                                        while res < edge_count - 1 && graph_ptr.get(res + 1).dest() == u {
+                                            res += 1;
+                                            if vs.iter().any(|&(_, b)| b == res) {
+                                                continue;
+                                            } else {
+                                                break 'outer res;
+                                            }
+                                        }
+                                        // reset and search backwards
+                                        res = vs[0].1;
+                                        while res > 0 && graph_ptr.get(res - 1).dest() == u {
+                                            res -= 1;
+                                            if vs.iter().any(|&(_, b)| b == res) {
+                                                continue;
+                                            } else {
+                                                break 'outer res;
+                                            }
+                                        }
+
+                                        return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
+                                    };
+
+                                    // extend entry's list
+                                    vs.push((v, reciprocal));
+                                    *er.get_mut(edge_offset) = reciprocal;
+                                    *er.get_mut(reciprocal) = edge_offset;
+                                    continue;
+                                }
+                            }
+
                                 let mut floor = *eo.get(v);
                                 let mut ceil = *index_ptr.get(v + 1);
                                 let reciprocal =  loop {
                                     if floor > ceil {
-                                        // println!("tid {tid} {u}->{v}: {} {} {} {} {}", graph_ptr.get(floor - 3).dest(), graph_ptr.get(floor - 2).dest(), graph_ptr.get(floor - 1).dest(), graph_ptr.get(floor).dest(), graph_ptr.get(floor + 1).dest());
                                         return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})").into());
                                     }
 
@@ -178,8 +237,11 @@ where
 
                                 *er.get_mut(edge_offset) = reciprocal;
                                 *er.get_mut(reciprocal) = edge_offset;
-                            }
+                                // reset
+                                prev = OneOrMany::One((v, reciprocal));
                         }
+
+                        prev = OneOrMany::One((node_count, 0));
                     }
 
                     Ok(())
