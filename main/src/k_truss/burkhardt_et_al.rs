@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 
@@ -25,17 +26,15 @@ type ProceduralMemoryBurkhardtEtAl = (
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct AlgoBurkhardtEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoBurkhardtEtAl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which edge trussness is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the trussness of each edge.
     k_trusses: AbstractedProceduralMemoryMut<u8>,
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    AlgoBurkhardtEtAl<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N, E, Ix> {
     /// Performs k-truss decomposition as described in ["Bounds and algorithms for graph trusses"](https://doi.org/10.48550/arXiv.1806.05523) by Burkhardt P. et al.
     ///
     /// # Arguments
@@ -43,7 +42,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut burkhardt_et_al = Self::new_no_compute(g)?;
         let proc_mem = burkhardt_et_al.init_cache_mem()?;
 
@@ -81,13 +80,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    AlgoBurkhardtEtAl<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -95,7 +92,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -140,7 +137,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KTrussBEA, None)?;
         let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
@@ -178,7 +175,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let edge_count = self.g.width();
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+        let neighbours_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // Shared atomic & simple arrays for counts and trussness
         let (triangle_count, edges, edge_index, e_stack) = proc_mem;
@@ -224,10 +221,10 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     let mut neighbours = HashMap::<usize, OneOrMany<usize>>::new();
                     for u in begin..end {
                         for j in *eo.get(u)..*index_ptr.get(u + 1) {
-                            let w = *graph_ptr.get(j);
+                            let w = *neighbours_ptr.get(j);
                             *edges.get_mut(j) = j;
                             *edge_index.get_mut(j) = j;
-                            match neighbours.entry(w.dest()) {
+                            match neighbours.entry(w) {
                                 std::collections::hash_map::Entry::Vacant(e) => {
                                     e.insert(OneOrMany::One(j));
                                 }
@@ -247,13 +244,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                         for u_v in *index_ptr.get(u)..*eo.get(u) {
                             *edges.get_mut(u_v) = u_v;
                             *edge_index.get_mut(u_v) = u_v;
-                            let v = *graph_ptr.get(u_v);
-                            let v = v.dest();
+                            let v = *neighbours_ptr.get(u_v);
                             if u == v {
                                 continue;
                             }
                             for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
-                                let w = graph_ptr.get(v_w).dest();
+                                let w = *neighbours_ptr.get(v_w);
                                 if w <= u {
                                     break;
                                 }
@@ -313,7 +309,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 let edge_offset = *edge_index.get(idx);
                 let t_count = tris.get(edge_offset).load(Ordering::Relaxed);
                 if t_count == k {
-                    let u = graph_ptr.get(*er.get(edge_offset)).dest();
+                    let u = *neighbours_ptr.get(*er.get(edge_offset));
                     stack.push((u, edge_offset));
                     idx = match idx.overflowing_add(1) {
                         (r, false) => r,
@@ -361,11 +357,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                 // by definition any non-trivial subgraph is at least a 2-truss: other
                 // values go up from there.
                 test[k as usize + 2] += 1;
-                let v = graph_ptr.get(offset).dest();
+                let v = *neighbours_ptr.get(offset);
 
                 // build u's neighour map
                 for u_w in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                    let w = graph_ptr.get(u_w).dest();
+                    let w = *neighbours_ptr.get(u_w);
                     if w != u && w != v {
                         match neighbours.entry(w) {
                             std::collections::hash_map::Entry::Vacant(e) => {
@@ -388,7 +384,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
                 // search v for neighbours in u's neighour map
                 for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
-                    let w = graph_ptr.get(v_w).dest();
+                    let w = *neighbours_ptr.get(v_w);
                     match neighbours.get(&w) {
                         Some(i) => match i {
                             OneOrMany::One(u_w) => {

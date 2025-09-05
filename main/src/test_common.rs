@@ -1,7 +1,7 @@
 use crate::{
     centralities::exact::{ExactClosenessCentrality, ExactHarmonicCentrality, ExactLinCentrality},
     graph::{
-        GenericEdge, GenericEdgeType, GraphMemoryMap,
+        self, GraphMemoryMap,
         cache::{
             GraphCache,
             utils::{
@@ -9,7 +9,7 @@ use crate::{
                 cache_file_name_from_id, id_from_filename,
             },
         },
-        edge::{TinyEdgeType, TinyLabelStandardEdge},
+        label::VoidLabel,
     },
 };
 
@@ -19,7 +19,7 @@ use std::{
     sync::OnceLock,
 };
 
-type TestCache = DashMap<String, OnceLock<GraphCache<TinyEdgeType, TinyLabelStandardEdge>>>;
+type TestCache = DashMap<String, OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>>;
 type ExactValueCache = DashMap<String, OnceLock<String>>;
 
 static TEST_CACHE: OnceLock<TestCache> = OnceLock::new();
@@ -87,25 +87,31 @@ fn graph_id_from_dataset_file_name(
 #[allow(dead_code)]
 pub(crate) fn get_or_init_dataset_cache_entry(
     graph_path: &Path,
-) -> Result<GraphCache<TinyEdgeType, TinyLabelStandardEdge>, Box<dyn std::error::Error>> {
+) -> Result<GraphCache<VoidLabel, VoidLabel, usize>, Box<dyn std::error::Error>> {
     let cache_id = graph_id_from_dataset_file_name(graph_path)?;
 
     // Get or create the per-key OnceLock
     let test_entry = mem_cache()
         .entry(cache_id)
-        .or_try_insert_with(|| -> Result<OnceLock<GraphCache<TinyEdgeType, TinyLabelStandardEdge>>, Box<dyn std::error::Error>> {
+        .or_try_insert_with(|| -> Result<OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>, Box<dyn std::error::Error>> {
             let lock = OnceLock::new();
             Ok(lock)
         })?;
-    let cache = test_entry.get_or_try_init(|| -> Result<GraphCache<TinyEdgeType, TinyLabelStandardEdge>, Box<dyn std::error::Error>> {
+    let cache = test_entry.get_or_try_init(
+        || -> Result<GraphCache<VoidLabel, VoidLabel, usize>, Box<dyn std::error::Error>> {
             let cache_filename = cache_file_for(graph_path)?;
             eprintln!("check if file with fn {cache_filename} exists");
             if Path::new(&cache_filename).exists() {
                 eprintln!("yes, found it {:?}", graph_path);
-                GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::open(&cache_filename, None)
-                    .map_err(|e| -> Box<dyn std::error::Error> {
-                        format!("error getting `GraphCache` instance for path {:?}: {:?}", graph_path, e).into()
-                    })
+                GraphCache::<VoidLabel, VoidLabel, usize>::open(&cache_filename, None).map_err(
+                    |e| -> Box<dyn std::error::Error> {
+                        format!(
+                            "error getting `GraphCache` instance for path {:?}: {:?}",
+                            graph_path, e
+                        )
+                        .into()
+                    },
+                )
             } else {
                 eprintln!("no, built it {:?}", graph_path);
                 let file_name = graph_path
@@ -113,33 +119,35 @@ pub(crate) fn get_or_init_dataset_cache_entry(
                     .ok_or_else(|| -> Box<dyn std::error::Error> {
                         "error invalid file path --- path not found".into()
                     })?
-                .to_str()
+                    .to_str()
                     .ok_or_else(|| -> Box<dyn std::error::Error> {
                         "error invalid file path --- empty path".into()
                     })?;
 
-                GraphCache::<TinyEdgeType, TinyLabelStandardEdge>::from_file(
+                GraphCache::<VoidLabel, VoidLabel, usize>::from_file(
                     graph_path,
                     Some(file_name.to_string()),
                     None,
                     None,
+                )
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!(
+                        "error creating `GraphCache` instance for path {:?}: {:?}",
+                        graph_path, e
                     )
-                    .map_err(|e| -> Box<dyn std::error::Error> {
-                        format!("error creating `GraphCache` instance for path {:?}: {:?}", graph_path, e).into()
-                    })
+                    .into()
+                })
             }
-    })?;
+        },
+    )?;
 
     Ok(cache.clone())
 }
 
 #[allow(dead_code)]
-pub(crate) fn get_or_init_dataset_exact_value<
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
->(
+pub(crate) fn get_or_init_dataset_exact_value<N: graph::N, E: graph::E, Ix: graph::IndexType>(
     graph_path: &Path,
-    graph: &GraphMemoryMap<EdgeType, Edge>,
+    graph: &GraphMemoryMap<N, E, Ix>,
     value_type: FileType,
 ) -> Result<String, Box<dyn std::error::Error>> {
     if value_type != FileType::ExactClosenessCentrality(H::H)
@@ -197,14 +205,10 @@ pub(crate) fn get_or_init_dataset_exact_value<
 #[allow(dead_code)]
 #[cfg(feature = "bench")]
 /// Build (or open) a graph for a given dataset path.
-pub fn load_graph<EdgeType, Edge, P: AsRef<Path>>(
+pub fn load_graph<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
     dataset: P,
-) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
-    let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
+) -> Result<GraphMemoryMap<N, E, Ix>, Box<dyn std::error::Error>> {
+    let cache = GraphCache::<N, E, Ix>::from_file(dataset, None, None, None)?;
     GraphMemoryMap::init_from_cache(cache, Some(16))
 }
 
@@ -225,15 +229,11 @@ where
 #[allow(dead_code)]
 #[cfg(feature = "bench")]
 /// Build (or open) a graph for a given dataset path with a given `suggested threads` number.
-pub fn load_graph_with_threads<EdgeType, Edge, P: AsRef<Path>>(
+pub fn load_graph_with_threads<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
     dataset: P,
     threads: u8,
-) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
-    let cache = GraphCache::<EdgeType, Edge>::from_file(dataset, None, None, None)?;
+) -> Result<GraphMemoryMap<N, E, Ix>, Box<dyn std::error::Error>> {
+    let cache = GraphCache::<N, E, Ix>::from_file(dataset, None, None, None)?;
     GraphMemoryMap::init_from_cache(cache, Some(threads))
 }
 

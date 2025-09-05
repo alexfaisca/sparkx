@@ -5,6 +5,7 @@ mod impl_miscelanious;
 mod impl_partition;
 mod impl_reciprocal_edges;
 pub(crate) mod impl_traits;
+pub mod label;
 
 #[cfg(feature = "petgraph")]
 mod export_petgraph;
@@ -16,9 +17,248 @@ pub mod test_utils;
 use crate::graph::cache::GraphCache;
 use crate::shared_slice::AbstractedProceduralMemory;
 pub use graph_derive::{GenericEdge, GenericEdgeType};
+
+use label::VoidLabel;
+use std::hash::Hash;
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::{fmt::Debug, fs::File, sync::Arc};
+
+pub use graph_derive::E;
+pub use graph_derive::N;
+use graph_derive::sparkx_label;
+
+/// The default integer type for indexing.
+///
+/// The default type is `usize` to facilitate usage. As graphs that fit in `u32` or smaller unsizeds
+/// won't have performance issues give nthe nature of our algorithms.
+///
+/// Used for node indices in memmaped `CSR` representation.
+pub type DefaultIx = usize;
+
+/// Trait for the unsigned integer type used for indexing garph elements.
+///
+/// # Safety
+///
+/// Marked `unsafe` because: the trait must faithfully preserve
+/// and convert index values.
+pub unsafe trait IndexType:
+    Copy + Default + Hash + Ord + Debug + Send + Sync + 'static
+{
+    fn new(x: usize) -> Self;
+    fn index(&self) -> usize;
+    fn max() -> Self;
+}
+
+unsafe impl IndexType for usize {
+    #[inline(always)]
+    fn new(x: usize) -> Self {
+        x
+    }
+    #[inline(always)]
+    fn index(&self) -> Self {
+        *self
+    }
+    #[inline(always)]
+    fn max() -> Self {
+        usize::MAX
+    }
+}
+
+unsafe impl IndexType for u32 {
+    #[inline(always)]
+    fn new(x: usize) -> Self {
+        x as u32
+    }
+    #[inline(always)]
+    fn index(&self) -> usize {
+        *self as usize
+    }
+    #[inline(always)]
+    fn max() -> Self {
+        u32::MAX
+    }
+}
+
+unsafe impl IndexType for u16 {
+    #[inline(always)]
+    fn new(x: usize) -> Self {
+        x as u16
+    }
+    #[inline(always)]
+    fn index(&self) -> usize {
+        *self as usize
+    }
+    #[inline(always)]
+    fn max() -> Self {
+        u16::MAX
+    }
+}
+
+unsafe impl IndexType for u8 {
+    #[inline(always)]
+    fn new(x: usize) -> Self {
+        x as u8
+    }
+    #[inline(always)]
+    fn index(&self) -> usize {
+        *self as usize
+    }
+    #[inline(always)]
+    fn max() -> Self {
+        u8::MAX
+    }
+}
+
+/// Node identifier.
+#[derive(Copy, Clone, Debug, Default, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub struct NodeIndex<Ix = DefaultIx>(Ix);
+
+impl<Ix: IndexType> NodeIndex<Ix> {
+    #[inline]
+    pub fn new(x: usize) -> Self {
+        NodeIndex(IndexType::new(x))
+    }
+
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0.index()
+    }
+
+    #[inline]
+    pub fn end() -> Self {
+        NodeIndex(IndexType::max())
+    }
+
+    fn _into_edge(self) -> EdgeIndex<Ix> {
+        EdgeIndex(self.0)
+    }
+}
+
+unsafe impl<Ix: IndexType> IndexType for NodeIndex<Ix> {
+    fn index(&self) -> usize {
+        self.0.index()
+    }
+    fn new(x: usize) -> Self {
+        NodeIndex::new(x)
+    }
+    fn max() -> Self {
+        NodeIndex(<Ix as IndexType>::max())
+    }
+}
+/// Edge identifier.
+#[derive(Copy, Clone, Debug, Default, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub struct EdgeIndex<Ix = DefaultIx>(Ix);
+
+impl<Ix: IndexType> EdgeIndex<Ix> {
+    #[inline]
+    pub fn new(x: usize) -> Self {
+        EdgeIndex(IndexType::new(x))
+    }
+
+    #[inline]
+    pub fn index(self) -> usize {
+        self.0.index()
+    }
+
+    /// An invalid `EdgeIndex` used to denote absence of an edge, for example
+    /// to end an adjacency list.
+    #[inline]
+    pub fn end() -> Self {
+        EdgeIndex(IndexType::max())
+    }
+
+    fn _into_node(self) -> NodeIndex<Ix> {
+        NodeIndex(self.0)
+    }
+}
+
+impl<Ix: IndexType> From<Ix> for EdgeIndex<Ix> {
+    fn from(ix: Ix) -> Self {
+        EdgeIndex(ix)
+    }
+}
+
+/// Short version of `NodeIndex::new`
+pub fn node_index<Ix: IndexType>(index: usize) -> NodeIndex<Ix> {
+    NodeIndex::new(index)
+}
+
+/// Short version of `EdgeIndex::new`
+pub fn edge_index<Ix: IndexType>(index: usize) -> EdgeIndex<Ix> {
+    EdgeIndex::new(index)
+}
+
+/// Describes the behavior node labels must exhibit to be used by the tool.
+///
+/// Given a repr C/transparent struct the required traits may be derived automatically by
+/// annotating the struct with #[sparkx_label].
+#[allow(dead_code)]
+pub trait N:
+    Copy + std::fmt::Debug + Ord + bytemuck::Pod + bytemuck::Zeroable + Send + Sync
+{
+    fn new(v: usize) -> Self;
+    #[inline]
+    fn is_labeled() -> bool {
+        false
+    }
+    #[inline]
+    fn is_weighted() -> bool {
+        false
+    }
+    #[inline]
+    fn is_colored() -> bool {
+        false
+    }
+    #[inline]
+    fn label(&self) -> usize {
+        0
+    }
+    #[inline]
+    fn color(&self) -> usize {
+        0
+    }
+    #[inline]
+    fn weigth(&self) -> usize {
+        1
+    }
+}
+
+/// Describes the behavior edge labels must exhibit to be used by the tool.
+///
+/// Given a repr C/transparent struct the required traits may be derived automatically by
+/// annotating the struct with #[sparkx_label].
+#[allow(dead_code)]
+pub trait E:
+    Copy + std::fmt::Debug + Ord + bytemuck::Pod + bytemuck::Zeroable + Send + Sync
+{
+    fn new(v: usize) -> Self;
+    #[inline]
+    fn is_labeled() -> bool {
+        false
+    }
+    #[inline]
+    fn is_weighted() -> bool {
+        false
+    }
+    #[inline]
+    fn is_colored() -> bool {
+        false
+    }
+    #[inline]
+    fn label(&self) -> usize {
+        0
+    }
+    #[inline]
+    fn color(&self) -> usize {
+        0
+    }
+    #[inline]
+    fn weigth(&self) -> usize {
+        1
+    }
+}
 
 /// Describes the behavior edge types must exhibit to be used by the tool.
 ///
@@ -104,28 +344,31 @@ pub enum CacheFile {
 }
 
 enum GraphFile {
-    Edges,
-    Index,
-    Metalabel,
+    Neighbors,
+    Offsets,
+    NodeLabels,
+    EdgeLabels,
+    MetaLabels,
 }
 
 #[derive(Clone)]
-pub struct GraphMemoryMap<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct GraphMemoryMap<
+    N: crate::graph::N = VoidLabel,
+    E: crate::graph::E = VoidLabel,
+    Ix: crate::graph::IndexType = DefaultIx,
+> {
     graph: Arc<memmap2::Mmap>,
     index: Arc<memmap2::Mmap>,
     metalabels: Arc<fst::Map<memmap2::Mmap>>,
-    graph_cache: GraphCache<EdgeType, Edge>,
+    graph_cache: GraphCache<N, E, Ix>,
     edge_size: usize,
     thread_count: u8,
     exports: u8,
+    _marker: PhantomData<Ix>,
 }
 
 #[allow(dead_code)]
-impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
     /// Initializes a [`GraphMemoryMap`] instance from a [`GraphCache`] instance[^1][^2].
     ///
     /// [^1]: [`GraphCache`] instance must be reandonly, dynamic graphs are not supported.
@@ -139,20 +382,20 @@ where
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub fn init_from_cache(
-        graph_cache: GraphCache<EdgeType, Edge>,
+        graph_cache: GraphCache<N, E, Ix>,
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         if graph_cache.readonly {
-            let graph = Arc::new(unsafe { memmap2::Mmap::map(&graph_cache.graph_file)? });
-            let index = Arc::new(unsafe { memmap2::Mmap::map(&graph_cache.index_file)? });
+            let graph = Arc::new(unsafe { memmap2::Mmap::map(&graph_cache.neighbors_file)? });
+            let index = Arc::new(unsafe { memmap2::Mmap::map(&graph_cache.offsets_file)? });
             let metalabels = Arc::new(fst::Map::new(unsafe {
                 memmap2::MmapOptions::new().map(&File::open(&graph_cache.metalabel_filename)?)?
             })?);
-            let edge_size = std::mem::size_of::<Edge>();
+            let edge_size = std::mem::size_of::<usize>();
             let thread_count = thread_count.unwrap_or(1).max(1);
             let exports = 0u8;
 
-            return Ok(GraphMemoryMap {
+            return Ok(Self {
                 graph,
                 index,
                 metalabels,
@@ -160,6 +403,7 @@ where
                 edge_size,
                 thread_count,
                 exports,
+                _marker: PhantomData::<Ix>,
             });
         }
 
@@ -174,7 +418,7 @@ where
         in_fst: Option<fn(usize) -> bool>,
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let graph_cache = GraphCache::<EdgeType, Edge>::from_file(p, id, batch, in_fst)?;
+        let graph_cache = GraphCache::<N, E, Ix>::from_file(p, id, batch, in_fst)?;
         // println!(
         //     "{:?}",
         //     cache_file_name(
@@ -192,7 +436,7 @@ where
         batch: Option<usize>,
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let graph_cache = GraphCache::<EdgeType, Edge>::open(filename, batch)?;
+        let graph_cache = GraphCache::<N, E, Ix>::open(filename, batch)?;
         Self::init_from_cache(graph_cache, thread_count)
     }
 
@@ -202,8 +446,8 @@ where
     }
 
     #[inline(always)]
-    pub(crate) fn edges_ptr(&self) -> *const Edge {
-        self.graph.as_ptr() as *const Edge
+    pub(crate) fn neighbours_ptr(&self) -> *const usize {
+        self.graph.as_ptr() as *const usize
     }
 
     /// Returns the (suggested) number of threads being used for computations on the graph.
@@ -218,16 +462,28 @@ where
         self.graph_cache.cache_id()
     }
 
-    /// Returns the graph's edge file's filename.
+    /// Returns the graph's neighbors' file's filename.
     #[inline(always)]
     pub fn cache_edges_filename(&self) -> String {
-        self.graph_cache.edges_filename()
+        self.graph_cache.neighbors_filename()
     }
 
-    /// Returns the graph's offsets file's filename.
+    /// Returns the graph's offsets' file's filename.
     #[inline(always)]
     pub fn cache_index_filename(&self) -> String {
-        self.graph_cache.index_filename()
+        self.graph_cache.offsets_filename()
+    }
+
+    /// Returns the graph's node labels' file's filename.
+    #[inline(always)]
+    pub fn cache_node_labels_filename(&self) -> String {
+        self.graph_cache.nodelabels_filename()
+    }
+
+    /// Returns the graph's edge labels' file's filename.
+    #[inline(always)]
+    pub fn cache_edge_labels_filename(&self) -> String {
+        self.graph_cache.edgelabels_filename()
     }
 
     /// Returns the graph's fst file's filename.
@@ -276,59 +532,59 @@ where
     pub fn neighbours(
         &self,
         node_id: usize,
-    ) -> Result<NeighbourIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<NeighbourIter<N, E, Ix>, Box<dyn std::error::Error>> {
         if node_id >= self.size() {
             return Err(
                 format!("error {node_id} must be smaller than |V| = {}", self.size()).into(),
             );
         }
 
-        Ok(NeighbourIter::<EdgeType, Edge>::new(
-            self.graph.as_ptr() as *const Edge,
+        Ok(NeighbourIter::<N, E, Ix>::new(
+            self.graph.as_ptr() as *const usize,
             self.index.as_ptr() as *const usize,
             node_id,
         ))
     }
 
-    /// Returns an [`EdgeIter`] iterator over all of the graph's edges.
-    ///
-    /// [`EdgeIter`]: ./struct.EdgeIter.html#
-    pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        Ok(EdgeIter::<EdgeType, Edge>::new(
-            self.graph.as_ptr() as *const Edge,
-            self.index.as_ptr() as *const usize,
-            0,
-            self.size(),
-        ))
-    }
+    // /// Returns an [`EdgeIter`] iterator over all of the graph's edges.
+    // ///
+    // /// [`EdgeIter`]: ./struct.EdgeIter.html#
+    // pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    //     Ok(EdgeIter::<EdgeType, Edge>::new(
+    //         self.graph.as_ptr() as *const Edge,
+    //         self.index.as_ptr() as *const usize,
+    //         0,
+    //         self.size(),
+    //     ))
+    // }
 
-    /// Returns an [`EdgeIter`] iterator over the graph's edges in a given range.
-    ///
-    /// # Arguments
-    ///
-    /// * `begin_node` --- id of the node whose offset begin marks the beginning of the iterator's range.
-    /// * `end_node` ---  id of the node whose offset end marks the end of the iterator's range.
-    ///
-    /// [`EdgeIter`]: ./struct.EdgeIter.html#
-    pub fn edges_in_range(
-        &self,
-        begin_node: usize,
-        end_node: usize,
-    ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-        if begin_node > end_node {
-            return Err("error invalid range, beginning after end".into());
-        }
-        if begin_node > self.size() || end_node > self.size() {
-            return Err("error invalid range".into());
-        }
-
-        Ok(EdgeIter::<EdgeType, Edge>::new(
-            self.graph.as_ptr() as *const Edge,
-            self.index.as_ptr() as *const usize,
-            begin_node,
-            end_node,
-        ))
-    }
+    // /// Returns an [`EdgeIter`] iterator over the graph's edges in a given range.
+    // ///
+    // /// # Arguments
+    // ///
+    // /// * `begin_node` --- id of the node whose offset begin marks the beginning of the iterator's range.
+    // /// * `end_node` ---  id of the node whose offset end marks the end of the iterator's range.
+    // ///
+    // /// [`EdgeIter`]: ./struct.EdgeIter.html#
+    // pub fn edges_in_range(
+    //     &self,
+    //     begin_node: usize,
+    //     end_node: usize,
+    // ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    //     if begin_node > end_node {
+    //         return Err("error invalid range, beginning after end".into());
+    //     }
+    //     if begin_node > self.size() || end_node > self.size() {
+    //         return Err("error invalid range".into());
+    //     }
+    //
+    //     Ok(EdgeIter::<EdgeType, Edge>::new(
+    //         self.graph.as_ptr() as *const Edge,
+    //         self.index.as_ptr() as *const usize,
+    //         begin_node,
+    //         end_node,
+    //     ))
+    // }
 
     /// Performs a sweep cut over a given diffusion vector[^1] by partition conductance.
     ///
@@ -415,7 +671,7 @@ where
         &mut self,
         mask: fn(usize) -> bool,
         identifier: Option<&str>,
-    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         self.apply_mask_to_nodes(mask, identifier)
     }
 
@@ -475,21 +731,21 @@ where
         self.graph_cache.cleanup_cache(target)
     }
 
-    /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
-    ///
-    /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
-    #[cfg(feature = "petgraph")]
-    pub fn export_petgraph(
-        &self,
-    ) -> Result<
-        petgraph::graph::DiGraph<petgraph::graph::NodeIndex<usize>, EdgeType>,
-        Box<dyn std::error::Error>,
-    > {
-        self.export_petgraph_impl()
-    }
+    // /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
+    // ///
+    // /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
+    // ///
+    // /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
+    // /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
+    // #[cfg(feature = "petgraph")]
+    // pub fn export_petgraph(
+    //     &self,
+    // ) -> Result<
+    //     petgraph::graph::DiGraph<petgraph::graph::NodeIndex<usize>, EdgeType>,
+    //     Box<dyn std::error::Error>,
+    // > {
+    //     self.export_petgraph_impl()
+    // }
 
     /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format stripping any edge or node labelings whatsoever.
     ///
@@ -501,24 +757,24 @@ where
         self.export_petgraph_stripped_impl()
     }
 
-    /// Export the [`GraphMemoryMap`] instance to rustworkx_core compatible petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
-    ///
-    /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
-    #[cfg(feature = "rustworkx")]
-    pub fn export_rustworkx(
-        &self,
-    ) -> Result<
-        rustworkx_core::petgraph::graph::DiGraph<
-            rustworkx_core::petgraph::graph::NodeIndex<usize>,
-            EdgeType,
-        >,
-        Box<dyn std::error::Error>,
-    > {
-        self.export_rustworkx_impl()
-    }
+    // /// Export the [`GraphMemoryMap`] instance to rustworkx_core compatible petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
+    // ///
+    // /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
+    // ///
+    // /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
+    // /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
+    // #[cfg(feature = "rustworkx")]
+    // pub fn export_rustworkx(
+    //     &self,
+    // ) -> Result<
+    //     rustworkx_core::petgraph::graph::DiGraph<
+    //         rustworkx_core::petgraph::graph::NodeIndex<usize>,
+    //         EdgeType,
+    //     >,
+    //     Box<dyn std::error::Error>,
+    // > {
+    //     self.export_rustworkx_impl()
+    // }
 
     /// Export the [`GraphMemoryMap`] instance to rustworkx_core compatible petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format stripping any edge or node labelings whatsoever.
     ///
@@ -544,28 +800,20 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct NeighbourIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    edge_ptr: *const Edge,
-    _orig_edge_ptr: *const Edge,
+pub struct NeighbourIter<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    edge_ptr: *const usize,
+    _orig_edge_ptr: *const usize,
     _orig_id_ptr: *const usize,
     id: usize,
     count: usize,
     offset: usize,
-    _phantom: std::marker::PhantomData<EdgeType>,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
 }
 
-#[derive(Debug)]
-pub struct EdgeIter<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    edge_ptr: *const Edge,
-    id_ptr: *const usize,
-    id: usize,
-    end: usize,
-    count: usize,
-    _phantom: std::marker::PhantomData<EdgeType>,
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> NeighbourIter<EdgeType, Edge> {
-    fn new(edge_mmap: *const Edge, id_mmap: *const usize, node_id: usize) -> Self {
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> NeighbourIter<N, E, Ix> {
+    fn new(edge_mmap: *const usize, id_mmap: *const usize, node_id: usize) -> Self {
         let _orig_edge_ptr = edge_mmap;
         let _orig_id_ptr = id_mmap;
         let id_ptr = unsafe { id_mmap.add(node_id) };
@@ -578,23 +826,25 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> NeighbourIter<EdgeT
             id: node_id,
             count: unsafe { id_ptr.add(1).read_unaligned() - offset },
             offset,
-            _phantom: std::marker::PhantomData::<EdgeType>,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
         }
     }
 
     #[inline(always)]
     fn _into_neighbour(&self) -> Self {
         NeighbourIter::new(self._orig_edge_ptr, self._orig_id_ptr, unsafe {
-            self.edge_ptr.read_unaligned().dest()
+            self.edge_ptr.read_unaligned()
         })
     }
 
-    fn _next_back_with_offset(&mut self) -> Option<(usize, Edge)> {
+    fn _next_back_with_offset(&mut self) -> Option<(usize, usize)> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
-        let next: (usize, Edge);
+        let next: (usize, usize);
         unsafe {
             next = (self.id, self.edge_ptr.add(self.count).read_unaligned());
         };
@@ -605,12 +855,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> NeighbourIter<EdgeT
         self.count
     }
 
-    fn _next_with_offset(&mut self) -> Option<(usize, Edge)> {
+    fn _next_with_offset(&mut self) -> Option<(usize, usize)> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
-        let next: (usize, Edge);
+        let next: (usize, usize);
         self.edge_ptr = unsafe {
             next = (self.offset, self.edge_ptr.read_unaligned());
             self.edge_ptr.add(1)
@@ -620,16 +870,16 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> NeighbourIter<EdgeT
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> DoubleEndedIterator
-    for NeighbourIter<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for NeighbourIter<N, E, Ix>
 {
     #[inline(always)]
-    fn next_back(&mut self) -> Option<Edge> {
+    fn next_back(&mut self) -> Option<usize> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
-        let next: Edge;
+        let next: usize;
         unsafe {
             next = self.edge_ptr.add(self.count).read_unaligned();
         };
@@ -637,19 +887,19 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> DoubleEndedIterator
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator
-    for NeighbourIter<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for NeighbourIter<N, E, Ix>
 {
-    type Item = Edge;
+    type Item = usize;
 
     #[inline(always)]
-    fn next(&mut self) -> Option<Edge> {
+    fn next(&mut self) -> Option<usize> {
         if self.count == 0 {
             return None;
         }
         self.count -= 1;
         self.offset += 1;
-        let next: Edge;
+        let next: usize;
         self.edge_ptr = unsafe {
             next = self.edge_ptr.read_unaligned();
             self.edge_ptr.add(1)
@@ -664,131 +914,71 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> EdgeIter<EdgeType, Edge> {
-    #[inline(always)]
-    fn new(edge_mmap: *const Edge, id_mmap: *const usize, start: usize, end: usize) -> Self {
-        let id_ptr = unsafe { id_mmap.add(start) };
-        let offset = unsafe { id_ptr.read_unaligned() };
-        let edge_ptr = unsafe { edge_mmap.add(offset) };
-
-        EdgeIter {
-            edge_ptr,
-            id_ptr,
-            id: start,
-            end,
-            count: unsafe { id_ptr.add(1).read_unaligned() - offset },
-            _phantom: std::marker::PhantomData::<EdgeType>,
-        }
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Iterator for EdgeIter<EdgeType, Edge> {
-    type Item = Edge;
-
-    #[inline(always)]
-    fn next(&mut self) -> Option<Edge> {
-        if self.count == 0 {
-            self.id += 1;
-            if self.id > self.end {
-                return None;
-            }
-            unsafe {
-                self.id_ptr = self.id_ptr.add(1);
-                let offset = self.id_ptr.read_unaligned();
-                self.count = self.id_ptr.add(1).read_unaligned() - offset;
-            };
-        }
-        self.count -= 1;
-        let next: Edge;
-        self.edge_ptr = unsafe {
-            next = self.edge_ptr.read_unaligned();
-            self.edge_ptr.add(1)
-        };
-        Some(next)
-    }
-
-    #[inline(always)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.end - self.id;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::RangeFull>
-    for GraphMemoryMap<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    std::ops::Index<std::ops::RangeFull> for GraphMemoryMap<N, E, Ix>
 {
-    type Output = [Edge];
+    type Output = [usize];
     #[inline]
-    fn index(&self, _index: std::ops::RangeFull) -> &[Edge] {
+    fn index(&self, _index: std::ops::RangeFull) -> &[usize] {
         // FIXME: this is really weird, most probably it is WRONG!!! Don't turn this in without replacing this ugly '* 8' for something that you understand and guarantee is right!!!
         unsafe {
             std::slice::from_raw_parts(
-                self.graph.as_ptr() as *const Edge,
+                self.graph.as_ptr() as *const usize,
                 self.size() * 8 / self.edge_size,
             )
         }
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::Range<usize>>
-    for GraphMemoryMap<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    std::ops::Index<std::ops::Range<usize>> for GraphMemoryMap<N, E, Ix>
 {
-    type Output = [Edge];
+    type Output = [usize];
     #[inline]
-    fn index(&self, index: std::ops::Range<usize>) -> &[Edge] {
+    fn index(&self, index: std::ops::Range<usize>) -> &[usize] {
         unsafe {
             std::slice::from_raw_parts(
-                self.graph.as_ptr().add(index.start * self.edge_size) as *const Edge,
+                self.graph.as_ptr().add(index.start * self.edge_size) as *const usize,
                 index.end - index.start,
             )
         }
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> std::ops::Index<std::ops::Range<u64>>
-    for GraphMemoryMap<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    std::ops::Index<std::ops::Range<u64>> for GraphMemoryMap<N, E, Ix>
 {
-    type Output = [Edge];
+    type Output = [usize];
     #[inline]
-    fn index(&self, index: std::ops::Range<u64>) -> &[Edge] {
+    fn index(&self, index: std::ops::Range<u64>) -> &[usize] {
         let start = index.start as usize;
         let end = index.end as usize;
 
         unsafe {
             std::slice::from_raw_parts(
-                self.graph.as_ptr().add(start * self.edge_size) as *const Edge,
+                self.graph.as_ptr().add(start * self.edge_size) as *const usize,
                 end - start,
             )
         }
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug
-    for GraphMemoryMap<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Debug
+    for GraphMemoryMap<N, E, Ix>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "MemoryMappedData {{\n\t
-            filename: {},\n\t
-            index_filename: {},\n\t
+            neighbors_filename: {},\n\t
+            offsets_filename: {},\n\t
             size: {},\n\t
             width: {},\n\t
             }}",
-            self.graph_cache.graph_filename,
-            self.graph_cache.index_filename,
+            self.graph_cache.neighbors_filename(),
+            self.graph_cache.offsets_filename(),
             self.size(),
             self.width(),
-        )
-    }
-}
-
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Debug for GraphCache<EdgeType, Edge> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{{\n\tgraph filename: {}\n\tindex filename: {}\n\tmetalabel filename: {}\n}}",
-            self.graph_filename, self.index_filename, self.metalabel_filename
         )
     }
 }

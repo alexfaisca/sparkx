@@ -11,15 +11,15 @@ use _verify::verify_trails;
 mod _verify {
     use crate::{
         graph::{
-            GenericEdge, GenericEdgeType, GraphMemoryMap,
+            GraphMemoryMap,
             cache::utils::{FileType, H, cache_file_name},
         },
         shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
     };
 
     #[allow(dead_code)]
-    pub(super) fn verify_trails<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
-        graph: &GraphMemoryMap<EdgeType, Edge>,
+    pub(super) fn verify_trails(
+        graph: &GraphMemoryMap,
         euler_trails: AbstractedProceduralMemoryMut<usize>,
         euler_index: Vec<usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -93,8 +93,8 @@ mod _verify {
                 let n_node = euler_trails.get(next_node);
                 let c_neighbours = graph.neighbours(*c_node)?;
                 let mut found = false;
-                for (idx, edge) in c_neighbours.enumerate() {
-                    if edge.dest() == *n_node {
+                for (idx, dest_node) in c_neighbours.enumerate() {
+                    if dest_node == *n_node {
                         let b_idx = unsafe { edge_indexes.add(*c_node).read() };
                         let e_idx = b_idx + idx;
                         if !*check.get(e_idx) {

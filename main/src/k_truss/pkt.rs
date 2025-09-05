@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 use crate::utils::OneOrMany;
@@ -23,14 +24,14 @@ type ProceduralMemoryPKT = (
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct AlgoPKT<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoPKT<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which edge trussness is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the trussness of each edge.
     k_trusses: AbstractedProceduralMemoryMut<u8>,
 }
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, EdgeType, Edge> {
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     /// Performs the *PKT Alrgorithm*'s 'k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
     ///
     /// # Arguments
@@ -38,7 +39,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut pkt = Self::new_no_compute(g)?;
         let proc_mem = pkt.init_cache_mem()?;
 
@@ -76,11 +77,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, EdgeType, Edge> {
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -88,7 +89,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -129,7 +130,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KTrussPKT, None)?;
         let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
@@ -171,7 +172,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
         let edge_load = edge_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+        let neighbours_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // Shared arrays
         let (curr, next, processed, in_curr, in_next, s) = proc_mem;
@@ -218,8 +219,8 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                     let mut neighbours = HashMap::<usize, OneOrMany<usize>>::new();
                     for u in begin..end {
                         for j in *eo.get(u)..*index_ptr.get(u + 1) {
-                            let w = *graph_ptr.get(j);
-                            match neighbours.entry(w.dest()) {
+                            let w = *neighbours_ptr.get(j);
+                            match neighbours.entry(w) {
                                 std::collections::hash_map::Entry::Vacant(e) => {
                                     e.insert(OneOrMany::One(j));
                                 }
@@ -237,13 +238,12 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                             }
                         }
                         for u_v in *index_ptr.get(u)..*eo.get(u) {
-                            let v = *graph_ptr.get(u_v);
-                            let v = v.dest();
+                            let v = *neighbours_ptr.get(u_v);
                             if u == v {
                                 continue;
                             }
                             for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
-                                let w = graph_ptr.get(v_w).dest();
+                                let w = *neighbours_ptr.get(v_w);
                                 if w <= u {
                                     break;
                                 }
@@ -383,15 +383,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                                 for e_idx in begin..end {
                                     let u_v = *to_process.get(e_idx);
 
-                                    let u = graph_ptr.get(*er.get(u_v)).dest();
-                                    let v = graph_ptr.get(u_v).dest();
+                                    let u = *neighbours_ptr.get(*er.get(u_v));
+                                    let v = *neighbours_ptr.get(u_v);
 
                                     let edges_start = *index_ptr.get(u);
                                     let edges_stop = *index_ptr.get(u + 1);
 
                                     // mark u neighbours
                                     for u_w in edges_start..edges_stop {
-                                        let w = graph_ptr.get(u_w).dest();
+                                        let w = *neighbours_ptr.get(u_w);
                                         if w != u && w != v {
                                             match neighbours.entry(w) {
                                                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -414,7 +414,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoPKT<'a, Edg
                                     }
 
                                     for v_w in *index_ptr.get(v)..*index_ptr.get(v + 1) {
-                                        let w = graph_ptr.get(v_w).dest();
+                                        let w = *neighbours_ptr.get(v_w);
                                         let u_ws = match neighbours.get(&w) {
                                             Some(i) => match i {
                                                 OneOrMany::One(u_w) => Box::new([*u_w]),

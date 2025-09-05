@@ -1,11 +1,7 @@
-use super::{GenericEdge, GenericEdgeType, GraphMemoryMap};
+use super::GraphMemoryMap;
 
 #[allow(dead_code)]
-impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
     #[inline(always)]
     pub(super) fn is_neighbour_impl(&self, u: usize, v: usize) -> Option<usize> {
         assert!(
@@ -24,7 +20,7 @@ where
                 return None;
             }
             let m = floor + (ceil - floor) / 2;
-            let dest = unsafe { (self.graph.as_ptr() as *const Edge).add(m).read().dest() };
+            let dest = unsafe { (self.graph.as_ptr() as *const usize).add(m).read() };
             match dest.cmp(&v) {
                 std::cmp::Ordering::Equal => break Some(m),
                 std::cmp::Ordering::Greater => ceil = m - 1,
@@ -42,7 +38,7 @@ where
             loop {
                 if let Some((index, n)) = iter._next_with_offset() {
                     if index_a.is_none() {
-                        match (if switch { v } else { u }).cmp(&n.dest()) {
+                        match (if switch { v } else { u }).cmp(&n) {
                             std::cmp::Ordering::Less => {
                                 return None;
                             }
@@ -55,7 +51,7 @@ where
                             _ => {}
                         };
                     } else {
-                        match (if switch { u } else { v }).cmp(&n.dest()) {
+                        match (if switch { u } else { v }).cmp(&n) {
                             std::cmp::Ordering::Less => {
                                 return None;
                             }
@@ -72,7 +68,7 @@ where
                 }
                 if let Some((index, n)) = iter._next_back_with_offset() {
                     if index_b.is_none() {
-                        match (if switch { u } else { v }).cmp(&n.dest()) {
+                        match (if switch { u } else { v }).cmp(&n) {
                             std::cmp::Ordering::Greater => return None,
                             std::cmp::Ordering::Equal => {
                                 if let Some(a) = index_a {
@@ -83,7 +79,7 @@ where
                             _ => {}
                         };
                     } else {
-                        match (if switch { v } else { u }).cmp(&n.dest()) {
+                        match (if switch { v } else { u }).cmp(&n) {
                             std::cmp::Ordering::Greater => return None,
                             std::cmp::Ordering::Equal => {
                                 if let Some(b) = index_b {

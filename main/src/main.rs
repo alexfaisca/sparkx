@@ -5,11 +5,9 @@ use tool::centralities::hyper_ball::*;
 use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
+use tool::graph;
 #[allow(unused_imports)]
-use tool::graph::{
-    GenericEdge, GenericEdgeType, GraphMemoryMap,
-    edge::{CompactLabel, StandardLabel, Test, TinyEdgeType, TinyLabelStandardEdge},
-};
+use tool::graph::{E, GraphMemoryMap, IndexType, N, label::VoidLabel};
 #[allow(unused_imports)]
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
@@ -103,7 +101,7 @@ fn main() {
         (Some("txt"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<CompactLabel, Test, String>(
+                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,
@@ -116,7 +114,7 @@ fn main() {
         (Some("lz4"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,
@@ -129,7 +127,7 @@ fn main() {
         (Some("mtx"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,
@@ -142,7 +140,7 @@ fn main() {
         (Some("nodes"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,
@@ -155,7 +153,7 @@ fn main() {
         (Some("edges"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<TinyEdgeType, TinyLabelStandardEdge, String>(
+                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,
@@ -180,18 +178,16 @@ fn main() {
     };
 }
 
-fn mmapped_suite<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
-    _graph: GraphMemoryMap<EdgeType, Edge>,
-) {
+fn mmapped_suite<N: graph::N, E: graph::E, Ix: graph::IndexType>(_graph: GraphMemoryMap<N, E, Ix>) {
 }
 
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
 #[expect(dead_code)]
-fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
+fn mmap_from_file<N: graph::N, E: graph::E, Ix: graph::IndexType>(
     data_path: String,
     threads: Option<u8>,
-) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
-    let graph_mmaped = GraphMemoryMap::<EdgeType, Edge>::open(&data_path, None, threads)?;
+) -> Result<GraphMemoryMap<N, E, Ix>, Box<dyn std::error::Error>> {
+    let graph_mmaped = GraphMemoryMap::<N, E, Ix>::open(&data_path, None, threads)?;
 
     /* ********************************************************************************* */
     // Lookup test
@@ -205,8 +201,8 @@ fn mmap_from_file<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     Ok(graph_mmaped)
 }
 
-fn metalabel_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
-    graph: &GraphMemoryMap<EdgeType, Edge>,
+fn metalabel_search<N: graph::N, E: graph::E, Ix: graph::IndexType>(
+    graph: &GraphMemoryMap<N, E, Ix>,
 ) {
     loop {
         print!("Enter something (press <ENTER> to quit): ");
@@ -227,25 +223,15 @@ fn metalabel_search<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
     }
 }
 
-fn parse_bytes_mmaped<
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-    P: AsRef<Path> + Clone,
->(
+fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
     path: P,
     threads: Option<u8>,
     id: Option<String>,
-) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
+) -> Result<GraphMemoryMap<N, E, Ix>, Box<dyn std::error::Error>> {
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
-    let mut graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
-        GraphMemoryMap::<EdgeType, Edge>::from_file(
-            path.clone(),
-            id,
-            None,
-            Some(|_| false),
-            threads,
-        )?;
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None, Some(|_| false), threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -271,7 +257,7 @@ fn parse_bytes_mmaped<
     // println!("cache fst rebuilt {:?}", time.elapsed());
 
     // let time = Instant::now();
-    // let graph_mmaped: GraphMemoryMap<EdgeType, Edge> =
+    // let graph_mmaped: GraphMemoryMap<N, E, Ix> =
     //     GraphMemoryMap::<EdgeType, Edge>::init(graph_cache.clone(), threads)?;
     // println!("graph initialized {:?}", time.elapsed());
     // label_search(&graph_mmaped);

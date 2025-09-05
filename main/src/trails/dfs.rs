@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 
@@ -9,9 +10,9 @@ type ProceduralMemoryDFS = (AbstractedProceduralMemoryMut<bool>,);
 ///
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
-pub struct DFS<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct DFS<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph in which the DFS is to be performed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Source node for DFS.
     source: usize,
     /// Memmapped slice containing the nodes in discovery order.
@@ -19,13 +20,9 @@ pub struct DFS<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType, Edge> DFS<'a, EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> DFS<'a, N, E, Ix> {
     pub fn new(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         source: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut bfs = Self::new_no_compute(g, source)?;
@@ -51,15 +48,11 @@ where
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType, Edge> DFS<'a, EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> DFS<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         source: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g, source)
@@ -68,7 +61,7 @@ where
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         source: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g, source)
@@ -119,7 +112,7 @@ where
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         source: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         if source >= g.size() {
@@ -169,7 +162,6 @@ where
             *ord.get_mut(idx) = u;
             idx += 1;
             for v in self.g.neighbours(u)?.rev() {
-                let v = v.dest();
                 if !*visited.get(v) {
                     next.push(v);
                 }

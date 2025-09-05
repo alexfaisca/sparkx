@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 
@@ -21,15 +22,15 @@ type ProceduralMemoryLiuEtAL = (
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct AlgoLiuEtAl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoLiuEtAl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which node/edge coreness is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the coreness of each edge.
     k_cores: AbstractedProceduralMemoryMut<u8>,
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a, EdgeType, Edge> {
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, Ix> {
     /// Performs k-core decomposition as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
     ///
     /// * Note: we did not implement the *Node Sampling*[^1] scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs.
@@ -41,7 +42,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut liu_et_al = Self::new_no_compute(g)?;
         let proc_mem = liu_et_al.init_cache_mem()?;
 
@@ -79,11 +80,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a, EdgeType, Edge> {
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -91,7 +92,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -134,7 +135,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KCoreLEA, None)?;
         let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
@@ -177,7 +178,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
         let thread_load = node_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+        let neighbour_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         let (degree, _node_index, alive, coreness, frontier, swap) = proc_mem;
 
@@ -304,7 +305,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
 
                                         // for each neighbor v of u:
                                         for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                                            let v = graph_ptr.get(idx).dest();
+                                            let v = *neighbour_ptr.get(idx);
                                             if let Ok(old) = degree.get(v).fetch_update(
                                                 Ordering::Relaxed,
                                                 Ordering::Relaxed,
@@ -341,7 +342,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                                             *coreness.get_mut(u) = k;
 
                                             for idx in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                                                let v = graph_ptr.get(idx).dest();
+                                                let v = *neighbour_ptr.get(idx);
                                                 if let Ok(old) = degree.get(v).fetch_update(
                                                     Ordering::Relaxed,
                                                     Ordering::Relaxed,
@@ -418,7 +419,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> AlgoLiuEtAl<'a,
                     for u in start..end {
                         let core_u = *coreness.get(u);
                         for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                            let v = graph_ptr.get(e).dest();
+                            let v = *neighbour_ptr.get(e);
                             // edge_coreness = min(core[u], core[v])
                             let core_val = if *coreness.get(u) < *coreness.get(v) {
                                 core_u

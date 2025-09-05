@@ -221,7 +221,9 @@ pub enum FileType {
     General,
     Edges(H),
     Index(H),
-    Metalabel(H),
+    NodeLabel(H),
+    EdgeLabel(H),
+    MetaLabel(H),
     Helper(H),
     BFS(H),
     DFS(H),
@@ -282,7 +284,9 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
     static SUFFIX_FOR_GENERAL: &str = "miscelanious";
     static SUFFIX_FOR_EDGES: &str = "edges";
     static SUFFIX_FOR_INDEX: &str = "index";
-    static SUFFIX_FOR_METALABEL: &str = "fst";
+    static SUFFIX_FOR_NODE_LABEL: &str = "nodelabels";
+    static SUFFIX_FOR_EDGE_LABEL: &str = "edgelabels";
+    static SUFFIX_FOR_META_LABEL: &str = "fst";
     static SUFFIX_FOR_HELPER: &str = "helper";
     static SUFFIX_FOR_BFS: &str = "bfs";
     static SUFFIX_FOR_DFS: &str = "dfs";
@@ -311,7 +315,9 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
         FileType::General => SUFFIX_FOR_GENERAL,
         FileType::Edges(_) => SUFFIX_FOR_EDGES,
         FileType::Index(_) => SUFFIX_FOR_INDEX,
-        FileType::Metalabel(_) => SUFFIX_FOR_METALABEL,
+        FileType::NodeLabel(_) => SUFFIX_FOR_NODE_LABEL,
+        FileType::EdgeLabel(_) => SUFFIX_FOR_EDGE_LABEL,
+        FileType::MetaLabel(_) => SUFFIX_FOR_META_LABEL,
         FileType::Helper(_) => SUFFIX_FOR_HELPER,
         FileType::BFS(_) => SUFFIX_FOR_BFS,
         FileType::DFS(_) => SUFFIX_FOR_DFS,
@@ -396,7 +402,9 @@ impl std::fmt::Display for FileType {
             FileType::General => "Miscelanious",
             FileType::Edges(_) => "Edges",
             FileType::Index(_) => "Index",
-            FileType::Metalabel(_) => "Metalabel",
+            FileType::NodeLabel(_) => "NodeLabel",
+            FileType::EdgeLabel(_) => "EdgeLabel",
+            FileType::MetaLabel(_) => "MetaLabel",
             FileType::Helper(_) => "Helper",
             FileType::BFS(_) => "BFS",
             FileType::DFS(_) => "DFS",

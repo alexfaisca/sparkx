@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 use crate::utils::OneOrMany;
@@ -17,9 +18,9 @@ type ProceduralMemoryClusteringCoefficient = (AbstractedProceduralMemoryMut<Atom
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct ClusteringCoefficient<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct ClusteringCoefficient<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which local clustering coefficient, transitivity and average local clustering coefficient.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing each node's local clustering coefficient.
     local: AbstractedProceduralMemoryMut<f64>,
     /// Global clustering coefficient --- graph transitivity.
@@ -29,9 +30,7 @@ pub struct ClusteringCoefficient<'a, EdgeType: GenericEdgeType, Edge: GenericEdg
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ClusteringCoefficient<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ClusteringCoefficient<'a, N, E, Ix> {
     /// Computes a [`GraphMemoryMap`] instance's local clustering coefficient, transitivity and average local clustering
     /// coefficient.
     ///
@@ -40,7 +39,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `g` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::ClusteringCoefficient, None)?;
         let local = SharedSliceMut::<f64>::abst_mem_mut(&out_fn, g.size(), true)?;
         let mut clustering_coefficient = Self {
@@ -106,7 +105,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let thread_load = node_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+        let neighbours_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // Shared atomic & simple arrays for counts and trussness
         let triangle_count = self.init_procedural_memory_burkhardt_et_al(mmap)?.0;
@@ -152,7 +151,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     let mut neighbours = HashMap::<usize, OneOrMany<usize>>::new();
                     for u in begin..end {
                         for j in *eo.get(u)..*index_ptr.get(u + 1) {
-                            let w = graph_ptr.get(j).dest();
+                            let w = *neighbours_ptr.get(j);
                             all_neighbours.insert(w);
                             match neighbours.entry(w) {
                                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -172,13 +171,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                             }
                         }
                         for u_v in *index_ptr.get(u)..*eo.get(u) {
-                            let v = graph_ptr.get(u_v).dest();
+                            let v = *neighbours_ptr.get(u_v);
                             all_neighbours.insert(v);
                             if u == v {
                                 continue;
                             }
                             for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
-                                let w = graph_ptr.get(v_w).dest();
+                                let w = *neighbours_ptr.get(v_w);
                                 if w <= u {
                                     break;
                                 }

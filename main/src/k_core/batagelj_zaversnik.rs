@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 
@@ -17,17 +18,15 @@ type ProceduralMemoryBZ = (
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct AlgoBatageljZaversnik<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoBatageljZaversnik<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which node/edge coreness is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the coreness of each edge.
     k_cores: AbstractedProceduralMemoryMut<u8>,
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    AlgoBatageljZaversnik<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'a, N, E, Ix> {
     /// Performs k-core decomposition as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
     ///
     /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise[^1].
@@ -39,7 +38,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut bz = Self::new_no_compute(g)?;
         let proc_mem = bz.init_cache_mem()?;
 
@@ -77,13 +76,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    AlgoBatageljZaversnik<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -91,7 +88,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -132,7 +129,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KCoreBZ, None)?;
         let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
@@ -169,7 +166,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let (degree, mut node, mut core, mut pos) = proc_mem;
         // compute out-degrees in parallel
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+        let graph_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // initialize degree and bins count vecs
         let mut bins: Vec<usize> = thread::scope(
@@ -271,7 +268,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
             // iterate outgoing neighbors of v
             for e in *index_ptr.get(v)..*index_ptr.get(v + 1) {
-                let u = (*graph_ptr.get(e)).dest();
+                let u = *graph_ptr.get(e);
                 let deg_u = *degree.get(u);
                 if deg_u > deg_v {
                     // swap u's position node array to maintain order
@@ -314,7 +311,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                     for u in start..end {
                         let core_u = *core.get(u);
                         for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                            let v = (*graph_ptr.get(e)).dest();
+                            let v = *graph_ptr.get(e);
                             // edge core = min(core[u], core[v])
                             let core_val = if *core.get(u) < *core.get(v) {
                                 core_u

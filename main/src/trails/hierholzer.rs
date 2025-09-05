@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 
@@ -16,9 +17,9 @@ type AllEulerTrailsConcatenatedWithBounds<'a> = (&'a [usize], Box<[(usize, usize
 ///
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
-pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoHierholzer<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which the euler trail(s) is(are) computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the euler trails.
     euler_trails: AbstractedProceduralMemoryMut<usize>,
     /// Array containing the starting position of each euler trail.
@@ -26,11 +27,7 @@ pub struct AlgoHierholzer<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeT
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType, Edge> AlgoHierholzer<'a, EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E, Ix> {
     /// Performs graph traversal using *Hierholzer's Algorithm*, computing the euler trails of a [`GraphMemoryMap`] instance.
     ///
     /// The resulting Euler trail(s) is(are) stored in memory (in a memmapped file) nodewise[^1].
@@ -47,7 +44,7 @@ where
     /// * `g` --- the [`GraphMemoryMap`] instance for which *Hierholzer's Algorithm* is to be performed in.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut euler = Self::new_no_compute(g)?;
         let proc_mem = euler.init_cache_mem()?;
 
@@ -131,15 +128,11 @@ where
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType, Edge> AlgoHierholzer<'a, EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -147,7 +140,7 @@ where
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -201,7 +194,7 @@ where
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::EulerTrail, None)?;
         Ok(Self {
@@ -259,7 +252,7 @@ where
             0 => return Ok(()),
             i => i,
         };
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), self.g.width());
+        let neighbours_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), self.g.width());
 
         let (mut edges, mut edge_count) = proc_mem;
 
@@ -297,7 +290,7 @@ where
             while let Some(&v) = stack.last() {
                 if *edge_count.get(v) > 0 {
                     *edge_count.get_mut(v) -= 1;
-                    stack.push(graph_ptr.get(*edges.get(v)).dest());
+                    stack.push(*neighbours_ptr.get(*edges.get(v)));
                     *edges.get_mut(v) += 1;
                 } else {
                     stack.pop();

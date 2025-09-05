@@ -2,10 +2,7 @@ use super::{
     GraphCache, MultithreadedParserIndexBounds,
     utils::{FileType, H, cache_file_name},
 };
-use crate::{
-    graph::{GenericEdge, GenericEdgeType},
-    shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
-};
+use crate::shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut};
 
 use crossbeam::thread;
 use num_cpus::get_physical;
@@ -13,7 +10,7 @@ use portable_atomic::{AtomicUsize, Ordering};
 use std::{path::Path, sync::Arc};
 
 #[allow(dead_code)]
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
+impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
     /// Parses a [`GGCAT`](https://github.com/algbio/ggcat) output file input into a [`GraphCache`] instance.
     ///
     /// Input file is assumed to have file extension .lz4, if provided in compressed form using LZ4, or .txt, if provided in plaintext form. Furthermore, the file contents must follow the format of [`GGCAT`](https://github.com/algbio/ggcat)'s output.
@@ -39,7 +36,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
 
         let nodes_path_str =
@@ -269,7 +266,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         };
 
         let mut offsets = AbstractedProceduralMemoryMut::<AtomicUsize>::from_file(
-            &self.index_file,
+            &self.offsets_file,
             offsets_size,
         )?;
 
@@ -331,11 +328,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         offsets.get_mut(node_count).store(sum, Ordering::Relaxed);
         offsets.flush()?;
 
-        let edges = AbstractedProceduralMemoryMut::<Edge>::from_file(&self.graph_file, sum)?;
+        let neighbors =
+            AbstractedProceduralMemoryMut::<usize>::from_file(&self.neighbors_file, sum)?;
         let _batch_num = Arc::new(AtomicUsize::new(0));
         let _batch_size = self.batch.map_or(Self::DEFAULT_BATCHING_SIZE, |s| s);
 
-        let counters_fn = cache_file_name(&self.graph_filename, FileType::Helper(H::H), Some(0))?;
+        let counters_fn = cache_file_name(&self.offsets_filename, FileType::Helper(H::H), Some(0))?;
         let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&counters_fn, node_count, true)?;
 
         // write edges
@@ -346,7 +344,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let input = &input_edges[thread_bounds.0..thread_bounds.1];
                 let offsets = offsets.shared_slice();
                 let counters = counters.shared_slice();
-                let mut edges = edges.shared_slice();
+                let mut neighbors = neighbors.shared_slice();
 
                 handles.push(s.spawn(
                     move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -377,10 +375,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                                 if orig_id == id {
                                     queue.push((dest_id, dir));
                                 } else {
-                                    *edges.get_mut(
+                                    // *edges.get_mut(
+                                    //     offsets.get(orig_id).load(Ordering::Relaxed)
+                                    //         + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
+                                    // ) = Edge::new(dest_id as u64, dir);
+                                    *neighbors.get_mut(
                                         offsets.get(orig_id).load(Ordering::Relaxed)
                                             + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
-                                    ) = Edge::new(dest_id as u64, dir);
+                                    ) = dest_id;
                                 }
                             } else {
                                 first_node = Some(orig_id);
@@ -390,10 +392,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                         // now write edges of first node taking into account the missing ones
                         if let Some(id) = first_node {
                             let _begin = offsets.get(id + 1).load(Ordering::Relaxed) - queue.len();
-                            for (offset, (dest, dir)) in
+                            for (offset, (dest, _dir)) in
                                 (_begin..offsets.get(id + 1).load(Ordering::Relaxed)).zip(queue)
                             {
-                                *edges.get_mut(offset) = Edge::new(dest as u64, dir);
+                                // *edges.get_mut(offset) = Edge::new(dest as u64, dir);
+                                *neighbors.get_mut(offset) = dest;
                             }
                         }
                         // parse rest of the thread's edges
@@ -410,19 +413,23 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
                             let orig_id: usize = node.next().unwrap().parse()?;
                             let dest_id: usize = node.next().unwrap().parse()?;
-                            let dir = node.next().unwrap();
+                            let _dir = node.next().unwrap();
 
-                            *edges.get_mut(
+                            // *edges.get_mut(
+                            //     offsets.get(orig_id).load(Ordering::Relaxed)
+                            //         + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
+                            // ) = Edge::new(
+                            //     dest_id as u64,
+                            //     Self::parse_node_edge_direction(dir).map_err(
+                            //         |e| -> Box<dyn std::error::Error + Send + Sync> {
+                            //             format!("error in thread {tid}: {e}").into()
+                            //         },
+                            //     )?,
+                            // );
+                            *neighbors.get_mut(
                                 offsets.get(orig_id).load(Ordering::Relaxed)
                                     + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
-                            ) = Edge::new(
-                                dest_id as u64,
-                                Self::parse_node_edge_direction(dir).map_err(
-                                    |e| -> Box<dyn std::error::Error + Send + Sync> {
-                                        format!("error in thread {tid}: {e}").into()
-                                    },
-                                )?,
-                            );
+                            ) = dest_id;
 
                             continue;
                         }
@@ -447,9 +454,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
-        edges.flush_async()?;
+        neighbors.flush_async()?;
         drop(offsets);
-        drop(edges);
+        drop(neighbors);
 
         std::fs::remove_file(&counters_fn)?;
 

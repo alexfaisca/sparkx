@@ -1,7 +1,9 @@
+use crate::trails::{bfs_visit, dfs_visit};
+
 use super::*;
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> crate::trails::bfs_visit::Graph
-    for GraphMemoryMap<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> dfs_visit::Graph
+    for GraphMemoryMap<N, E, Ix>
 {
     fn s(&self) -> usize {
         self.size()
@@ -12,11 +14,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> crate::trails::bfs_
     }
 
     fn neigh(&self, u: usize) -> Box<[usize]> {
-        self[u..u + 1]
-            .iter()
-            .map(|e| e.dest())
-            .collect::<Vec<usize>>()
-            .into_boxed_slice()
+        self[u..u + 1].to_vec().into_boxed_slice()
     }
 
     fn cache_file_name(
@@ -32,8 +30,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> crate::trails::bfs_
     }
 }
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> crate::trails::dfs_visit::Graph
-    for GraphMemoryMap<EdgeType, Edge>
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> bfs_visit::Graph
+    for GraphMemoryMap<N, E, Ix>
 {
     fn s(&self) -> usize {
         self.size()
@@ -44,11 +42,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> crate::trails::dfs_
     }
 
     fn neigh(&self, u: usize) -> Box<[usize]> {
-        self[u..u + 1]
-            .iter()
-            .map(|e| e.dest())
-            .collect::<Vec<usize>>()
-            .into_boxed_slice()
+        self[u..u + 1].to_vec().into_boxed_slice()
     }
 
     fn cache_file_name(

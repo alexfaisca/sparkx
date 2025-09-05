@@ -1,4 +1,4 @@
-use crate::graph::*;
+use crate::graph::{self, *};
 use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use ordered_float::OrderedFloat;
@@ -10,9 +10,9 @@ use std::collections::HashMap;
 ///
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[derive(Clone)]
-pub struct ApproxDirHKPR<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct ApproxDirHKPR<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which the community is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Diffusion temperature.
     pub t: f64,
     /// Diffusion error (ε).
@@ -40,7 +40,7 @@ pub enum ApproxDirichletHeatKernelK {
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'a, EdgeType, Edge> {
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ApproxDirHKPR<'a, N, E, Ix> {
     /// Evaluates parameters for the *ApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O.
     ///
     /// Evaluation is successful if `|V| >= 0`, `t` is normal and bigger than zero (not equal), `ε` is normal and (exclusive) between zero and one, `target_conductance` is normal and (exclusive) between zero and one, and `seed` is a valid node id, i.e. `0 <= seed < |V|`.
@@ -58,7 +58,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     fn evaluate_params(
-        g: &GraphMemoryMap<EdgeType, Edge>,
+        g: &GraphMemoryMap<N, E, Ix>,
         seed_node: usize,
         eps: f64,
         target_conductance: f64,
@@ -107,7 +107,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         eps: f64,
         seed: usize,
         target_size: usize,
@@ -160,14 +160,14 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> ApproxDirHKPR<'
     fn random_neighbour(
         &self,
         deg_u: usize,
-        u_n: NeighbourIter<EdgeType, Edge>,
+        u_n: NeighbourIter<N, E, Ix>,
     ) -> Result<usize, Box<dyn std::error::Error>> {
         let inv_deg_u = 1. / deg_u as f64;
         let random: f64 = rand::rng().random();
         let mut idx_plus_one = 1f64;
         for v in u_n {
             if idx_plus_one * inv_deg_u > random {
-                return Ok(v.dest());
+                return Ok(v);
             }
             idx_plus_one += idx_plus_one;
         }

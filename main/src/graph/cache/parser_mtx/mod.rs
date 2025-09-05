@@ -1,8 +1,5 @@
 use crate::{
-    graph::{
-        GenericEdge, GenericEdgeType,
-        cache::utils::{FileType, H, cache_file_name},
-    },
+    graph::cache::utils::{FileType, H, cache_file_name},
     shared_slice::SharedSliceMut,
 };
 
@@ -19,7 +16,7 @@ use std::{
 use super::GraphCache;
 
 #[allow(dead_code)]
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
+impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
     /// Parses a [`MatrixMarket`](https://math.nist.gov/MatrixMarket/formats.html) file input into a [`GraphCache`] instance.
     ///
     /// Input file is assumed have file extension .mtx and must be of type matrix coordinate pattern/integer symmetric/skew-symmetric/general.
@@ -43,13 +40,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         path: P,
         id: Option<String>,
         batch: Option<usize>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
         let threads = (get_physical() * 2).max(1);
-
-        if std::mem::size_of::<Edge>() % std::mem::size_of::<usize>() != 0 {
-            return Err(format!("Error type `{}` has a  size of {}, which will lead to unaligned memory read/write for graph edges. Currently we don't support this type of memory access for graphs from .matx files. :(", std::any::type_name::<Edge>(), std::mem::size_of::<Edge>()).into());
-        }
 
         let id = id.unwrap_or(
             path.as_ref()
@@ -62,9 +55,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         let (node_count, _, _) = Self::parse_mtx_header(path.as_ref())?;
 
-        let e_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
-        let i_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
-        let offsets_fn = cache_file_name(&e_fn, FileType::Helper(H::H), Some(0))?;
+        let n_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
+        let o_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
+        let h_fn = cache_file_name(&n_fn, FileType::Helper(H::H), Some(0))?;
         let offset_size = match node_count.overflowing_add(1) {
             (_, true) => {
                 return Err(
@@ -73,8 +66,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
             (r, false) => r,
         };
-        let index = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&i_fn, offset_size, true)?;
-        let offsets = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&offsets_fn, node_count, true)?;
+        let offsets = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&o_fn, offset_size, true)?;
+        let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&h_fn, node_count, true)?;
 
         // accumulate node degrees on index
         let edge_count = Arc::new(AtomicUsize::new(0));
@@ -83,28 +76,28 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 path.as_ref(),
                 {
                     let edge_count = edge_count.clone();
-                    let index = index.shared_slice().clone();
+                    let offsets = offsets.shared_slice().clone();
                     move |u, _v, _w| {
                         edge_count.add(1, Ordering::Relaxed);
-                        index.get(u).add(1, Ordering::Relaxed);
+                        offsets.get(u).add(1, Ordering::Relaxed);
                     }
                 },
                 |_, _| {},
                 threads,
             )?;
         }
-        let mut edges =
-            SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, edge_count.load(Ordering::Relaxed), true)?;
+        let mut neighbors =
+            SharedSliceMut::<usize>::abst_mem_mut(&n_fn, edge_count.load(Ordering::Relaxed), true)?;
         // build offset vector from degrees
         let mut sum = 0;
         let mut max_degree = 0;
         // this works because after aloc memmaped files are zeroed (so index[nr] = 0)
         for u in 0..offset_size {
-            let deg_u = index.get(u).load(Ordering::Relaxed);
+            let deg_u = offsets.get(u).load(Ordering::Relaxed);
             if deg_u > max_degree {
                 max_degree = deg_u;
             }
-            index.get(u).store(sum, Ordering::Relaxed);
+            offsets.get(u).store(sum, Ordering::Relaxed);
             sum += deg_u;
         }
         // println!(
@@ -123,14 +116,20 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         Self::parallel_parse_mtx_with(
             path.as_ref(),
             {
-                let mut edges = edges.shared_slice();
-                let index = index.shared_slice();
+                let mut neighbors = neighbors.shared_slice();
                 let offsets = offsets.shared_slice();
-                move |u, v, w| {
-                    *edges.get_mut(
-                        index.get(u).load(Ordering::Relaxed)
-                            + offsets.get(u).fetch_add(1, Ordering::Relaxed),
-                    ) = Edge::new(v, w);
+                let counters = counters.shared_slice();
+                // move |u, v, w| {
+                //     *edges.get_mut(
+                //         index.get(u).load(Ordering::Relaxed)
+                //             + offsets.get(u).fetch_add(1, Ordering::Relaxed),
+                //     ) = Edge::new(v, w);
+                // }
+                move |u, v, _w| {
+                    *neighbors.get_mut(
+                        offsets.get(u).load(Ordering::Relaxed)
+                            + counters.get(u).fetch_add(1, Ordering::Relaxed),
+                    ) = v as usize;
                 }
             },
             {
@@ -157,26 +156,26 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
         // order edges by dest node id
         for node in 0..node_count {
-            let begin = index.get(node).load(Ordering::Relaxed);
-            let end = index.get(node + 1).load(Ordering::Relaxed);
+            let begin = offsets.get(node).load(Ordering::Relaxed);
+            let end = offsets.get(node + 1).load(Ordering::Relaxed);
             let node_edges =
-                edges
+                neighbors
                     .mut_slice(begin, end)
                     .ok_or_else(|| -> Box<dyn std::error::Error> {
                         format!("error getting node {node}'s edges as a mut slice for ordering")
                             .into()
                     })?;
             // println!("edges before {:?}", node_edges);
-            node_edges.sort_by(|a, b| a.dest().cmp(&b.dest()));
+            node_edges.sort();
             // println!("edges after {:?}", node_edges);
         }
 
-        edges.flush()?;
-        index.flush()?;
+        neighbors.flush()?;
+        offsets.flush()?;
 
-        std::fs::remove_file(&offsets_fn)?;
+        std::fs::remove_file(&h_fn)?;
 
-        Self::open(&e_fn, batch)
+        Self::open(&n_fn, batch)
     }
 
     fn parse_mtx_header<P: AsRef<Path>>(path: P) -> Result<MTXHeader, Box<dyn std::error::Error>> {

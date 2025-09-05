@@ -1,4 +1,4 @@
-use crate::graph::*;
+use crate::graph::{self, *};
 use crate::utils::{f64_is_nomal, f64_to_usize_safe};
 
 use std::collections::{HashMap, VecDeque};
@@ -7,9 +7,9 @@ use std::collections::{HashMap, VecDeque};
 ///
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[derive(Clone)]
-pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct HKRelax<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// The graph for which the community is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Diffusion depth.
     pub n: usize,
     /// Diffusion temperature.
@@ -26,11 +26,7 @@ pub struct HKRelax<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
     pub target_volume: Option<usize>,
 }
 
-impl<'a, EdgeType, Edge> HKRelax<'a, EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> HKRelax<'a, N, E, Ix> {
     /// Evaluates parameters for the *HK-Relax Algorithm* as described in ["Heat Kernel Based Community Detection"](https://doi.org/10.48550/arXiv.1403.3148) by Kloster K. and Gleich D.
     ///
     /// Evaluation is successful if `|V| >= 0`, `t` is normal and bigger than zero (not equal), `ε` is normal and (exclusive) between zero and one and `seed` is not empty and everyone of its entries is a valid node id, i.e. `0 <= seed[i] < |V|`.
@@ -44,7 +40,7 @@ where
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     fn evaluate_params(
-        g: &GraphMemoryMap<EdgeType, Edge>,
+        g: &GraphMemoryMap<N, E, Ix>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
@@ -186,7 +182,7 @@ where
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         t: f64,
         eps: f64,
         seed: Vec<usize>,
@@ -297,7 +293,6 @@ where
             let mass = self.t * rvj / (j as f64 + 1f64) / deg_v;
 
             for u in v_n {
-                let u = u.dest();
                 let next = (u, j + 1);
                 if j + 1 == self.n {
                     // x[u] += rvj / len(G[v])

@@ -1,14 +1,15 @@
 use std::mem::ManuallyDrop;
 
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 use crate::trails::bfs::BFSDists;
 
 use crossbeam::thread;
 
-pub struct ExactClosenessCentrality<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct ExactClosenessCentrality<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which *HyperBall* is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing each node's centrality.
     centralities: AbstractedProceduralMemoryMut<f64>,
     /// Normalization flag.
@@ -16,11 +17,9 @@ pub struct ExactClosenessCentrality<'a, EdgeType: GenericEdgeType, Edge: Generic
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ExactClosenessCentrality<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactClosenessCentrality<'a, N, E, Ix> {
     pub fn new(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut hyper_ball = Self::new_no_compute(g, normalized)?;
@@ -52,13 +51,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
 #[allow(dead_code)]
 /// HyperBall engine functions.
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ExactClosenessCentrality<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactClosenessCentrality<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g, normalized)
@@ -67,7 +64,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g, normalized)
@@ -115,7 +112,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let node_count = g.size();
@@ -227,20 +224,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 }
 
-pub struct ExactHarmonicCentrality<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct ExactHarmonicCentrality<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which *HyperBall* is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing each node's centrality.
     centralities: AbstractedProceduralMemoryMut<f64>,
     /// Normalization flag.
     normalized: Option<bool>,
 }
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ExactHarmonicCentrality<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactHarmonicCentrality<'a, N, E, Ix> {
     pub fn new(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut hyper_ball = Self::new_no_compute(g, normalized)?;
@@ -272,13 +267,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
 #[allow(dead_code)]
 /// HyperBall engine functions.
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ExactHarmonicCentrality<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactHarmonicCentrality<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g, normalized)
@@ -287,7 +280,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g, normalized)
@@ -335,7 +328,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         normalized: Option<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let node_count = g.size();
@@ -471,17 +464,15 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 }
 
-pub struct ExactLinCentrality<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct ExactLinCentrality<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which *HyperBall* is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing each node's centrality.
     centralities: AbstractedProceduralMemoryMut<f64>,
 }
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ExactLinCentrality<'a, EdgeType, Edge>
-{
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactLinCentrality<'a, N, E, Ix> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut hyper_ball = Self::new_no_compute(g)?;
 
         hyper_ball.compute_with_proc_mem(())?;
@@ -511,13 +502,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 
 #[allow(dead_code)]
 /// HyperBall engine functions.
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    ExactLinCentrality<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactLinCentrality<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -525,7 +514,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -572,7 +561,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let node_count = g.size();
         let e_fn = g.build_cache_filename(CacheFile::ExactCloseness, None)?;

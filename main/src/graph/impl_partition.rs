@@ -1,15 +1,11 @@
-use super::{Community, GenericEdge, GenericEdgeType, GraphMemoryMap};
+use super::{Community, GraphMemoryMap};
 use crate::shared_slice::SharedSliceMut;
 
 use ordered_float::OrderedFloat;
 use std::collections::HashSet;
 
 #[allow(dead_code)]
-impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
     /// Computes the modularity over a given partition over the [`GraphMemoryMap`] instance's nodes.
     ///
     /// # Arguments
@@ -49,8 +45,7 @@ where
         for u in 0..node_count {
             let iter = self.neighbours(u)?;
             *total_degree.get_mut(communities[u]) += iter.remaining_neighbours();
-            for e in iter {
-                let v = e.dest();
+            for v in iter {
                 if v >= node_count {
                     continue;
                 } // safety
@@ -137,16 +132,15 @@ where
 
             for v in u_n {
                 // if edge is (u, u) it doesn't influence delta(S)
-                if v.dest() == *u {
+                if v == *u {
                     continue;
                 }
-                if community.contains(&v.dest()) {
+                if community.contains(&v) {
                     cut_s = match cut_s.overflowing_sub(1) {
                         (r, false) => r,
                         (_, true) => {
                             return Err(format!(
-                                "error sweepcut overflow_sub at node {u} in neighbour {}",
-                                v.dest()
+                                "error sweepcut overflow_sub at node {u} in neighbour {v}",
                             )
                             .into());
                         }
@@ -156,8 +150,7 @@ where
                         (r, false) => r,
                         (_, true) => {
                             return Err(format!(
-                                "error sweepcut overflow_add at node {u} in neighbour {}",
-                                v.dest()
+                                "error sweepcut overflow_add at node {u} in neighbour {v}",
                             )
                             .into());
                         }

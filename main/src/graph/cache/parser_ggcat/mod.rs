@@ -1,13 +1,16 @@
 use super::{GraphCache, MultithreadedParserIndexBounds};
-use crate::{graph::{GenericEdge, GenericEdgeType}, shared_slice::{AbstractedProceduralMemoryMut, SharedSlice}};
+use crate::shared_slice::{AbstractedProceduralMemoryMut, SharedSlice};
 
 use crossbeam::thread;
 use num_cpus::get_physical;
 use portable_atomic::{AtomicUsize, Ordering};
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[allow(dead_code)]
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
+impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
     /// Parses a [`GGCAT`](https://github.com/algbio/ggcat) output file input into a [`GraphCache`] instance.
     ///
     /// Input file is assumed to have file extension .lz4, if provided in compressed form using LZ4, or .txt, if provided in plaintext form. Furthermore, the file contents must follow the format of [`GGCAT`](https://github.com/algbio/ggcat)'s output.
@@ -32,10 +35,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
 
-        let path_str = path.as_ref().to_str().ok_or_else(|| -> Box<dyn std::error::Error> {format!("error getting path str from {:?}", path.as_ref()).into()})?;
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!("error getting path str from {:?}", path.as_ref()).into()
+            })?;
         // parse optional inputs && fallback to defaults for the Nones found
         let id = id.map_or(path_str.to_string(), |id| id);
         let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
@@ -86,12 +94,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         // self.parallel_fst_from_ggcat_with_reader(path, batching, in_fst, get_physical())?;
         let (input, tmp) = Self::read_input_file(path)?;
 
-        self.parallel_fst_from_ggcat_bytes(
-            &input[..],
-            batching,
-            in_fst,
-            num_cpus::get_physical(),
-        )?;
+        self.parallel_fst_from_ggcat_bytes(&input[..], batching, in_fst, num_cpus::get_physical())?;
 
         if let Some(p) = tmp {
             std::fs::remove_file(p)?;
@@ -132,10 +135,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         input: &[u8],
         in_fst: fn(usize) -> bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-
         // this assumes UTF-8 but avoids full conversion
         let mut lines = input.split(|&b| b == b'\n');
-        let mut edges = vec![];
+        let mut neighbors = vec![];
         while let Some(line) = lines.next() {
             if line.is_empty() {
                 continue;
@@ -156,24 +158,25 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             let _node_color = node.next(); // color value
             for link in node {
                 let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
-                let dest: u64 = link_slice[1].parse()?;
-                edges.push(Edge::new(
-                    dest,
-                    Self::parse_ggcat_direction(link_slice[0], link_slice[2])?,
-                ));
+                let dest: usize = link_slice[1].parse()?;
+                // edges.push(Edge::new(
+                //     dest,
+                //     Self::parse_ggcat_direction(link_slice[0], link_slice[2])?,
+                // ));
+                neighbors.push(dest);
             }
-            edges.sort_unstable_by_key(|e| e.dest());
+            neighbors.sort_unstable_by_key(|e| *e);
 
             if in_fst(id) {
                 self.write_node(
                     id,
-                    edges.as_slice(),
+                    neighbors.as_slice(),
                     std::str::from_utf8(&sequence_line[0..])?,
                 )?;
             } else {
-                self.write_unlabeled_node(id, edges.as_slice())?;
+                self.write_unlabeled_node(id, neighbors.as_slice())?;
             }
-            edges.clear();
+            neighbors.clear();
         }
 
         Ok(())
@@ -212,10 +215,13 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
     }
 
-    fn parse_ggcat_builder_thread_bounds(input: &[u8], threads: usize) -> Result<MultithreadedParserIndexBounds, Box<dyn std::error::Error>> {
+    fn parse_ggcat_builder_thread_bounds(
+        input: &[u8],
+        threads: usize,
+    ) -> Result<MultithreadedParserIndexBounds, Box<dyn std::error::Error>> {
         let thread_load = input.len().div_ceil(threads);
 
-        // figure out thread bounds 
+        // figure out thread bounds
         let mut bounds = vec![(0usize, 0usize); threads];
         let mut previous_end = 0usize;
         (0..threads).try_for_each(|tid| -> Result<(), Box<dyn std::error::Error>> {
@@ -248,7 +254,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             begin -= 1;
         }
 
-        // only possible if input.len() == 0 or no '>' markers exist on the file 
+        // only possible if input.len() == 0 or no '>' markers exist on the file
         // in either case, file is considered empty
         if begin == input.len() || begin == 0 && input[begin] != b'>' {
             return Ok(None);
@@ -258,17 +264,37 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         let mut acc: usize = 0;
         let mut saw_digit = false;
         for b in it {
-            if !b.is_ascii_digit() { return Err(format!("error parsing ggcat input file's last node index: {b} is not a valid digit").into()); }
+            if !b.is_ascii_digit() {
+                return Err(format!(
+                    "error parsing ggcat input file's last node index: {b} is not a valid digit"
+                )
+                .into());
+            }
             saw_digit = true;
             let d = (b - b'0') as usize;
-            acc = acc.checked_mul(10).ok_or_else(|| -> Box<dyn std::error::Error> {format!("error parsing ggcat input file's last node index: {acc} * 10 overflowed").into()})?;
-            acc = acc.checked_add(d).ok_or_else(|| -> Box<dyn std::error::Error> {format!("error parsing ggcat input file's last node index: {acc} + {d} overflowed").into()})?;
+            acc = acc
+                .checked_mul(10)
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    format!(
+                        "error parsing ggcat input file's last node index: {acc} * 10 overflowed"
+                    )
+                    .into()
+                })?;
+            acc = acc
+                .checked_add(d)
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    format!(
+                        "error parsing ggcat input file's last node index: {acc} + {d} overflowed"
+                    )
+                    .into()
+                })?;
         }
         // get max node id
-        if !saw_digit { return Err("error parsing ggcat input file's last node index: not one valid ascii digit was found".into()); }
+        if !saw_digit {
+            return Err("error parsing ggcat input file's last node index: not one valid ascii digit was found".into());
+        }
 
         Ok(Some(acc))
-
     }
 
     /// Parses a ggcat output file input into a [`GraphCache`] instance.
@@ -311,15 +337,26 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         };
 
         let node_count = match max_id.overflowing_add(1) {
-            (_, true) => return Err(format!("error getting ggcat input file's node count: {max_id} + 1 overflowed").into()),
-            (r, false) => r
+            (_, true) => {
+                return Err(format!(
+                    "error getting ggcat input file's node count: {max_id} + 1 overflowed"
+                )
+                .into());
+            }
+            (r, false) => r,
         };
         let offsets_size = match node_count.overflowing_add(1) {
-            (_, true) => return Err(format!("error getting ggcat input file's offset size: {node_count} + 1 overflowed").into()),
-            (r, false) => r
+            (_, true) => {
+                return Err(format!(
+                    "error getting ggcat input file's offset size: {node_count} + 1 overflowed"
+                )
+                .into());
+            }
+            (r, false) => r,
         };
 
-        let mut offsets = AbstractedProceduralMemoryMut::<usize>::from_file(&self.index_file, offsets_size)?;
+        let mut offsets =
+            AbstractedProceduralMemoryMut::<usize>::from_file(&self.offsets_file, offsets_size)?;
 
         // get node degrees
         thread::scope(|s| -> Result<(), Box<dyn std::error::Error>> {
@@ -329,35 +366,40 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let input = &input[thread_bounds.0..thread_bounds.1];
                 let mut offsets = offsets.shared_slice();
 
-                handles.push(s.spawn(move |_|  -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                handles.push(s.spawn(
+                    move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        // this assumes UTF-8 but avoids full conversion
+                        let mut lines = input.split(|&b| b == b'\n');
+                        while let Some(line) = lines.next() {
+                            // skip k-mer line
+                            lines.next();
+                            if line.is_empty() {
+                                continue;
+                            }
 
-                    // this assumes UTF-8 but avoids full conversion
-                    let mut lines = input.split(|&b| b == b'\n');
-                    while let Some(line) = lines.next() {
-                        // skip k-mer line
-                        lines.next();
-                        if line.is_empty() {
-                            continue;
+                            // convert each line to str temporarily -> cut off ">" char
+                            let line_str = std::str::from_utf8(&line[1..line.len()])?;
+
+                            let node = line_str.split_whitespace().collect::<Vec<&str>>();
+                            let mut node = node.iter().peekable();
+
+                            let id: usize = node.next().unwrap().parse()?;
+                            *offsets.get_mut(id) = node.len() - 2;
                         }
-
-                        // convert each line to str temporarily -> cut off ">" char
-                        let line_str = std::str::from_utf8(&line[1..line.len()])?;
-
-                        let node = line_str.split_whitespace().collect::<Vec<&str>>();
-                        let mut node = node.iter().peekable();
-
-                        let id: usize = node.next().unwrap().parse()?;
-                        *offsets.get_mut(id) = node.len() - 2;
-                    }
-                    Ok(())
-                }));
+                        Ok(())
+                    },
+                ));
             });
             // check for errors
             for (tid, r) in handles.into_iter().enumerate() {
                 r.join()
                     .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?
                     .map_err(|e| -> Box<dyn std::error::Error> {
-                        format!("error getting ggcat input file's node degrees (thread {tid}): {:?}", e).into()
+                        format!(
+                            "error getting ggcat input file's node degrees (thread {tid}): {:?}",
+                            e
+                        )
+                        .into()
                     })?;
             }
             Ok(())
@@ -374,10 +416,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         *offsets.get_mut(node_count) = sum;
         offsets.flush()?;
 
-        let edges = AbstractedProceduralMemoryMut::<Edge>::from_file(&self.graph_file, sum)?;
+        let neighbors =
+            AbstractedProceduralMemoryMut::<usize>::from_file(&self.neighbors_file, sum)?;
         let batch_num = Arc::new(AtomicUsize::new(0));
         let batch_size = self.batch.map_or(Self::DEFAULT_BATCHING_SIZE, |s| s);
-
 
         // write edges
         let batches = thread::scope(|s| -> Result<Box<[PathBuf]>, Box<dyn std::error::Error>> {
@@ -386,7 +428,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 let thread_bounds = bounds[tid];
                 let input = &input[thread_bounds.0..thread_bounds.1];
                 let offsets = offsets.shared_slice();
-                let mut edges = edges.shared_slice();
+                let mut neighbors = neighbors.shared_slice();
 
                 let mut current_batch: Vec<(&[u8], u64)> = Vec::with_capacity(batch_size);
                 let batch_num = batch_num.clone();
@@ -396,7 +438,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 handles.push(s.spawn(move |_|  -> Result<Box<[PathBuf]>, Box<dyn std::error::Error + Send + Sync>> {
                     // this assumes UTF-8 but avoids full conversion 
                     let mut lines = input.split(|&b| b == b'\n');
-                    let mut node_edges = Vec::with_capacity(u8::MAX as usize);
+                    let mut node_neighbors = Vec::with_capacity(u16::MAX as usize);
                     while let Some(line) = lines.next() {
                         if line.is_empty() {
                             continue;
@@ -417,18 +459,19 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
                         for link in node {
                             let link_slice = &link.split(':').collect::<Vec<&str>>()[1..];
-                            let dest: u64 = link_slice[1].parse()?;
-                            node_edges.push(Edge::new(
-                                    dest,
-                                    Self::parse_ggcat_direction(
-                                        link_slice[0], 
-                                        link_slice[2])
-                                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                                        format!("error in thread {tid}: {e}").into()})?,
-                                    )
-                                );
+                            let dest: usize = link_slice[1].parse()?;
+                            // node_edges.push(Edge::new(
+                            //         dest,
+                            //         Self::parse_ggcat_direction(
+                            //             link_slice[0], 
+                            //             link_slice[2])
+                            //         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                            //             format!("error in thread {tid}: {e}").into()})?,
+                            //         )
+                            //     );
+                            node_neighbors.push(dest);
                         }
-                        node_edges.sort_unstable_by_key(|e| e.dest());
+                        node_neighbors.sort_unstable_by_key(|e| *e);
 
                         if in_fst(id) {
                             current_batch.push((label_line, id as u64));
@@ -443,9 +486,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                                 current_batch.clear();
                             }
                         }
-                        edges.write_slice(*offsets.get(id), node_edges.as_slice());
+                        neighbors.write_slice(*offsets.get(id), node_neighbors.as_slice());
 
-                        node_edges.clear();
+                        node_neighbors.clear();
                     }
 
                     // process the last batch if not empty
@@ -478,11 +521,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
-        edges.flush_async()?;
+        neighbors.flush_async()?;
         drop(offsets);
-        drop(edges);
+        drop(neighbors);
 
-        // if graph cache was used to build a graph then the graph's fst holds meatlabel_filename 
+        // if graph cache was used to build a graph then the graph's fst holds meatlabel_filename
         // open, hence, it must be removed so that the new fst may be built
         std::fs::remove_file(&self.metalabel_filename)?;
 
@@ -609,7 +652,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                             },
                         )?;
 
-                        cache.process_chunk(input, chunk_size, batch, batch_size, in_fst)
+                        cache
+                            .process_chunk(input, chunk_size, batch, batch_size, in_fst)
                             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                                 format!("error occured while batching fst build in parallel: {e}")
                                     .into()

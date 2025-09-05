@@ -1,3 +1,4 @@
+use crate::graph;
 use crate::graph::*;
 use crate::shared_slice::*;
 
@@ -36,9 +37,9 @@ type ProceduralMemoryGVELouvain = (
 /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
+pub struct AlgoGVELouvain<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which the partition is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped array containing each node's community.
     community: AbstractedProceduralMemoryMut<usize>,
     /// Cardinality of distinct communities in the final partition.
@@ -47,9 +48,7 @@ pub struct AlgoGVELouvain<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeT
     modularity: f64,
 }
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    AlgoGVELouvain<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E, Ix> {
     /// Constants set according to the optimizeds parameters described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876).
     /// Described in 4.1.2 Limiting the number of iterations per pass.
     const MAX_ITERATIONS: usize = 20;
@@ -75,7 +74,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     /// * `g` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(g: &'a GraphMemoryMap<EdgeType, Edge>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut gve_louvain = Self::new_no_compute(g)?;
         let proc_mem = gve_louvain.init_cache_mem()?;
 
@@ -115,13 +114,11 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
-    AlgoGVELouvain<'a, EdgeType, Edge>
-{
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E, Ix> {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -129,7 +126,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_no_compute_impl(g)
     }
@@ -181,7 +178,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::GVELouvain, None)?;
         let coms = SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size(), true)?;
@@ -222,7 +219,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
         let help = SharedSliceMut::<usize>::abst_mem_mut(&h_fn, edge_count.max(node_count), true)?;
 
         let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.g.edges_ptr(), edge_count);
+        let neighbours_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // initialize
         thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -260,13 +257,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
                                     .into());
                                 }
                             };
-                            let edges = graph_ptr
+                            let edges = neighbours_ptr
                                 .slice(u_start, u_end)
                                 .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
                                     format!("error reading node {u} in init").into()
                                 })?
                                 .iter()
-                                .map(|e| (e.dest(), 1))
+                                .map(|&e| (e, 1))
                                 .collect::<Vec<(usize, usize)>>();
 
                             // mark all nodes unprocessed
@@ -887,8 +884,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>
             let iter = self.g.neighbours(u)?;
             k.get(*communities.get(u))
                 .fetch_add(iter.remaining_neighbours(), Ordering::Relaxed);
-            for e in iter {
-                let v = e.dest();
+            for v in iter {
                 if v >= node_count {
                     continue;
                 } // safety

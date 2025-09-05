@@ -1,4 +1,4 @@
-use super::{CacheFile, GenericEdge, GenericEdgeType, GraphMemoryMap};
+use super::{CacheFile, GraphMemoryMap};
 use crate::{
     shared_slice::{
         AbstractedProceduralMemory, AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut,
@@ -14,11 +14,7 @@ use std::{
 };
 
 #[allow(dead_code)]
-impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
     pub(super) fn get_edge_reciprocal_impl(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
@@ -105,7 +101,8 @@ where
 
         let index_ptr =
             SharedSlice::<usize>::new(self.index.as_ptr() as *const usize, self.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(self.graph.as_ptr() as *const Edge, edge_count);
+        let neighbours_ptr =
+            SharedSlice::<usize>::new(self.graph.as_ptr() as *const usize, edge_count);
 
         let (er, eo) = self.init_procedural_memory_build_reciprocal()?;
 
@@ -127,7 +124,7 @@ where
                         let mut eo_at_end = true;
                         let edges_stop = *index_ptr.get(u + 1);
                         for edge_offset in edges_start..edges_stop {
-                            let v = graph_ptr.get(edge_offset).dest();
+                            let v = *neighbours_ptr.get(edge_offset);
                             if v > u {
                                 eo_at_end = false;
                                 *eo.get_mut(u) = edge_offset;
@@ -145,7 +142,7 @@ where
                     let mut prev = OneOrMany::<(usize, usize)>::One((node_count, 0usize));
                     for u in begin..end {
                         for edge_offset in *index_ptr.get(u)..*eo.get(u) {
-                            let v = graph_ptr.get(edge_offset).dest();
+                            let v = *neighbours_ptr.get(edge_offset);
                             // binary search on neighbours w, where w < v
                             if u == v {
                                 // self loops are their own reciprocals
@@ -156,16 +153,16 @@ where
                             } else if let OneOrMany::One((prev_v, prev_offset)) = prev {
                                 if prev_v == v {
                                     // find reciprocal, dest is the same, offset is different
-                                    // make entry into list and record
+                                    // make entry into list and record (never actually loops)
                                     let reciprocal = 'outer: loop {
                                         // search forwards
-                                        if prev_offset < edge_count - 1 && graph_ptr.get(prev_offset + 1).dest() == u {
+                                        if prev_offset < edge_count - 1 && *neighbours_ptr.get(prev_offset + 1) == u {
                                             break 'outer prev_offset + 1;
                                         } /*else if prev_offset < edge_count - 1 {
                                             println!("after {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset + 1).dest());
                                         }*/
                                         // search backwards
-                                        if prev_offset > 0 && graph_ptr.get(prev_offset - 1).dest() == u {
+                                        if prev_offset > 0 && *neighbours_ptr.get(prev_offset - 1) == u {
                                             break 'outer prev_offset - 1;
                                         } /*else if prev_offset > 0 {
                                             println!("before {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset - 1).dest());
@@ -184,11 +181,11 @@ where
                                 if vs[0].0 == v {
                                     // find reciprocal, dest is the same, offset is different from
                                     // any of the recorded offsets
-                                    // greedy lookup
+                                    // greedy lookup (never actually loops)
                                     let reciprocal = 'outer: loop {
                                         // search forwards
                                         let mut res = vs[0].1;
-                                        while res < edge_count - 1 && graph_ptr.get(res + 1).dest() == u {
+                                        while res < edge_count - 1 && *neighbours_ptr.get(res + 1) == u {
                                             res += 1;
                                             if vs.iter().any(|&(_, b)| b == res) {
                                                 continue;
@@ -198,7 +195,7 @@ where
                                         }
                                         // reset and search backwards
                                         res = vs[0].1;
-                                        while res > 0 && graph_ptr.get(res - 1).dest() == u {
+                                        while res > 0 && *neighbours_ptr.get(res - 1) == u {
                                             res -= 1;
                                             if vs.iter().any(|&(_, b)| b == res) {
                                                 continue;
@@ -226,7 +223,7 @@ where
                                     }
 
                                     let m = floor + (ceil - floor) / 2;
-                                    let dest = graph_ptr.get(m).dest();
+                                    let dest = neighbours_ptr.get(m);
 
                                     match dest.cmp(&u) {
                                         std::cmp::Ordering::Equal => break m,

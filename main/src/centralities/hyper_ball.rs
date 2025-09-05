@@ -1,3 +1,4 @@
+use crate::graph;
 #[cfg(test)]
 use crate::graph::cache::utils::{FileType::ExactClosenessCentrality, H};
 use crate::graph::*;
@@ -17,21 +18,21 @@ type ProceduralMemoryHB<P, const B: usize> = (
     AbstractedProceduralMemoryMut<f64>,
 );
 
-pub type HyperBall4<'a, ET, E> = HyperBallInner<'a, ET, E, Precision4, 6>;
-pub type HyperBall5<'a, ET, E> = HyperBallInner<'a, ET, E, Precision5, 6>;
-pub type HyperBall6<'a, ET, E> = HyperBallInner<'a, ET, E, Precision6, 6>;
-pub type HyperBall7<'a, ET, E> = HyperBallInner<'a, ET, E, Precision7, 6>;
-pub type HyperBall8<'a, ET, E> = HyperBallInner<'a, ET, E, Precision8, 6>;
-pub type HyperBall9<'a, ET, E> = HyperBallInner<'a, ET, E, Precision9, 6>;
-pub type HyperBall10<'a, ET, E> = HyperBallInner<'a, ET, E, Precision10, 6>;
-pub type HyperBall11<'a, ET, E> = HyperBallInner<'a, ET, E, Precision11, 6>;
-pub type HyperBall12<'a, ET, E> = HyperBallInner<'a, ET, E, Precision12, 6>;
-pub type HyperBall13<'a, ET, E> = HyperBallInner<'a, ET, E, Precision13, 6>;
-pub type HyperBall14<'a, ET, E> = HyperBallInner<'a, ET, E, Precision14, 6>;
-pub type HyperBall15<'a, ET, E> = HyperBallInner<'a, ET, E, Precision15, 6>;
-pub type HyperBall16<'a, ET, E> = HyperBallInner<'a, ET, E, Precision16, 6>;
-pub type HyperBall17<'a, ET, E> = HyperBallInner<'a, ET, E, Precision17, 6>;
-pub type HyperBall18<'a, ET, E> = HyperBallInner<'a, ET, E, Precision18, 6>;
+pub type HyperBall4<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision4, 6>;
+pub type HyperBall5<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision5, 6>;
+pub type HyperBall6<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision6, 6>;
+pub type HyperBall7<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision7, 6>;
+pub type HyperBall8<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision8, 6>;
+pub type HyperBall9<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision9, 6>;
+pub type HyperBall10<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision10, 6>;
+pub type HyperBall11<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision11, 6>;
+pub type HyperBall12<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision12, 6>;
+pub type HyperBall13<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision13, 6>;
+pub type HyperBall14<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision14, 6>;
+pub type HyperBall15<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision15, 6>;
+pub type HyperBall16<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision16, 6>;
+pub type HyperBall17<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision17, 6>;
+pub type HyperBall18<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision18, 6>;
 
 /// Enum for centralities' caching filenames' creation manager logic.
 #[allow(dead_code)]
@@ -55,13 +56,14 @@ enum Centrality {
 #[derive(Debug)]
 pub struct HyperBallInner<
     'a,
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
+    N: graph::N,
+    E: graph::E,
+    Ix: graph::IndexType,
     P: WordType<B> = Precision8,
     const B: usize = 6,
 > {
     /// Graph for which *HyperBall* is computed.
-    g: &'a GraphMemoryMap<EdgeType, Edge>,
+    g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing each node's *HyperLogLog++* counter.
     counters: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
     /// Memmapped slice containing each node's distance accumulator.
@@ -83,8 +85,8 @@ pub struct HyperBallInner<
 }
 
 #[allow(dead_code)]
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>, const B: usize>
-    HyperBallInner<'a, EdgeType, Edge, P, B>
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B: usize>
+    HyperBallInner<'a, N, E, Ix, P, B>
 {
     const DEAFULT_PRECISION: u8 = 8;
     const MIN_PRECISION: u8 = 4;
@@ -102,7 +104,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -449,13 +451,13 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
 
 #[allow(dead_code)]
 /// HyperBall engine functions.
-impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>, const B: usize>
-    HyperBallInner<'a, EdgeType, Edge, P, B>
+impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B: usize>
+    HyperBallInner<'a, N, E, Ix, P, B>
 {
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -465,7 +467,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -527,7 +529,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     }
 
     fn init_cache(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<ProceduralMemoryHB<P, B>, Box<dyn std::error::Error>> {
         let node_count = g.size();
 
@@ -545,22 +547,18 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
     }
 
     fn new_no_compute_impl(
-        g: &'a GraphMemoryMap<EdgeType, Edge>,
+        g: &'a GraphMemoryMap<N, E, Ix>,
         precision: Option<u8>,
         max_depth: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let node_count = g.size();
         // make sure presision is within bounds
-        let precision =
-            precision.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_PRECISION, |p| {
-                p.clamp(
-                    HyperBallInner::<EdgeType, Edge>::MIN_PRECISION,
-                    HyperBallInner::<EdgeType, Edge>::MAX_PRECISION,
-                )
-            });
+        let precision = precision.map_or(Self::DEAFULT_PRECISION, |p| {
+            p.clamp(Self::MIN_PRECISION, Self::MAX_PRECISION)
+        });
         // make sure depth is within bounds
-        let max_t = max_depth.map_or(HyperBallInner::<EdgeType, Edge>::DEAFULT_MAX_DEPTH, |p| {
-            std::cmp::max(HyperBallInner::<EdgeType, Edge>::MAX_MAX_DEPTH, p)
+        let max_t = max_depth.map_or(Self::DEAFULT_MAX_DEPTH, |p| {
+            std::cmp::max(Self::MAX_MAX_DEPTH, p)
         });
         // init cached vecs for distances and inverse distances accumulation
         let (mut counters, mut distances, mut inverse_distances) = Self::init_cache(g)?;
@@ -664,7 +662,7 @@ impl<'a, EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>, P: WordType<B>,
                                     )?;
 
                                     for v in u_n {
-                                        a |= counters.get(v.dest());
+                                        a |= counters.get(v);
                                     }
 
                                     let curr_count = a.estimate_cardinality();
@@ -804,7 +802,7 @@ mod test {
         let exact_mmaped = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
         let exact = exact_mmaped.as_slice();
 
-        let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&g, None, None)?;
+        let mut hyperball = HyperBallInner::<_, _, _, Precision8, 6>::new(&g, None, None)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
 
         // metrics

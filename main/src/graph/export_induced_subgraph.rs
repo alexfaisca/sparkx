@@ -1,15 +1,11 @@
-use super::{GenericEdge, GenericEdgeType, GraphFile, GraphMemoryMap, cache::GraphCache};
+use super::{GraphFile, GraphMemoryMap, cache::GraphCache};
 use crate::shared_slice::SharedSliceMut;
 
 use fst::Streamer;
 use std::fs::OpenOptions;
 
 #[allow(dead_code)]
-impl<EdgeType, Edge> GraphMemoryMap<EdgeType, Edge>
-where
-    EdgeType: GenericEdgeType,
-    Edge: GenericEdge<EdgeType>,
-{
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
     /// Applies the mask: fn(usize) -> bool function to each node id and returns the resulting subgraph.
     ///
     /// The resulting subgraph is that wherein only the set of nodes, `S ⊂ V`, of the nodes for whose the output of mask is true, as well as, only the set of edges coming from and going to nodes in `S`[^1].
@@ -19,7 +15,7 @@ where
         &mut self,
         mask: fn(usize) -> bool,
         identifier: Option<&str>,
-    ) -> Result<GraphMemoryMap<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let node_count = self.size();
 
         let id = match identifier.map(|id| id.to_string()) {
@@ -31,10 +27,9 @@ where
         };
 
         // build subgraph's cache entries' filenames
-        let e_fn = GraphCache::<EdgeType, Edge>::build_graph_filename(&id, GraphFile::Edges, None)?;
-        let i_fn = GraphCache::<EdgeType, Edge>::build_graph_filename(&id, GraphFile::Index, None)?;
-        let ml_fn =
-            GraphCache::<EdgeType, Edge>::build_graph_filename(&id, GraphFile::Metalabel, None)?;
+        let n_fn = GraphCache::<N, E, Ix>::build_graph_filename(&id, GraphFile::Neighbors, None)?;
+        let o_fn = GraphCache::<N, E, Ix>::build_graph_filename(&id, GraphFile::Offsets, None)?;
+        let ml_fn = GraphCache::<N, E, Ix>::build_graph_filename(&id, GraphFile::MetaLabels, None)?;
 
         if node_count > 1 {
             // helper counter
@@ -56,7 +51,7 @@ where
                 if mask(u) {
                     *node_index.get_mut(u) = curr_node_index;
                     curr_node_index += 1;
-                    let neighbours = self.neighbours(u)?.filter(|x| mask(x.dest())).count();
+                    let neighbours = self.neighbours(u)?.filter(|&x| mask(x)).count();
                     curr_edge_count += neighbours;
                     *edge_count.get_mut(u + 1) = curr_edge_count;
                 } else {
@@ -67,9 +62,10 @@ where
 
             let mut metalabel_stream = self.metalabels.stream();
 
-            let mut edges = SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, curr_edge_count, true)?;
-            let mut index =
-                SharedSliceMut::<usize>::abst_mem_mut(&i_fn, curr_node_index + 1, true)?;
+            let mut neighbours =
+                SharedSliceMut::<usize>::abst_mem_mut(&n_fn, curr_edge_count, true)?;
+            let mut offsets =
+                SharedSliceMut::<usize>::abst_mem_mut(&o_fn, curr_node_index + 1, true)?;
             let metalabel_file = OpenOptions::new()
                 .create(true)
                 .truncate(true)
@@ -80,20 +76,20 @@ where
 
             // write nodes in order of lexicographically ordered metalabels to avoid sorting metaabels
             // FIXME: what is more costly random page accesses or sorting build merging metalabel fst?
-            *index.get_mut(0) = 0;
+            *offsets.get_mut(0) = 0;
             while let Some((metalabel, node_id)) = metalabel_stream.next() {
                 let id = node_id as usize;
                 if mask(id) {
                     // write index file for next node (id + 1)
                     let new_id = *node_index.get(id);
-                    *index.get_mut(new_id + 1) = *edge_count.get(id + 1);
+                    *offsets.get_mut(new_id + 1) = *edge_count.get(id + 1);
                     // write edge file node
-                    edges
+                    neighbours
                         .write_slice(
                             *edge_count.get(id),
                             self.neighbours(id)?
-                                .filter(|x| mask(x.dest()))
-                                .collect::<Vec<Edge>>()
+                                .filter(|&x| mask(x))
+                                .collect::<Vec<usize>>()
                                 .as_slice(),
                         )
                         .ok_or("error writing edges for node {id}")?;
@@ -104,8 +100,8 @@ where
             build.finish()?;
         } else {
             // if graph is empty allocate empty for its empty subgraph
-            SharedSliceMut::<Edge>::abst_mem_mut(&e_fn, 0, true)?;
-            let mut i = SharedSliceMut::<usize>::abst_mem_mut(&i_fn, 1, true)?;
+            SharedSliceMut::<usize>::abst_mem_mut(&n_fn, 0, true)?;
+            let mut i = SharedSliceMut::<usize>::abst_mem_mut(&o_fn, 1, true)?;
             // store end of offsets in index entry at |V| (empty graph --- offsets end at 0)
             *i.get_mut(0) = 0;
             let metalabel_file = OpenOptions::new()
@@ -119,7 +115,7 @@ where
         }
 
         // finalize by initialozing a GraphCache instance for the subgraph and building it
-        let cache: GraphCache<EdgeType, Edge> = GraphCache::open(&ml_fn, None)?;
+        let cache: GraphCache<N, E, Ix> = GraphCache::open(&ml_fn, None)?;
         self.cleanup_helpers()?;
         GraphMemoryMap::init_from_cache(cache, Some(self.thread_count))
     }

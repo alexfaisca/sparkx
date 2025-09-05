@@ -9,7 +9,7 @@ use _verify::verify_k_trusses;
 mod _verify {
     use crate::{
         graph::{
-            GenericEdge, GenericEdgeType, GraphMemoryMap,
+            GraphMemoryMap,
             cache::utils::{FileType, H, cache_file_name},
         },
         shared_slice::{AbstractedProceduralMemoryMut, SharedSlice, SharedSliceMut},
@@ -26,8 +26,8 @@ mod _verify {
     };
 
     #[allow(dead_code)]
-    pub(super) fn verify_k_trusses<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>>(
-        graph: &GraphMemoryMap<EdgeType, Edge>,
+    pub(super) fn verify_k_trusses(
+        graph: &GraphMemoryMap,
         edge_trussness: AbstractedProceduralMemoryMut<u8>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let threads = get_physical() * 2;
@@ -48,7 +48,7 @@ mod _verify {
         }
 
         let index_ptr = SharedSlice::<usize>::new(graph.index_ptr(), graph.offsets_size());
-        let graph_ptr = SharedSlice::<Edge>::new(graph.edges_ptr(), edge_count);
+        let neighbours_ptr = SharedSlice::<usize>::new(graph.neighbours_ptr(), edge_count);
 
         let trussness = edge_trussness.shared_slice();
         // suport check test filename
@@ -73,11 +73,11 @@ mod _verify {
                 while u_w.is_some() && v_w.is_some() {
                     let (u_w_idx, u_w_edge) = u_w.unwrap();
                     let (v_w_idx, v_w_edge) = v_w.unwrap();
-                    match u_w_edge.dest().cmp(&v_w_edge.dest()) {
+                    match u_w_edge.cmp(&v_w_edge) {
                         std::cmp::Ordering::Less => u_w = n_u.next(),
                         std::cmp::Ordering::Greater => v_w = n_v.next(),
                         std::cmp::Ordering::Equal => {
-                            let w = u_w_edge.dest();
+                            let w = u_w_edge;
                             if w != u
                                 && w != v
                                 && *trussness.get(u_offset + u_w_idx) >= tau
@@ -123,17 +123,16 @@ mod _verify {
                     // compute edge support (stored in tris)
                     for u in start..end {
                         for j in *eo.get(u)..*index_ptr.get(u + 1) {
-                            let w = *graph_ptr.get(j);
-                            neighbours.insert(w.dest(), j);
+                            let w = *neighbours_ptr.get(j);
+                            neighbours.insert(w, j);
                         }
                         for u_v in *index_ptr.get(u)..*eo.get(u) {
-                            let v = *graph_ptr.get(u_v);
-                            let v = v.dest();
+                            let v = *neighbours_ptr.get(u_v);
                             if u == v {
                                 continue;
                             }
                             for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
-                                let w = graph_ptr.get(v_w).dest();
+                                let w = *neighbours_ptr.get(v_w);
                                 if w <= u {
                                     break;
                                 }
@@ -170,7 +169,7 @@ mod _verify {
                             }
                             let k = k_uv;
 
-                            let v = graph_ptr.get(edge_idx).dest();
+                            let v = *neighbours_ptr.get(edge_idx);
                             // test membership: edges with trussness == k must have support > k + 2
                             if k > 0 {
                                 let support_k = count_support(u, v, k).map_err(

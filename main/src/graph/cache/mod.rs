@@ -6,9 +6,7 @@ mod parser_mtx;
 #[cfg(feature = "ggcat")]
 mod parser_ggcat;
 
-use super::{
-    CacheFile, GraphFile, GenericEdge, GenericEdgeType,
-};
+use super::{CacheFile, GraphFile, E, N, IndexType};
 use utils::{
     cache_file_name, cache_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, FileType, CACHE_DIR, H
 };
@@ -19,6 +17,7 @@ use utils::EXACT_VALUE_CACHE_DIR;
 use fst::{IntoStreamer, Map, MapBuilder, Streamer};
 use memmap2::{Mmap, MmapOptions};
 use static_assertions::const_assert;
+use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use std::{
     fs::{self, File, OpenOptions},
@@ -41,23 +40,28 @@ enum InputFileType {
     NODE_EDGE(&'static str),
 }
 
-pub struct GraphCache<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> {
-    pub graph_file: Arc<File>,
-    pub index_file: Arc<File>,
+pub struct GraphCache<N: super::N, E: super::E, Ix: IndexType> {
+    pub neighbors_file: Arc<File>,
+    pub offsets_file: Arc<File>,
+    pub nodelabel_file: Arc<File>,
+    pub edgelabel_file: Arc<File>,
     pub metalabel_file: Arc<File>,
-    pub graph_filename: String,
-    pub index_filename: String,
+    pub neighbors_filename: String,
+    pub offsets_filename: String,
+    pub nodelabel_filename: String,
+    pub edgelabel_filename: String,
     pub metalabel_filename: String,
     pub graph_bytes: usize,
     pub index_bytes: usize,
     pub readonly: bool,
     batch: Option<usize>,
-    _marker1: PhantomData<Edge>,
-    _marker2: PhantomData<EdgeType>,
+    _marker1: PhantomData<N>,
+    _marker2: PhantomData<E>,
+    _marker3: PhantomData<Ix>,
 }
 
 #[allow(dead_code)]
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType, Edge> {
+impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 #[cfg(feature = "ggcat")]
     const EXT_COMPRESSED_LZ4: &str = "lz4";
 #[cfg(feature = "mtx")]
@@ -106,8 +110,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             match target_type {
                 FileType::Edges(_) => cache_file_name_from_id(FileType::Edges(H::H), &id, seq),
                 FileType::Index(H::H) => cache_file_name_from_id(FileType::Index(H::H), &id, seq),
-                FileType::Metalabel(H::H) => {
-                    cache_file_name_from_id(FileType::Metalabel(H::H), &id, seq)
+                FileType::NodeLabel(H::H) => {
+                    cache_file_name_from_id(FileType::NodeLabel(H::H), &id, seq)
+                }
+                FileType::EdgeLabel(H::H) => {
+                    cache_file_name_from_id(FileType::EdgeLabel(H::H), &id, seq)
+                }
+                FileType::MetaLabel(H::H) => {
+                    cache_file_name_from_id(FileType::MetaLabel(H::H), &id, seq)
                 }
                 FileType::Helper(H::H) => cache_file_name_from_id(FileType::Helper(H::H), &id, seq),
                 _ => {
@@ -258,36 +268,58 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn init_with_id(
         id: &str,
         batch: Option<usize>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
 
         if id.is_empty() {
             return Err("error invalid cache id: id was `None`".into());
         }
 
-        let graph_filename =
+        let neighbors_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::Edges(H::H), None)?;
-        let index_filename =
+        let offsets_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::Index(H::H), None)?;
+        let nodelabel_filename =
+            Self::init_cache_file_from_id_or_random(id, FileType::NodeLabel(H::H), None)?;
+        let edgelabel_filename =
+            Self::init_cache_file_from_id_or_random(id, FileType::EdgeLabel(H::H), None)?;
         let metalabel_filename =
-            Self::init_cache_file_from_id_or_random(id, FileType::Metalabel(H::H), Some(0))?;
+            Self::init_cache_file_from_id_or_random(id, FileType::MetaLabel(H::H), Some(0))?;
 
-        let graph_file = Arc::new(
+        let neighbors_file = Arc::new(
             OpenOptions::new()
                 .read(true)
                 .write(true)
                 .truncate(true)
                 .create(true)
-                .open(&graph_filename)?,
+                .open(&neighbors_filename)?,
         );
 
-        let index_file = Arc::new(
+        let offsets_file = Arc::new(
             OpenOptions::new()
                 .read(true)
                 .write(true)
                 .truncate(true)
                 .create(true)
-                .open(&index_filename)?,
+                .open(&offsets_filename)?,
+        );
+
+        let nodelabel_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .create(true)
+                .open(&nodelabel_filename)?,
+        );
+
+        let edgelabel_file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .create(true)
+                .open(&edgelabel_filename)?,
         );
 
         let metalabel_file = Arc::new(
@@ -299,19 +331,24 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 .open(&metalabel_filename)?,
         );
 
-        Ok(GraphCache::<EdgeType, Edge> {
-            graph_file,
-            index_file,
+        Ok(Self {
+            neighbors_file,
+            offsets_file,
+            nodelabel_file,
+            edgelabel_file,
             metalabel_file,
-            graph_filename,
-            index_filename,
+            neighbors_filename,
+            offsets_filename,
+            nodelabel_filename,
+            edgelabel_filename,
             metalabel_filename,
             graph_bytes: 0,
             index_bytes: 0,
             readonly: false,
             batch: batch.map(|b| std::cmp::max(b, Self::DEFAULT_BATCHING_SIZE)),
-            _marker1: PhantomData::<Edge>,
-            _marker2: PhantomData::<EdgeType>,
+            _marker1: PhantomData::<N>,
+            _marker2: PhantomData::<E>,
+            _marker3: PhantomData::<Ix>,
         })
     }
 
@@ -332,24 +369,73 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     pub fn open(
         filename: &str,
         batch: Option<usize>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
 
         let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
-        let graph_filename = cache_file_name(filename, FileType::Edges(H::H), None)?;
-        let index_filename = cache_file_name(filename, FileType::Index(H::H), None)?;
-        let metalabel_filename = cache_file_name(filename, FileType::Metalabel(H::H), None)?;
+        let neighbors_filename =
+            Self::build_graph_filename(filename, GraphFile::Neighbors, None)?;
+        let offsets_filename =
+            Self::build_graph_filename(filename, GraphFile::Offsets, None)?;
+        let nodelabel_filename =
+            Self::build_graph_filename(filename, GraphFile::NodeLabels, None)?;
+        let edgelabel_filename =
+            Self::build_graph_filename(filename, GraphFile::EdgeLabels, None)?;
+        let metalabel_filename =
+            Self::build_graph_filename(filename, GraphFile::MetaLabels, None)?;
 
-        let graph_file = Arc::new(
+        let neighbors_file = Arc::new(
             OpenOptions::new()
                 .read(true)
-                .open(graph_filename.as_str())?,
+                .open(&neighbors_filename)?,
         );
-        let index_file = Arc::new(
+
+        let offsets_file = Arc::new(
             OpenOptions::new()
                 .read(true)
-                .open(index_filename.as_str())?,
+                .open(&offsets_filename)?,
         );
+
+        let nodelabel_file = match OpenOptions::new()
+            .read(true)
+            .open(metalabel_filename.as_str())
+        {
+            Ok(file) => Arc::new(file),
+            Err(_) => {
+                if N::is_labeled() {
+                    return Err(format!("error couldn't find a node labes' file in cache for {filename} but {} is labeled", crate::utils::type_of::<N>()).into());
+                }
+                // if graph has no nodelabel in cache no problem, build empty one and proceed
+                Arc::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .write(true)
+                        .open(&nodelabel_filename)?,
+                )
+            }
+        };
+
+        let edgelabel_file = match OpenOptions::new()
+            .read(true)
+            .open(&edgelabel_filename)
+        {
+            Ok(file) => Arc::new(file),
+            Err(_) => {
+                if E::is_labeled() {
+                    return Err(format!("error couldn't find an edge labes' file in cache for {filename} but {} is labeled", crate::utils::type_of::<E>()).into());
+                }
+                // if graph has no edgelabel in cache no problem, build empty one and proceed
+                Arc::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .write(true)
+                        .open(&edgelabel_filename)?,
+                )
+            }
+        };
+
         let metalabel_file = match OpenOptions::new()
             .read(true)
             .open(metalabel_filename.as_str())
@@ -373,22 +459,27 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
             }
         };
 
-        let edges = graph_file.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
-        let nodes = index_file.metadata().unwrap().len() as usize / std::mem::size_of::<Edge>();
+        let edges = neighbors_file.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
+        let nodes = offsets_file.metadata().unwrap().len() as usize / std::mem::size_of::<usize>();
 
-        Ok(GraphCache::<EdgeType, Edge> {
-            graph_file,
-            index_file,
+        Ok(Self {
+            neighbors_file,
+            offsets_file,
+            nodelabel_file,
+            edgelabel_file,
             metalabel_file,
-            graph_filename,
-            index_filename,
+            neighbors_filename,
+            offsets_filename,
+            nodelabel_filename,
+            edgelabel_filename,
             metalabel_filename,
             graph_bytes: edges,
             index_bytes: nodes,
             readonly: true,
             batch,
-            _marker1: PhantomData::<Edge>,
-            _marker2: PhantomData::<EdgeType>,
+            _marker1: PhantomData::<N>,
+            _marker2: PhantomData::<E>,
+            _marker3: PhantomData::<Ix>,
         })
     }
 
@@ -419,7 +510,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
 
         match Self::evaluate_input_file_type(p.as_ref())? {
@@ -492,7 +583,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_node_edge_file_impl(nodes_path, edges_path, id, batch, in_fst)
     }
 
@@ -521,7 +612,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_ggcat_file_impl(path, id, batch, in_fst)
     }
 
@@ -549,7 +640,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         path: P,
         id: Option<String>,
         batch: Option<usize>,
-    ) -> Result<GraphCache<EdgeType, Edge>, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_mtx_file_impl(path, id, batch)
     }
 
@@ -581,7 +672,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn write_node(
         &mut self,
         node_id: usize,
-        data: &[Edge],
+        data: &[usize],
         label: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let expected_id = self.index_bytes;
@@ -590,14 +681,14 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 // write label
                 writeln!(self.metalabel_file, "{}\t{}", node_id, label)?;
 
-                self.index_file.write_all(bytemuck::bytes_of(&self.graph_bytes)).map_err(
+                self.offsets_file.write_all(bytemuck::bytes_of(&self.graph_bytes)).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!("error writing index for {node_id}: {e}").into()
                     }
                 )?;
                 self.index_bytes += 1;
 
-                self.graph_file.write_all(bytemuck::cast_slice(data)).map_err(
+                self.neighbors_file.write_all(bytemuck::cast_slice(data)).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!("error writing edges for {node_id}: {e}").into()
                     }
@@ -615,12 +706,12 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn write_unlabeled_node(
         &mut self,
         node_id: usize,
-        data: &[Edge],
+        data: &[usize],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let expected_id = self.index_bytes;
         match node_id == expected_id {
             true => {
-                self.index_file.write_all(bytemuck::bytes_of(&self.graph_bytes)).map_err(
+                self.offsets_file.write_all(bytemuck::bytes_of(&self.graph_bytes)).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!("error writing index for {node_id}: {e}").into()
                     }
@@ -628,7 +719,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
                 self.index_bytes += 1;
 
 
-                self.graph_file.write_all(bytemuck::cast_slice(data)).map_err(
+                self.neighbors_file.write_all(bytemuck::cast_slice(data)).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!("error writing edges for {node_id}: {e}").into()
                     }
@@ -653,9 +744,9 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn build_fst_from_sorted_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Build finite state tranducer for k-mer to node id
         let fst_filename =
-            cache_file_name(&self.metalabel_filename, FileType::Metalabel(H::H), None)?;
+            cache_file_name(&self.metalabel_filename, FileType::MetaLabel(H::H), None)?;
         let sorted_file =
-            cache_file_name(&self.metalabel_filename, FileType::Metalabel(H::H), Some(1))?;
+            cache_file_name(&self.metalabel_filename, FileType::MetaLabel(H::H), Some(1))?;
 
         Self::external_sort_by_content(&self.metalabel_filename, &sorted_file)?;
 
@@ -781,7 +872,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch.sort_by(|a, b| a.0.cmp(&b.0));
         let tempfst_fn = cache_file_name(
             &self.metalabel_filename,
-            FileType::Metalabel(H::H),
+            FileType::MetaLabel(H::H),
             Some(batch_num + 1),
         )?;
 
@@ -809,7 +900,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         batch.sort_by(|a, b| a.0.cmp(b.0));
         let tempfst_fn = cache_file_name(
             &self.metalabel_filename,
-            FileType::Metalabel(H::H),
+            FileType::MetaLabel(H::H),
             Some(batch_num + 1),
         )?;
 
@@ -830,7 +921,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Merge multiple FST batch files into a final FST.
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
         // open output FST file for writing
-        let out_fn = cache_file_name(&self.metalabel_filename, FileType::Metalabel(H::H), None)?;
+        let out_fn = cache_file_name(&self.metalabel_filename, FileType::MetaLabel(H::H), None)?;
         let out = Arc::new(
             OpenOptions::new()
                 .create(true)
@@ -891,8 +982,10 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     fn finish(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // make all files read-only and cleanup
         for file in [
-            &mut self.index_file,
-            &mut self.graph_file,
+            &mut self.offsets_file,
+            &mut self.neighbors_file,
+            &mut self.edgelabel_file,
+            &mut self.nodelabel_file,
             &mut self.metalabel_file,
         ] {
             Self::set_file_readonly(file)?;
@@ -901,7 +994,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // remove any tmp files that may have been used to (re)build `GraphCache` instance
-        self.cleanup_cache_by_target(FileType::Metalabel(H::H))?;
+        self.cleanup_cache_by_target(FileType::MetaLabel(H::H))?;
         self.readonly = true;
         Ok(())
     }
@@ -915,8 +1008,8 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         }
 
         // complete index file if not set to readonly
-        if !self.index_file.metadata()?.permissions().readonly() {
-            self.index_file
+        if !self.offsets_file.metadata()?.permissions().readonly() {
+            self.offsets_file
                 .write_all(bytemuck::bytes_of(&self.graph_bytes))
                 .map_err(|e| -> Box<dyn std::error::Error> {
                     format!("error couldn't finish index: {e}").into()
@@ -938,16 +1031,28 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         self.finish()
     }
 
-    /// Returns the edge file's filename.
+    /// Returns the neighbors' file's filename.
     #[inline]
-    pub fn edges_filename(&self) -> String {
-        self.graph_filename.clone()
+    pub fn neighbors_filename(&self) -> String {
+        self.neighbors_filename.clone()
     }
 
-    /// Returns the offsets file's filename.
+    /// Returns the offsets' file's filename.
     #[inline]
-    pub fn index_filename(&self) -> String {
-        self.index_filename.clone()
+    pub fn offsets_filename(&self) -> String {
+        self.offsets_filename.clone()
+    }
+
+    /// Returns the nodelabels' file's filename.
+    #[inline]
+    pub fn nodelabels_filename(&self) -> String {
+        self.nodelabel_filename.clone()
+    }
+
+    /// Returns the edgelabels' file's filename.
+    #[inline]
+    pub fn edgelabels_filename(&self) -> String {
+        self.edgelabel_filename.clone()
     }
 
     /// Returns the fst (metalabel-to-node map) file's filename.
@@ -959,7 +1064,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
     /// Returns the graph's cache id.
     #[inline]
     pub fn cache_id(&self) -> Result<String, Box<dyn std::error::Error>> {
-        graph_id_from_cache_file_name(self.graph_filename.clone())
+        graph_id_from_cache_file_name(self.offsets_filename.clone())
     }
 
     /// Returns the graph's cache id.
@@ -996,9 +1101,11 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     fn convert_graph_file(file_type: GraphFile) -> FileType {
         match file_type {
-            GraphFile::Edges => FileType::Edges(H::H),
-            GraphFile::Index => FileType::Index(H::H),
-            GraphFile::Metalabel => FileType::Metalabel(H::H),
+            GraphFile::Neighbors => FileType::Edges(H::H),
+            GraphFile::Offsets => FileType::Index(H::H),
+            GraphFile::NodeLabels => FileType::NodeLabel(H::H),
+            GraphFile::EdgeLabels => FileType::EdgeLabel(H::H),
+            GraphFile::MetaLabels => FileType::MetaLabel(H::H),
         }
     }
 
@@ -1011,7 +1118,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         target: CacheFile,
         seq: Option<usize>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        cache_file_name(&self.graph_filename, Self::convert_cache_file(target), seq)
+        cache_file_name(&self.neighbors_filename, Self::convert_cache_file(target), seq)
     }
 
     /// Build a cached (either `.mmap` or `.tmp`) file of a given [`GaraphFile`] type for the [`GraphCache`] instance.
@@ -1034,7 +1141,7 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
         &self,
         seq: usize,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        cache_file_name(&self.graph_filename, FileType::Helper(H::H), Some(seq))
+        cache_file_name(&self.neighbors_filename, FileType::Helper(H::H), Some(seq))
     }
 
     /// Remove [`GraphCache`] instance's cached `.tmp` files of type [`FileType`]::Helper(_).
@@ -1065,15 +1172,17 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> GraphCache<EdgeType
 
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
-        std::fs::remove_file(this.edges_filename())?;
-        std::fs::remove_file(this.index_filename())?;
+        std::fs::remove_file(this.neighbors_filename())?;
+        std::fs::remove_file(this.offsets_filename())?;
+        std::fs::remove_file(this.nodelabels_filename())?;
+        std::fs::remove_file(this.edgelabels_filename())?;
         std::fs::remove_file(this.fst_filename())?;
         Ok(())
     }
 }
 
 
-impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCache<EdgeType, Edge> {
+impl<N: super::N, E: super::E, Ix: IndexType> Clone for GraphCache<N, E, Ix> {
     fn clone(&self) -> Self {
         if !self.readonly {
             panic!(
@@ -1081,11 +1190,15 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
             );
         }
         Self {
-            graph_file: self.graph_file.clone(),
-            index_file: self.index_file.clone(),
+            neighbors_file: self.neighbors_file.clone(),
+            offsets_file: self.offsets_file.clone(),
+            nodelabel_file: self.nodelabel_file.clone(),
+            edgelabel_file: self.edgelabel_file.clone(),
             metalabel_file: self.metalabel_file.clone(),
-            graph_filename: self.graph_filename.clone(),
-            index_filename: self.index_filename.clone(),
+            neighbors_filename: self.neighbors_filename.clone(),
+            offsets_filename: self.offsets_filename.clone(),
+            nodelabel_filename: self.nodelabel_filename.clone(),
+            edgelabel_filename: self.edgelabel_filename.clone(),
             metalabel_filename: self.metalabel_filename.clone(),
             graph_bytes: self.graph_bytes,
             index_bytes: self.index_bytes,
@@ -1093,7 +1206,24 @@ impl<EdgeType: GenericEdgeType, Edge: GenericEdge<EdgeType>> Clone for GraphCach
             batch: self.batch,
             _marker1: self._marker1,
             _marker2: self._marker2,
+            _marker3: self._marker3,
         }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Debug
+    for GraphCache<N, E, Ix>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{\n\tneighbours filename: {}\n\toffsets filename: {}\n\tnodelabels filename: {}\n\tedgelabels filename: {}\n\tmetalabel filename: {}\n}}",
+            self.neighbors_filename(),
+            self.offsets_filename(),
+            self.nodelabels_filename(),
+            self.edgelabels_filename(),
+            self.fst_filename()
+        )
     }
 }
 

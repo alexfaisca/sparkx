@@ -1,8 +1,12 @@
 use core::panic;
+use std::collections::HashSet;
 
-use proc_macro::TokenStream;
-use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Fields, Meta, MetaList, Type, parse_macro_input};
+use proc_macro::{Ident, TokenStream};
+use quote::{ToTokens, quote};
+use syn::{
+    Attribute, Data, DeriveInput, Fields, Item, ItemStruct, Meta, MetaList, Path, Token, Type,
+    parse, parse_macro_input, punctuated::Punctuated,
+};
 
 static DEFAULT_FIELD_NAME_FOR_EDGE_DEST: &str = "dest_node";
 static DEFUALT_FIELD_NAME_FOR_EDGE_TYPE: &str = "edge_type";
@@ -867,4 +871,190 @@ pub fn derive_generic_edge_type(input: proc_macro::TokenStream) -> proc_macro::T
     };
 
     TokenStream::from(expanded)
+}
+#[proc_macro_derive(E)]
+pub fn derive_e(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    quote! {}.into()
+}
+
+#[proc_macro_derive(N)]
+pub fn derive_n(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let mut input = parse_macro_input!(input as DeriveInput);
+    // parse struct attributes amd override new() and/or default() with user specified
+    // methods if given
+    // parse #[generic_edge(constructor = "new", deafult = "default")]
+    let mut already_derived = Vec::new();
+    for attr in &input.attrs {
+        // collect already derived macros
+        if attr.path().is_ident("derive") {
+            if let Meta::List(meta) = &attr.meta {
+                let parsed: syn::punctuated::Punctuated<Meta, syn::Token![,]> =
+                    match meta.parse_args_with(syn::punctuated::Punctuated::parse_terminated) {
+                        Ok(i) => i,
+                        Err(e) => panic!("error parsinf token metadata: {}", e),
+                    };
+                for nested in parsed {
+                    if let Meta::Path(path) = nested {
+                        if let Some(ident) = path.get_ident() {
+                            already_derived.push(ident.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // ensure necessary macros are derived (we want PartialEq, Eq & Hash) so the user may use
+    // HashMaps and HashSets with any GenericEdge safely
+    // FIXME: How to make this work without defining the struct multiple times?
+    let required_traits = [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "PartialOrd",
+        "Ord",
+        "Hash",
+    ];
+    let mut missing_derives = Vec::new();
+
+    for required in &required_traits {
+        if !already_derived.iter().any(|d| d == required) {
+            missing_derives.push(syn::Ident::new(required, proc_macro2::Span::call_site()));
+        }
+    }
+    // if missing derives exist, add them
+    if !missing_derives.is_empty() {
+        let derive_attr: Attribute = syn::parse_quote! {
+            #[derive( #( #missing_derives ),* )]
+        };
+        input.attrs.push(derive_attr);
+    }
+
+    quote!(#input).into()
+}
+fn has_repr_c_or_transparent(attrs: &[Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|a| a.path().is_ident("repr") && a.meta.to_token_stream().to_string().contains("C"))
+        || attrs.iter().any(|a| {
+            a.path().is_ident("repr")
+                && a.meta.to_token_stream().to_string().contains("transparent")
+        })
+}
+
+#[proc_macro_attribute]
+pub fn sparkx_label(_attr: TokenStream, item: TokenStream) -> proc_macro::TokenStream {
+    let mut input: Item = parse(item).expect("expected an item (struct/enum/union)");
+
+    // Get attrs vec for the variants you support
+    let attrs: &mut Vec<Attribute> = match &mut input {
+        syn::Item::Struct(s) => &mut s.attrs,
+        syn::Item::Enum(e) => &mut e.attrs,
+        syn::Item::Union(u) => &mut u.attrs,
+        other => {
+            return syn::Error::new_spanned(other, "ensure_derives: only for structs/enums/unions")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    // Collect already-present derive idents
+    let mut have = HashSet::<String>::new();
+    for a in attrs.iter().filter(|a| a.path().is_ident("derive")) {
+        let paths: Punctuated<syn::Path, Token![,]> = a
+            .parse_args_with(Punctuated::<syn::Path, Token![,]>::parse_terminated)
+            .unwrap_or_default();
+        for p in paths {
+            if let Some(id) = p.get_ident() {
+                have.insert(id.to_string());
+            }
+        }
+    }
+
+    // Build syn::Ident (proc_macro2::Ident) with a proc_macro2::Span
+    let required = [
+        "PartialEq",
+        "Eq",
+        "Hash",
+        "Clone",
+        "PartialOrd",
+        "Ord",
+        "Copy",
+        "Debug",
+    ];
+    let missing: Vec<syn::Ident> = required
+        .iter()
+        .filter(|t| !have.contains(**t))
+        .map(|t| syn::Ident::new(t, proc_macro2::Span::call_site()))
+        .collect();
+
+    if !missing.is_empty() {
+        let derive_attr: syn::Attribute = syn::parse_quote! {
+            #[derive( #( #missing ),* )]
+        };
+        attrs.push(derive_attr);
+    }
+
+    let extra = match &input {
+        Item::Struct(ItemStruct {
+            ident,
+            generics,
+            attrs,
+            fields,
+            ..
+        }) => {
+            // Basic layout guard
+            if !has_repr_c_or_transparent(attrs) && !fields.is_empty() {
+                return syn::Error::new_spanned(
+                    ident,
+                    "bytemuck::Pod/Zeroable require #[repr(C)] or #[repr(transparent)] (or be a unit struct).",
+                ).to_compile_error().into();
+            }
+
+            // Build field-type bounds
+            let mut pod_bounds = Vec::new();
+            let mut zero_bounds = Vec::new();
+            match fields {
+                Fields::Named(named) => {
+                    for f in &named.named {
+                        let ty = &f.ty;
+                        pod_bounds.push(quote!( #ty: ::bytemuck::Pod ));
+                        zero_bounds.push(quote!( #ty: ::bytemuck::Zeroable ));
+                    }
+                }
+                Fields::Unnamed(unnamed) => {
+                    for f in &unnamed.unnamed {
+                        let ty = &f.ty;
+                        pod_bounds.push(quote!( #ty: ::bytemuck::Pod ));
+                        zero_bounds.push(quote!( #ty: ::bytemuck::Zeroable ));
+                    }
+                }
+                Fields::Unit => { /* ZST: fine */ }
+            }
+
+            let (ig, tg, wc) = generics.split_for_impl();
+
+            // Merge our extra bounds with existing where-clause (if any)
+            let pod_where = if wc.is_some() || !pod_bounds.is_empty() {
+                quote!( where #wc #(#pod_bounds,)* )
+            } else {
+                quote!()
+            };
+            let zero_where = if wc.is_some() || !zero_bounds.is_empty() {
+                quote!( where #wc #(#zero_bounds,)* )
+            } else {
+                quote!()
+            };
+
+            quote! {
+                unsafe impl #ig ::bytemuck::Zeroable for #ident #tg #zero_where {}
+                unsafe impl #ig ::bytemuck::Pod      for #ident #tg #pod_where   {}
+            }
+        }
+        // Don’t try to implement for enums by default (layout/value constraints are trickier)
+        _ => quote!(),
+    };
+
+    quote!(#input #extra).into() // back to proc_macro::TokenStream
 }
