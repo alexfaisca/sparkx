@@ -165,7 +165,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
 
         let (degree, mut node, mut core, mut pos) = proc_mem;
         // compute out-degrees in parallel
-        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let index_ptr = SharedSlice::<usize>::new(self.g.offsets_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // initialize degree and bins count vecs

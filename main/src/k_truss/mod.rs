@@ -47,7 +47,7 @@ mod _verify {
             return Ok(());
         }
 
-        let index_ptr = SharedSlice::<usize>::new(graph.index_ptr(), graph.offsets_size());
+        let index_ptr = SharedSlice::<usize>::new(graph.offsets_ptr(), graph.offsets_size());
         let neighbours_ptr = SharedSlice::<usize>::new(graph.neighbours_ptr(), edge_count);
 
         let trussness = edge_trussness.shared_slice();

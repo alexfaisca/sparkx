@@ -154,19 +154,18 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                                 if prev_v == v {
                                     // find reciprocal, dest is the same, offset is different
                                     // make entry into list and record (never actually loops)
-                                    let reciprocal = 'outer: loop {
-                                        // search forwards
-                                        if prev_offset < edge_count - 1 && *neighbours_ptr.get(prev_offset + 1) == u {
-                                            break 'outer prev_offset + 1;
-                                        } /*else if prev_offset < edge_count - 1 {
+                                    let reciprocal = if prev_offset < edge_count - 1 && *neighbours_ptr.get(prev_offset + 1) == u {
+                                        prev_offset + 1
+                                    } /*else if prev_offset < edge_count - 1 {
                                             println!("after {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset + 1).dest());
                                         }*/
                                         // search backwards
-                                        if prev_offset > 0 && *neighbours_ptr.get(prev_offset - 1) == u {
-                                            break 'outer prev_offset - 1;
-                                        } /*else if prev_offset > 0 {
+                                    else if prev_offset > 0 && *neighbours_ptr.get(prev_offset - 1) == u {
+                                        prev_offset - 1
+                                    } /*else if prev_offset > 0 {
                                             println!("before {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset - 1).dest());
                                         }*/
+                                    else {
                                         return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
                                     };
                                     let mut vs: SmallVec<[(usize, usize); 4]> = SmallVec::new();

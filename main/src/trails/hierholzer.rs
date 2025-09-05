@@ -209,7 +209,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     ) -> Result<ProceduralMemoryHierholzers, Box<dyn std::error::Error>> {
         let node_count = self.g.size();
 
-        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let index_ptr = SharedSlice::<usize>::new(self.g.offsets_ptr(), self.g.offsets_size());
 
         let e_fn = self.build_cache_filename(CacheFile::EulerTrail, Some(0))?;
         let c_fn = self.build_cache_filename(CacheFile::EulerTrail, Some(1))?;

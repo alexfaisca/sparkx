@@ -9,6 +9,9 @@ mus/
 main/datasets/
 main/derive_macros/target/
 /exact_values_backup
+/thesis_books
+/thesis_example
+/thesis_papers
 /thesis_template
 /test
 criterion_backup*

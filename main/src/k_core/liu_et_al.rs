@@ -177,7 +177,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
         let threads = self.g.thread_num().max(get_physical());
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr = SharedSlice::<usize>::new(self.g.index_ptr(), self.g.offsets_size());
+        let index_ptr = SharedSlice::<usize>::new(self.g.offsets_ptr(), self.g.offsets_size());
         let neighbour_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         let (degree, _node_index, alive, coreness, frontier, swap) = proc_mem;

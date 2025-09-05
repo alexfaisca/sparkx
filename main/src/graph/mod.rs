@@ -1,9 +1,9 @@
 pub(crate) mod cache;
 pub mod edge;
 mod export_induced_subgraph;
+mod impl_csc;
 mod impl_miscelanious;
 mod impl_partition;
-mod impl_reciprocal_edges;
 pub(crate) mod impl_traits;
 pub mod label;
 
@@ -19,6 +19,7 @@ use crate::shared_slice::AbstractedProceduralMemory;
 pub use graph_derive::{GenericEdge, GenericEdgeType};
 
 use label::VoidLabel;
+use portable_atomic::{AtomicUsize, Ordering};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -441,7 +442,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     }
 
     #[inline(always)]
-    pub(crate) fn index_ptr(&self) -> *const usize {
+    pub(crate) fn offsets_ptr(&self) -> *const usize {
         self.index.as_ptr() as *const usize
     }
 
@@ -686,14 +687,26 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     }
 
     #[inline(always)]
-    pub(crate) fn edge_reciprocal(
+    /// Computes or retrieves from a previously cached file, the `Compressed Sparse Column (CSC)`
+    /// representation of the graph.
+    ///
+    /// This is equivalent to each edge's reciprocal edge in the `Compressed Sparse Row (CSR)`
+    /// representation of the graph, i.e., if `e_i = (u, v)` then it's reciprocal `e_i' = (v, u)`.
+    ///
+    pub fn edge_reciprocal(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         self.get_edge_reciprocal_impl()
     }
 
     #[inline(always)]
-    pub(crate) fn edge_over(
+    /// Computes or retrieves from a previously cached file, the offset of the first neighbor whose
+    /// id is bigger than a given node's id, in the latter's neighbor list.
+    ///
+    /// If node u has a neighbor list (sorted by id, ascendingly) `n_u = {a, b, c, d, e}`, and `id[c]
+    /// =< id[u]`, but `id[d] > id[u]` then u's `edge_over` entry, `edge_over[u] = 3`.
+    ///
+    pub fn edge_over(
         &self,
     ) -> Result<AbstractedProceduralMemory<usize>, Box<dyn std::error::Error>> {
         self.get_edge_over_impl()
@@ -784,6 +797,58 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         &self,
     ) -> Result<rustworkx_core::petgraph::graph::DiGraph<(), ()>, Box<dyn std::error::Error>> {
         self.export_rustworkx_stripped_impl()
+    }
+
+    pub fn iter_node_indices(&self) -> NodeIndices<N, E, Ix> {
+        NodeIndices::new(0, self.size())
+    }
+
+    pub fn iter_edge_indices(&self) -> EdgeIndices<N, E, Ix> {
+        EdgeIndices::new(0, self.width())
+    }
+
+    pub fn par_iter_node_indices(&self) -> ParNodeIndices<N, E, Ix> {
+        ParNodeIndices::new(0, self.size())
+    }
+
+    pub fn par_iter_edge_indices(&self) -> ParEdgeIndices<N, E, Ix> {
+        ParEdgeIndices::new(0, self.width())
+    }
+
+    pub fn iter_isolated_nodes(&self) -> NodesWithDegree<N, E, Ix> {
+        NodesWithDegree::new(self.offsets_ptr(), self.size(), 0)
+    }
+
+    pub fn par_iter_isolated_nodes(&self) -> ParNodesWithDegree<N, E, Ix> {
+        ParNodesWithDegree::new(self.offsets_ptr(), self.size(), 0)
+    }
+
+    pub fn iter_nodes_with_degree(&self, degree: usize) -> NodesWithDegree<N, E, Ix> {
+        NodesWithDegree::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    pub fn par_iter_nodes_with_degree(&self, degree: usize) -> ParNodesWithDegree<N, E, Ix> {
+        ParNodesWithDegree::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    pub fn iter_neighbors(&self, idx: usize) -> Neighbors<N, E, Ix> {
+        Neighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
+    }
+
+    pub fn iter_neighbors_with_offset(&self, idx: usize) -> NeighborsWithOffset<N, E, Ix> {
+        NeighborsWithOffset::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
+    }
+
+    pub fn par_iter_neighbors(&self, idx: usize) -> ParNeighbors<N, E, Ix> {
+        ParNeighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
+    }
+
+    pub fn walk_neighbors(&self, idx: usize) -> WalkNeighbors<N, E, Ix> {
+        WalkNeighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
+    }
+
+    pub fn walk_neighbors_with_offset(&self, idx: usize) -> WalkNeighborsWithOffset<N, E, Ix> {
+        WalkNeighborsWithOffset::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
     }
 
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -995,3 +1060,928 @@ pub struct Community<NodeId: Copy + Debug> {
     /// ϕ(S)
     pub conductance: f64,
 }
+
+// Iterators
+
+pub struct NodeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    begin: usize,
+    end: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> NodeIndices<N, E, Ix> {
+    fn new(begin: usize, end: usize) -> Self {
+        Self {
+            begin,
+            end,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    pub fn remaning_edges(&self) -> usize {
+        self.end - self.begin
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for NodeIndices<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        if self.begin >= self.end {
+            return None;
+        }
+        Some(self.end.saturating_sub(1))
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for NodeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        if self.begin < self.end {
+            return None;
+        }
+        let res = self.begin;
+        let _ = self.begin.saturating_add(1);
+        Some(res)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.end - self.begin, None)
+    }
+}
+
+pub struct ParNodeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    stop_offset: usize,
+    offset: Arc<AtomicUsize>,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNodeIndices<N, E, Ix> {
+    fn new(begin_offset: usize, end_offset: usize) -> Self {
+        Self {
+            stop_offset: end_offset,
+            offset: Arc::new(AtomicUsize::new(begin_offset)),
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for ParNodeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        let curr = self.offset.fetch_add(1, Ordering::Relaxed);
+        if curr >= self.stop_offset {
+            return None;
+        }
+        Some(curr)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.stop_offset - self.offset.load(Ordering::Relaxed);
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct EdgeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    begin: usize,
+    end: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> EdgeIndices<N, E, Ix> {
+    fn new(begin: usize, end: usize) -> Self {
+        Self {
+            begin,
+            end,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    pub fn remaning_edges(&self) -> usize {
+        self.end - self.begin
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for EdgeIndices<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        if self.begin >= self.end {
+            return None;
+        }
+        Some(self.end.saturating_sub(1))
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for EdgeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        if self.begin < self.end {
+            return None;
+        }
+        let res = self.begin;
+        let _ = self.begin.saturating_add(1);
+        Some(res)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.end - self.begin, None)
+    }
+}
+
+pub struct ParEdgeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    stop_offset: usize,
+    offset: Arc<AtomicUsize>,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParEdgeIndices<N, E, Ix> {
+    fn new(begin_offset: usize, end_offset: usize) -> Self {
+        Self {
+            stop_offset: end_offset,
+            offset: Arc::new(AtomicUsize::new(begin_offset)),
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for ParEdgeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        let curr = self.offset.fetch_add(1, Ordering::Relaxed);
+        if curr >= self.stop_offset {
+            return None;
+        }
+        Some(curr)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.stop_offset - self.offset.load(Ordering::Relaxed);
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct EdgesConnecting<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    count: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    EdgesConnecting<N, E, Ix>
+{
+    fn new(
+        neigh_mmap: *const usize,
+        off_mmap: *const usize,
+        orig_node: usize,
+        target_node: usize,
+    ) -> Self {
+        let mut offset = unsafe { off_mmap.add(orig_node).read() };
+        let mut count = unsafe { off_mmap.add(orig_node + 1).read() };
+
+        let mut begin = false;
+        #[allow(clippy::mut_range_bound)]
+        for i in offset..count {
+            if !begin && unsafe { neigh_mmap.add(i).read() } == target_node {
+                begin = true;
+                offset = i;
+            } else if begin && unsafe { neigh_mmap.add(i).read() } != target_node {
+                count = i - offset;
+            }
+        }
+        if !begin {
+            count = 0;
+        }
+
+        Self {
+            count,
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    pub fn remaning_edges(&self) -> usize {
+        self.count
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for EdgesConnecting<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(self.offset + self.count.saturating_sub(1))
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for EdgesConnecting<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let res = self.offset;
+        let _ = self.offset.saturating_add(1);
+        Some(res)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, None)
+    }
+}
+
+pub struct NodesWithDegree<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    off_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    NodesWithDegree<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            count: node_count - offset,
+            offset,
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for NodesWithDegree<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        loop {
+            if self.count == 0 {
+                return None;
+            }
+            let curr = unsafe { self.off_ptr.add(self.count).read() };
+            if curr - unsafe { self.off_ptr.add(self.count.saturating_sub(1)).read() }
+                != self.target_deg
+            {
+                continue;
+            }
+            return Some(self.offset + self.count);
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for NodesWithDegree<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            if self.count == 0 {
+                return None;
+            }
+            let _ = self.count.saturating_sub(1);
+            if unsafe {
+                self.off_ptr.add(self.offset + 1).read() - self.off_ptr.add(self.offset).read()
+            } != self.target_deg
+            {
+                let _ = self.offset.saturating_add(1);
+                continue;
+            }
+            let _ = self.offset.saturating_add(1);
+            return Some(self.offset);
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, None)
+    }
+}
+
+pub struct ParNodesWithDegreeLT<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+{
+    off_ptr: *const usize,
+    stop_offset: usize,
+    offset: Arc<AtomicUsize>,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParNodesWithDegreeLT<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let stop_offset = unsafe { off_mmap.add(node_count).read() };
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            stop_offset,
+            offset: Arc::new(AtomicUsize::new(offset)),
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            let curr = self.offset.fetch_add(1, Ordering::Relaxed);
+            if curr >= self.stop_offset {
+                return None;
+            }
+            if unsafe { self.off_ptr.add(curr + 1).read() - self.off_ptr.add(curr).read() }
+                > self.target_deg
+            {
+                continue;
+            }
+            return Some(curr);
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.stop_offset - self.offset.load(Ordering::Relaxed), None)
+    }
+}
+
+pub struct ParNodesWithDegreeGE<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+{
+    off_ptr: *const usize,
+    stop_offset: usize,
+    offset: Arc<AtomicUsize>,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParNodesWithDegreeGE<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let stop_offset = unsafe { off_mmap.add(node_count).read() };
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            stop_offset,
+            offset: Arc::new(AtomicUsize::new(offset)),
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            let curr = self.offset.fetch_add(1, Ordering::Relaxed);
+            if curr >= self.stop_offset {
+                return None;
+            }
+            if unsafe { self.off_ptr.add(curr + 1).read() - self.off_ptr.add(curr).read() }
+                < self.target_deg
+            {
+                continue;
+            }
+            return Some(curr);
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.stop_offset - self.offset.load(Ordering::Relaxed), None)
+    }
+}
+
+pub struct ParNodesWithDegree<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    off_ptr: *const usize,
+    stop_offset: usize,
+    offset: Arc<AtomicUsize>,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParNodesWithDegree<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let stop_offset = unsafe { off_mmap.add(node_count).read() };
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            stop_offset,
+            offset: Arc::new(AtomicUsize::new(offset)),
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for ParNodesWithDegree<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            let curr = self.offset.fetch_add(1, Ordering::Relaxed);
+            if curr >= self.stop_offset {
+                return None;
+            }
+            if unsafe { self.off_ptr.add(curr + 1).read() - self.off_ptr.add(curr).read() }
+                != self.target_deg
+            {
+                continue;
+            }
+            return Some(curr);
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.stop_offset - self.offset.load(Ordering::Relaxed), None)
+    }
+}
+
+pub struct Neighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    neigh_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Neighbors<N, E, Ix> {
+    fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
+        let off_ptr = unsafe { off_mmap.add(node_id) };
+        let offset = unsafe { off_ptr.read_unaligned() };
+
+        Self {
+            neigh_ptr: unsafe { neigh_mmap.add(offset) },
+            count: unsafe { off_ptr.add(1).read_unaligned() - offset },
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    pub fn remaining_neighbours(&self) -> usize {
+        self.count
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for Neighbors<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        unsafe {
+            Some(
+                self.neigh_ptr
+                    .add(self.count.saturating_sub(1))
+                    .read_unaligned(),
+            )
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for Neighbors<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let next: usize;
+        self.neigh_ptr = unsafe {
+            next = self.neigh_ptr.read();
+            self.neigh_ptr.add(1)
+        };
+        let _ = self.offset.saturating_add(1);
+        Some(next)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.count;
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct ParNeighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    neigh_ptr: *const usize,
+    stop_offset: usize,
+    offset: Arc<AtomicUsize>,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNeighbors<N, E, Ix> {
+    fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
+        let offset = unsafe { off_mmap.add(node_id).read() };
+        let stop_offset = unsafe { off_mmap.add(node_id + 1).read() };
+
+        Self {
+            neigh_ptr: neigh_mmap,
+            stop_offset,
+            offset: Arc::new(AtomicUsize::new(offset)),
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for ParNeighbors<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        let curr = self.offset.fetch_add(1, Ordering::Relaxed);
+        if curr >= self.stop_offset {
+            return None;
+        }
+        unsafe { Some(self.neigh_ptr.add(curr).read()) }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.stop_offset - self.offset.load(Ordering::Relaxed);
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct NeighborsWithOffset<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+{
+    neigh_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    NeighborsWithOffset<N, E, Ix>
+{
+    fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
+        let off_ptr = unsafe { off_mmap.add(node_id) };
+        let offset = unsafe { off_ptr.read_unaligned() };
+
+        Self {
+            neigh_ptr: unsafe { neigh_mmap.add(offset) },
+            count: unsafe { off_ptr.add(1).read_unaligned() - offset },
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    pub fn remaining_neighbours(&self) -> usize {
+        self.count
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for NeighborsWithOffset<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<(usize, usize)> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        unsafe {
+            Some((
+                self.offset + self.count,
+                self.neigh_ptr.add(self.count).read_unaligned(),
+            ))
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for NeighborsWithOffset<N, E, Ix>
+{
+    type Item = (usize, usize);
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<(usize, usize)> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let next: (usize, usize);
+        self.neigh_ptr = unsafe {
+            next = (self.offset, self.neigh_ptr.read_unaligned());
+            self.neigh_ptr.add(1)
+        };
+        let _ = self.offset.saturating_add(1);
+        Some(next)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.count;
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct WalkNeighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    neigh_ptr: *const usize,
+    orig_neigh_ptr: *const usize,
+    orig_off_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> WalkNeighbors<N, E, Ix> {
+    fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
+        let orig_neigh_ptr = neigh_mmap;
+        let orig_off_ptr = off_mmap;
+        let off_ptr = unsafe { off_mmap.add(node_id) };
+        let offset = unsafe { off_ptr.read_unaligned() };
+
+        Self {
+            neigh_ptr: unsafe { neigh_mmap.add(offset) },
+            orig_neigh_ptr,
+            orig_off_ptr,
+            count: unsafe { off_ptr.add(1).read_unaligned() - offset },
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    #[inline(always)]
+    pub fn into_neighbour(self) -> Self {
+        Self::new(self.orig_neigh_ptr, self.orig_off_ptr, unsafe {
+            self.neigh_ptr.read_unaligned()
+        })
+    }
+
+    pub fn remaining_neighbours(&self) -> usize {
+        self.count
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for WalkNeighbors<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let next: usize;
+        unsafe {
+            next = self.neigh_ptr.add(self.count).read_unaligned();
+        };
+        Some(next)
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for WalkNeighbors<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let _ = self.offset.saturating_add(1);
+        let next: usize;
+        self.neigh_ptr = unsafe {
+            next = self.neigh_ptr.read_unaligned();
+            self.neigh_ptr.add(1)
+        };
+        Some(next)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.count;
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct WalkNeighborsWithOffset<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
+    neigh_ptr: *const usize,
+    orig_neigh_ptr: *const usize,
+    orig_off_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    WalkNeighborsWithOffset<N, E, Ix>
+{
+    fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
+        let orig_neigh_ptr = neigh_mmap;
+        let orig_off_ptr = off_mmap;
+        let off_ptr = unsafe { off_mmap.add(node_id) };
+        let offset = unsafe { off_ptr.read_unaligned() };
+
+        Self {
+            neigh_ptr: unsafe { neigh_mmap.add(offset) },
+            orig_neigh_ptr,
+            orig_off_ptr,
+            count: unsafe { off_ptr.add(1).read_unaligned() - offset },
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+
+    #[inline(always)]
+    pub fn into_neighbour(self) -> Self {
+        Self::new(self.orig_neigh_ptr, self.orig_off_ptr, unsafe {
+            self.neigh_ptr.read_unaligned()
+        })
+    }
+
+    pub fn remaining_neighbours(&self) -> usize {
+        self.count
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for WalkNeighborsWithOffset<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<(usize, usize)> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let next: (usize, usize);
+        unsafe {
+            next = (
+                self.offset + self.count,
+                self.neigh_ptr.add(self.count).read_unaligned(),
+            );
+        };
+        Some(next)
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for WalkNeighborsWithOffset<N, E, Ix>
+{
+    type Item = (usize, usize);
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<(usize, usize)> {
+        if self.count == 0 {
+            return None;
+        }
+        let _ = self.count.saturating_sub(1);
+        let next: (usize, usize);
+        self.neigh_ptr = unsafe {
+            next = (self.offset, self.neigh_ptr.read_unaligned());
+            self.neigh_ptr.add(1)
+        };
+        let _ = self.offset.saturating_add(1);
+        Some(next)
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.count;
+        (remaining, Some(remaining))
+    }
+}
+
+pub struct NodeLabels {}
+pub struct NodeLabelsMut {}
+pub struct EdgeLabels {}
+pub struct EdgeLabelsMut {}

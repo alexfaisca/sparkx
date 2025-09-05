@@ -80,7 +80,7 @@ mod _verify {
             })
             .collect();
 
-        let edge_indexes = graph.index_ptr();
+        let edge_indexes = graph.offsets_ptr();
         let mut j = 0;
         for (begin, end) in trails {
             for curr_node in begin..end {
