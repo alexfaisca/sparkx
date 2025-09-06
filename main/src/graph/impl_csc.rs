@@ -99,10 +99,8 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         let threads = self.thread_count.max(1) as usize;
         let thread_load = node_count.div_ceil(threads);
 
-        let index_ptr =
-            SharedSlice::<usize>::new(self.index.as_ptr() as *const usize, self.offsets_size());
-        let neighbours_ptr =
-            SharedSlice::<usize>::new(self.graph.as_ptr() as *const usize, edge_count);
+        let index_ptr = SharedSlice::<usize>::new(self.offsets_ptr(), self.offsets_size());
+        let neighbours_ptr = SharedSlice::<usize>::new(self.neighbours_ptr(), edge_count);
 
         let (er, eo) = self.init_procedural_memory_build_reciprocal()?;
 
@@ -166,7 +164,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                                             println!("before {prev_offset}->{u} comes {}", graph_ptr.get(prev_offset - 1).dest());
                                         }*/
                                     else {
-                                        return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
+                                        return Err(format!("error couldn't find reciprocal for 2nd multi edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
                                     };
                                     let mut vs: SmallVec<[(usize, usize); 4]> = SmallVec::new();
                                     vs.push((prev_v, prev_offset));
@@ -203,7 +201,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                                             }
                                         }
 
-                                        return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
+                                        return Err(format!("error couldn't find reciprocal for nth multi edge {edge_offset}, u: ({u}) -> v: ({v}), all options were already taken").into());
                                     };
 
                                     // extend entry's list
@@ -218,11 +216,11 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                                 let mut ceil = *index_ptr.get(v + 1);
                                 let reciprocal =  loop {
                                     if floor > ceil {
-                                        return Err(format!("error couldn't find reciprocal for edge {edge_offset}, u: ({u}) -> v: ({v})").into());
+                                        return Err(format!("error couldn't find reciprocal for unique (for now) edge {edge_offset}, u: ({u}) -> v: ({v})").into());
                                     }
 
                                     let m = floor + (ceil - floor) / 2;
-                                    let dest = neighbours_ptr.get(m);
+                                    let dest = *neighbours_ptr.get(m);
 
                                     match dest.cmp(&u) {
                                         std::cmp::Ordering::Equal => break m,

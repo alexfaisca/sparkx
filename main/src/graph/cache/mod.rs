@@ -62,15 +62,15 @@ pub struct GraphCache<N: super::N, E: super::E, Ix: IndexType> {
 
 #[allow(dead_code)]
 impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
-#[cfg(feature = "ggcat")]
+    #[cfg(feature = "ggcat")]
     const EXT_COMPRESSED_LZ4: &str = "lz4";
-#[cfg(feature = "mtx")]
+    #[cfg(feature = "mtx")]
     const EXT_PLAINTEXT_MTX: &str = "mtx";
-#[cfg(feature = "ggcat")]
+    #[cfg(feature = "ggcat")]
     const EXT_PLAINTEXT_TXT: &str = "txt";
-#[cfg(feature = "nodes_edges")]
+    #[cfg(feature = "nodes_edges")]
     const EXT_PLAINTEXT_NODES: &str = "nodes";
-#[cfg(feature = "nodes_edges")]
+    #[cfg(feature = "nodes_edges")]
     const EXT_PLAINTEXT_EDGES: &str = "edges";
     pub const DEFAULT_BATCHING_SIZE: usize = 50_000usize;
     /// in genetic graphs annotated with ff, fr, rf and rr directions maximum number of edges is 16
@@ -138,15 +138,15 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         // parse extension to decide on decoding
         if let Some(ext) = ext {
             let input_file_type = match ext.to_str() {
-#[cfg(feature = "ggcat")]
+                #[cfg(feature = "ggcat")]
                 Some(Self::EXT_COMPRESSED_LZ4) => InputFileType::GGCAT(Self::EXT_COMPRESSED_LZ4),
-#[cfg(feature = "ggcat")]
+                #[cfg(feature = "ggcat")]
                 Some(Self::EXT_PLAINTEXT_TXT) => InputFileType::GGCAT(Self::EXT_PLAINTEXT_TXT),
-#[cfg(feature = "mtx")]
+                #[cfg(feature = "mtx")]
                 Some(Self::EXT_PLAINTEXT_MTX) => InputFileType::MTX(Self::EXT_PLAINTEXT_MTX),
-#[cfg(feature = "nodes_edges")]
+                #[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_NODES) => InputFileType::NODE_EDGE(Self::EXT_PLAINTEXT_NODES),
-#[cfg(feature = "nodes_edges")]
+                #[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_EDGES) => InputFileType::NODE_EDGE(Self::EXT_PLAINTEXT_EDGES),
                 _ => {
                     return Err(format!(
@@ -179,7 +179,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         // parse extension to decide on decoding
         if let Some(ext) = ext {
             Ok(match ext.to_str() {
-#[cfg(feature = "ggcat")]
+                #[cfg(feature = "ggcat")]
                 Some(Self::EXT_COMPRESSED_LZ4) => {
                     // prepare mmaped file to temporarily hold decoded contents
                     let h_fn = Self::init_cache_file_from_id_or_random(id, FileType::Helper(H::H), Some(0))?;
@@ -220,19 +220,19 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 
                     (mmap.make_read_only().map_err(|e| -> Box<dyn std::error::Error> {format!("error making tmp memmap reandonly: {e}").into()})?, Some(h_fn))
                 }
-#[cfg(feature = "ggcat")]
+                #[cfg(feature = "ggcat")]
                 Some(Self::EXT_PLAINTEXT_TXT) => {
                     let file = OpenOptions::new().create(false).truncate(false).read(true).write(false).open(path.as_ref())?;
                     let file_length = file.metadata()?.len();
                     (unsafe { MmapOptions::new().len(file_length as usize).map(&file)? }, None)
                 }
-#[cfg(feature = "nodes_edges")]
+                #[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_NODES) => {
                     let file = OpenOptions::new().create(false).truncate(false).read(true).write(false).open(path.as_ref())?;
                     let file_length = file.metadata()?.len();
                     (unsafe { MmapOptions::new().len(file_length as usize).map(&file)? }, None)
                 }
-#[cfg(feature = "nodes_edges")]
+                #[cfg(feature = "nodes_edges")]
                 Some(Self::EXT_PLAINTEXT_EDGES) => {
                     let file = OpenOptions::new().create(false).truncate(false).read(true).write(false).open(path.as_ref())?;
                     let file_length = file.metadata()?.len();
@@ -514,9 +514,9 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         Self::guarantee_caching_dir()?;
 
         match Self::evaluate_input_file_type(p.as_ref())? {
-#[cfg(feature = "mtx")]
+            #[cfg(feature = "mtx")]
             InputFileType::MTX(_) => Ok(Self::from_mtx_file(p.as_ref(), id, batch)?),
-#[cfg(feature = "nodes_edges")]
+            #[cfg(feature = "nodes_edges")]
             InputFileType::NODE_EDGE(ext) => 
             match ext {
                 Self::EXT_PLAINTEXT_NODES => {
@@ -541,11 +541,11 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 )
                 .into()),
             }
-#[cfg(feature = "ggcat")]
+            #[cfg(feature = "ggcat")]
             InputFileType::GGCAT(ext) => 
             match ext {
-                Self::EXT_COMPRESSED_LZ4 => Ok(Self::from_ggcat_file(p.as_ref(), id, batch, in_fst)?),
-                Self::EXT_PLAINTEXT_TXT => Ok(Self::from_ggcat_file(p.as_ref(), id, batch, in_fst)?),
+                Self::EXT_COMPRESSED_LZ4 => Ok(Self::from_ggcat_file(p.as_ref(), id)?),
+                Self::EXT_PLAINTEXT_TXT => Ok(Self::from_ggcat_file(p.as_ref(), id)?),
                 _ => Err(format!(
                     "error ubknown extension for GGCAT output file {:?}: must be of type .{} or .{}",
                     ext,
@@ -576,7 +576,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
-#[cfg(feature = "nodes_edges")]
+    #[cfg(feature = "nodes_edges")]
     pub fn from_node_edge_file<P: AsRef<Path>>(
         nodes_path: P,
         edges_path: P,
@@ -595,6 +595,28 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ///
     /// * `path` --- input file[^1].
     /// * `id` --- graph cache id for the [`GraphCache`] instance[^2].
+    ///
+    /// [^1]: for example, a [`String`].
+    /// [^2]: if [`None`] is provided defaults to a random generated cache id, which may later be retrieved trhough the provided getter method.
+    ///
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
+    #[cfg(feature = "ggcat")]
+    pub fn from_ggcat_file<P: AsRef<Path>>(
+        path: P,
+        id: Option<String>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_ggcat_file_impl(path, id)
+    }
+
+    /// Parses a [`GGCAT`](https://github.com/algbio/ggcat) output file input into a [`GraphCache`] instance, with meta labels.
+    ///
+    /// Input file is assumed to have file extension .lz4, if provided in compressed form using LZ4, or .txt, if provided in plaintext form. Furthermore, the file contents must follow the format of [`GGCAT`](https://github.com/algbio/ggcat)'s output.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` --- input file[^1].
+    /// * `id` --- graph cache id for the [`GraphCache`] instance[^2].
     /// * `batch`--- size of input chunking for fst rebuild[^3][^4].
     /// * `in_fst` --- closure to be applied on each entry's node id to determine if the entry's metalabel-to-node pair is stored in the fst[^5].
     ///
@@ -606,14 +628,14 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
-#[cfg(feature = "ggcat")]
-    pub fn from_ggcat_file<P: AsRef<Path>>(
+    #[cfg(feature = "ggcat")]
+    pub fn from_ggcat_file_with_fst<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::from_ggcat_file_impl(path, id, batch, in_fst)
+        Self::from_ggcat_file_with_fst_impl(path, id, batch, in_fst)
     }
 
     /// Parses a [`MatrixMarket`](https://math.nist.gov/MatrixMarket/formats.html) file input into a [`GraphCache`] instance.
@@ -635,7 +657,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
-#[cfg(feature = "mtx")]
+    #[cfg(feature = "mtx")]
     pub fn from_mtx_file<P: AsRef<Path>>(
         path: P,
         id: Option<String>,
@@ -659,8 +681,8 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
-#[cfg(feature = "ggcat")]
-    pub fn rebuild_fst_from_ggcat_file<P: AsRef<Path>>(
+    #[cfg(feature = "ggcat")]
+    pub fn rebuild_fst_from_ggcat_file_file<P: AsRef<Path>>(
         &mut self,
         path: P,
         batch: Option<usize>,

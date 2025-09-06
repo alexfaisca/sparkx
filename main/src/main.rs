@@ -6,6 +6,7 @@ use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
 use tool::graph;
+use tool::graph::label::NodeLabel;
 #[allow(unused_imports)]
 use tool::graph::{E, GraphMemoryMap, IndexType, N, label::VoidLabel};
 #[allow(unused_imports)]
@@ -114,7 +115,7 @@ fn main() {
         (Some("lz4"), _) => {
             if args.mmap {
                 mmapped_suite(
-                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
+                    parse_bytes_mmaped::<(), (), usize, _>(
                         args.file.clone(),
                         args.threads,
                         args.output_id,

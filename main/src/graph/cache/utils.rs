@@ -19,6 +19,25 @@ fn _type_of<T>(_: T) -> &'static str {
     type_name::<T>()
 }
 
+pub(super) fn apply_permutation_in_place<T, U>(
+    idx: &mut [usize],
+    data1: &mut [T],
+    data2: &mut [U],
+) {
+    debug_assert!(idx.len() == data1.len() && data1.len() <= data2.len());
+    // `idx[i]` = new index for the elements currently at i
+    for i in 0..idx.len() {
+        let mut j = i;
+        while idx[j] != j {
+            let k = idx[j];
+            data1.swap(j, k);
+            data2.swap(j, k);
+            idx[j] = j;
+            j = k;
+        }
+    }
+}
+
 /// Create a stable 256-bit hex id from a filename (path & extension are ignored).
 ///
 /// - Deterministic across runs and machines.

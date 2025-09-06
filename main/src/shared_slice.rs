@@ -143,7 +143,7 @@ impl<T> AbstractedProceduralMemory<T> {
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemoryMut<T> {
     pub(crate) fn from_file(file: &File, len: usize) -> Result<Self, Box<dyn std::error::Error>> {
-        let mmap_len = (len * size_of::<T>()) as u64;
+        let mmap_len = (len * size_of::<T>()).max(1) as u64;
         file.set_len(mmap_len)?;
         let (slice, mmap) = SharedSliceMut::<T>::from_file(file)?;
 
@@ -265,12 +265,21 @@ impl<T> SharedSlice<T> {
         let mmap_len = mmap.len();
 
         // Ensure the memory is properly aligned
-        if mmap_len % size_of::<T>() != 0 {
+        if size_of::<T>() != 0 && mmap_len % size_of::<T>() != 0 {
             return Err("file length is not a multiple of u64".into());
+        } else if size_of::<T>() == 0 && mmap_len != 1 {
+            return Err("file length for o length types should be 1".into());
         }
 
         Ok((
-            Self::new(mmap.as_ptr() as *const T, mmap_len / size_of::<T>()),
+            Self::new(
+                mmap.as_ptr() as *const T,
+                if size_of::<T>() == 0 {
+                    1
+                } else {
+                    mmap_len / size_of::<T>()
+                },
+            ),
             mmap,
         ))
     }
@@ -337,7 +346,8 @@ impl<T> SharedSlice<T> {
         let mmap = Arc::new(mmap);
 
         // Ensure the memory is properly aligned
-        if mmapped && mmap.len() < size_of::<T>() * len {
+        if mmapped && (size_of::<T>() == 0 && mmap.len() != 1 || mmap.len() < size_of::<T>() * len)
+        {
             return Err("file length is too small for the amount of elements requested".into());
         }
         // Use an in-memory vector for degrees
@@ -390,12 +400,21 @@ impl<T> SharedSliceMut<T> {
         let mmap_len = mmap.len();
 
         // Ensure the memory is properly aligned
-        if mmap_len % size_of::<T>() != 0 {
+        if size_of::<T>() != 0 && mmap_len % size_of::<T>() != 0 {
             return Err("file length is not a multiple of u64".into());
+        } else if size_of::<T>() == 0 && mmap_len != 1 {
+            return Err("file length for o length types should be 1".into());
         }
 
         Ok((
-            Self::new(mmap.as_ptr() as *mut T, mmap_len / size_of::<T>()),
+            Self::new(
+                mmap.as_ptr() as *mut T,
+                if size_of::<T>() == 0 {
+                    1
+                } else {
+                    mmap_len / size_of::<T>()
+                },
+            ),
             mmap,
         ))
     }
@@ -535,7 +554,14 @@ impl<T> SharedSliceMut<T> {
             .read(true)
             .write(true)
             .open(mfn)?;
-        file.set_len((if mmapped { len } else { 1 } * size_of::<T>()) as u64)?;
+        file.set_len(
+            (if mmapped { len } else { 1 }
+                * if size_of::<T>() == 0 {
+                    1
+                } else {
+                    size_of::<T>()
+                }) as u64,
+        )?;
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 

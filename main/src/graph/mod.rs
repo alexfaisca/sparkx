@@ -20,6 +20,11 @@ pub use graph_derive::{GenericEdge, GenericEdgeType};
 
 use label::VoidLabel;
 use portable_atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "rayon")]
+use rayon::iter::{
+    IndexedParallelIterator, ParallelIterator,
+    plumbing::{Folder, Producer, UnindexedProducer, bridge, bridge_unindexed},
+};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -807,10 +812,20 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         EdgeIndices::new(0, self.width())
     }
 
+    pub fn paralelizable_iter_node_indices(&self) -> ParalelizableNodeIndices<N, E, Ix> {
+        ParalelizableNodeIndices::new(0, self.size())
+    }
+
+    pub fn paralelizable_iter_edge_indices(&self) -> ParalelizableEdgeIndices<N, E, Ix> {
+        ParalelizableEdgeIndices::new(0, self.width())
+    }
+
+    #[cfg(feature = "rayon")]
     pub fn par_iter_node_indices(&self) -> ParNodeIndices<N, E, Ix> {
         ParNodeIndices::new(0, self.size())
     }
 
+    #[cfg(feature = "rayon")]
     pub fn par_iter_edge_indices(&self) -> ParEdgeIndices<N, E, Ix> {
         ParEdgeIndices::new(0, self.width())
     }
@@ -819,6 +834,11 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         NodesWithDegree::new(self.offsets_ptr(), self.size(), 0)
     }
 
+    pub fn paralelizable_iter_isolated_nodes(&self) -> ParalelizableNodesWithDegree<N, E, Ix> {
+        ParalelizableNodesWithDegree::new(self.offsets_ptr(), self.size(), 0)
+    }
+
+    #[cfg(feature = "rayon")]
     pub fn par_iter_isolated_nodes(&self) -> ParNodesWithDegree<N, E, Ix> {
         ParNodesWithDegree::new(self.offsets_ptr(), self.size(), 0)
     }
@@ -827,18 +847,64 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         NodesWithDegree::new(self.offsets_ptr(), self.size(), degree)
     }
 
+    pub fn paralelizable_iter_nodes_with_degree(
+        &self,
+        degree: usize,
+    ) -> ParalelizableNodesWithDegree<N, E, Ix> {
+        ParalelizableNodesWithDegree::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    #[cfg(feature = "rayon")]
     pub fn par_iter_nodes_with_degree(&self, degree: usize) -> ParNodesWithDegree<N, E, Ix> {
         ParNodesWithDegree::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    pub fn iter_nodes_with_degree_lt(&self, degree: usize) -> NodesWithDegreeLT<N, E, Ix> {
+        NodesWithDegreeLT::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    pub fn paralelizable_iter_nodes_with_degree_lt(
+        &self,
+        degree: usize,
+    ) -> ParalelizableNodesWithDegreeLT<N, E, Ix> {
+        ParalelizableNodesWithDegreeLT::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    #[cfg(feature = "rayon")]
+    pub fn par_iter_nodes_with_degree_lt(&self, degree: usize) -> ParNodesWithDegreeLT<N, E, Ix> {
+        ParNodesWithDegreeLT::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    pub fn iter_nodes_with_degree_ge(&self, degree: usize) -> NodesWithDegreeGE<N, E, Ix> {
+        NodesWithDegreeGE::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    pub fn paralelizable_iter_nodes_with_degree_ge(
+        &self,
+        degree: usize,
+    ) -> ParalelizableNodesWithDegreeGE<N, E, Ix> {
+        ParalelizableNodesWithDegreeGE::new(self.offsets_ptr(), self.size(), degree)
+    }
+
+    #[cfg(feature = "rayon")]
+    pub fn par_iter_nodes_with_degree_ge(&self, degree: usize) -> ParNodesWithDegreeGE<N, E, Ix> {
+        ParNodesWithDegreeGE::new(self.offsets_ptr(), self.size(), degree)
     }
 
     pub fn iter_neighbors(&self, idx: usize) -> Neighbors<N, E, Ix> {
         Neighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
     }
 
+    #[cfg(feature = "iter_with_offset")]
     pub fn iter_neighbors_with_offset(&self, idx: usize) -> NeighborsWithOffset<N, E, Ix> {
         NeighborsWithOffset::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
     }
 
+    pub fn paralelizable_iter_neighbors(&self, idx: usize) -> ParalelizableNeighbors<N, E, Ix> {
+        ParalelizableNeighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
+    }
+
+    #[cfg(feature = "rayon")]
     pub fn par_iter_neighbors(&self, idx: usize) -> ParNeighbors<N, E, Ix> {
         ParNeighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
     }
@@ -847,6 +913,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         WalkNeighbors::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
     }
 
+    #[cfg(feature = "iter_with_offset")]
     pub fn walk_neighbors_with_offset(&self, idx: usize) -> WalkNeighborsWithOffset<N, E, Ix> {
         WalkNeighborsWithOffset::new(self.neighbours_ptr(), self.offsets_ptr(), idx)
     }
@@ -1121,7 +1188,12 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
-pub struct ParNodeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+#[derive(Clone)]
+pub struct ParalelizableNodeIndices<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
     stop_offset: usize,
     offset: Arc<AtomicUsize>,
     _phantom1: std::marker::PhantomData<N>,
@@ -1130,7 +1202,9 @@ pub struct ParNodeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::gra
 }
 
 #[allow(dead_code)]
-impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNodeIndices<N, E, Ix> {
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParalelizableNodeIndices<N, E, Ix>
+{
     fn new(begin_offset: usize, end_offset: usize) -> Self {
         Self {
             stop_offset: end_offset,
@@ -1143,7 +1217,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNod
 }
 
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
-    for ParNodeIndices<N, E, Ix>
+    for ParalelizableNodeIndices<N, E, Ix>
 {
     type Item = usize;
 
@@ -1160,6 +1234,147 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.stop_offset - self.offset.load(Ordering::Relaxed);
         (remaining, Some(remaining))
+    }
+}
+
+#[cfg(feature = "rayon")]
+#[derive(Clone)]
+pub struct ParNodeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    stop_offset: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[cfg(feature = "rayon")]
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNodeIndices<N, E, Ix> {
+    fn new(begin_offset: usize, end_offset: usize) -> Self {
+        Self {
+            stop_offset: end_offset,
+            offset: begin_offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> UnindexedProducer
+    for ParNodeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    fn split(self) -> (Self, Option<Self>) {
+        let len = self.stop_offset - self.offset;
+        if len <= 4096 {
+            (self, None) // small enough: stop splitting
+        } else {
+            let mid = self.offset + len / 2;
+            (
+                Self {
+                    stop_offset: mid,
+                    offset: self.offset,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                },
+                Some(Self {
+                    stop_offset: self.stop_offset,
+                    offset: mid,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                }),
+            )
+        }
+    }
+
+    // Sequential fold of a chunk
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        for i in self.offset..self.stop_offset {
+            folder = folder.consume(i);
+        }
+        folder
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Producer
+    for ParNodeIndices<N, E, Ix>
+{
+    type Item = usize;
+    type IntoIter = std::ops::Range<usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.offset..self.stop_offset
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        debug_assert!(index <= self.stop_offset - self.offset);
+        let mid = self.offset + index;
+        (
+            Self {
+                stop_offset: mid,
+                offset: self.offset,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+            Self {
+                stop_offset: self.stop_offset,
+                offset: mid,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParallelIterator
+    for ParNodeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.stop_offset - self.offset)
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> IndexedParallelIterator
+    for ParNodeIndices<N, E, Ix>
+{
+    fn drive<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::Consumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.stop_offset - self.offset
+    }
+
+    fn with_producer<CB>(self, callback: CB) -> CB::Output
+    where
+        CB: rayon::iter::plumbing::ProducerCallback<Self::Item>,
+    {
+        callback.callback(self)
     }
 }
 
@@ -1221,7 +1436,12 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
-pub struct ParEdgeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+#[derive(Clone)]
+pub struct ParalelizableEdgeIndices<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
     stop_offset: usize,
     offset: Arc<AtomicUsize>,
     _phantom1: std::marker::PhantomData<N>,
@@ -1230,7 +1450,9 @@ pub struct ParEdgeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::gra
 }
 
 #[allow(dead_code)]
-impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParEdgeIndices<N, E, Ix> {
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParalelizableEdgeIndices<N, E, Ix>
+{
     fn new(begin_offset: usize, end_offset: usize) -> Self {
         Self {
             stop_offset: end_offset,
@@ -1243,7 +1465,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParEdg
 }
 
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
-    for ParEdgeIndices<N, E, Ix>
+    for ParalelizableEdgeIndices<N, E, Ix>
 {
     type Item = usize;
 
@@ -1260,6 +1482,147 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.stop_offset - self.offset.load(Ordering::Relaxed);
         (remaining, Some(remaining))
+    }
+}
+
+#[cfg(feature = "rayon")]
+#[derive(Clone)]
+pub struct ParEdgeIndices<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    stop_offset: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[cfg(feature = "rayon")]
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParEdgeIndices<N, E, Ix> {
+    fn new(begin_offset: usize, end_offset: usize) -> Self {
+        Self {
+            stop_offset: end_offset,
+            offset: begin_offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> UnindexedProducer
+    for ParEdgeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    fn split(self) -> (Self, Option<Self>) {
+        let len = self.stop_offset - self.offset;
+        if len <= 4096 {
+            (self, None) // small enough: stop splitting
+        } else {
+            let mid = self.offset + len / 2;
+            (
+                Self {
+                    stop_offset: mid,
+                    offset: self.offset,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                },
+                Some(Self {
+                    stop_offset: self.stop_offset,
+                    offset: mid,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                }),
+            )
+        }
+    }
+
+    // Sequential fold of a chunk
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        for i in self.offset..self.stop_offset {
+            folder = folder.consume(i);
+        }
+        folder
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Producer
+    for ParEdgeIndices<N, E, Ix>
+{
+    type Item = usize;
+    type IntoIter = std::ops::Range<usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.offset..self.stop_offset
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        debug_assert!(index <= self.stop_offset - self.offset);
+        let mid = self.offset + index;
+        (
+            Self {
+                stop_offset: mid,
+                offset: self.offset,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+            Self {
+                stop_offset: self.stop_offset,
+                offset: mid,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParallelIterator
+    for ParEdgeIndices<N, E, Ix>
+{
+    type Item = usize;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.stop_offset - self.offset)
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> IndexedParallelIterator
+    for ParEdgeIndices<N, E, Ix>
+{
+    fn drive<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::Consumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.stop_offset - self.offset
+    }
+
+    fn with_producer<CB>(self, callback: CB) -> CB::Output
+    where
+        CB: rayon::iter::plumbing::ProducerCallback<Self::Item>,
+    {
+        callback.callback(self)
     }
 }
 
@@ -1425,8 +1788,170 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
-pub struct ParNodesWithDegreeLT<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+pub struct NodesWithDegreeLT<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    off_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    NodesWithDegreeLT<N, E, Ix>
 {
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            count: node_count - offset,
+            offset,
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for NodesWithDegreeLT<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        loop {
+            if self.count == 0 {
+                return None;
+            }
+            let curr = unsafe { self.off_ptr.add(self.count).read() };
+            if curr - unsafe { self.off_ptr.add(self.count.saturating_sub(1)).read() }
+                >= self.target_deg
+            {
+                continue;
+            }
+            return Some(self.offset + self.count);
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for NodesWithDegreeLT<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            if self.count == 0 {
+                return None;
+            }
+            let _ = self.count.saturating_sub(1);
+            if unsafe {
+                self.off_ptr.add(self.offset + 1).read() - self.off_ptr.add(self.offset).read()
+            } >= self.target_deg
+            {
+                let _ = self.offset.saturating_add(1);
+                continue;
+            }
+            let _ = self.offset.saturating_add(1);
+            return Some(self.offset);
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, None)
+    }
+}
+
+pub struct NodesWithDegreeGE<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    off_ptr: *const usize,
+    count: usize,
+    offset: usize,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    NodesWithDegreeGE<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            count: node_count - offset,
+            offset,
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> DoubleEndedIterator
+    for NodesWithDegreeGE<N, E, Ix>
+{
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<usize> {
+        loop {
+            if self.count == 0 {
+                return None;
+            }
+            let curr = unsafe { self.off_ptr.add(self.count).read() };
+            if curr - unsafe { self.off_ptr.add(self.count.saturating_sub(1)).read() }
+                < self.target_deg
+            {
+                continue;
+            }
+            return Some(self.offset + self.count);
+        }
+    }
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
+    for NodesWithDegreeGE<N, E, Ix>
+{
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            if self.count == 0 {
+                return None;
+            }
+            let _ = self.count.saturating_sub(1);
+            if unsafe {
+                self.off_ptr.add(self.offset + 1).read() - self.off_ptr.add(self.offset).read()
+            } < self.target_deg
+            {
+                let _ = self.offset.saturating_add(1);
+                continue;
+            }
+            let _ = self.offset.saturating_add(1);
+            return Some(self.offset);
+        }
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, None)
+    }
+}
+
+#[derive(Clone)]
+pub struct ParalelizableNodesWithDegreeLT<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
     off_ptr: *const usize,
     stop_offset: usize,
     offset: Arc<AtomicUsize>,
@@ -1438,7 +1963,7 @@ pub struct ParNodesWithDegreeLT<N: crate::graph::N, E: crate::graph::E, Ix: crat
 
 #[allow(dead_code)]
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
-    ParNodesWithDegreeLT<N, E, Ix>
+    ParalelizableNodesWithDegreeLT<N, E, Ix>
 {
     fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
         let stop_offset = unsafe { off_mmap.add(node_count).read() };
@@ -1457,7 +1982,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
 }
 
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
-    for ParNodesWithDegreeLT<N, E, Ix>
+    for ParalelizableNodesWithDegreeLT<N, E, Ix>
 {
     type Item = usize;
 
@@ -1483,8 +2008,195 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
-pub struct ParNodesWithDegreeGE<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+#[cfg(feature = "rayon")]
+#[derive(Copy, Clone)]
+pub struct ParNodesWithDegreeLT<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
 {
+    off_ptr: *const usize,
+    stop_offset: usize,
+    offset: usize,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Send
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Sync
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ExactSizeIterator
+    for NodesWithDegreeLT<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParNodesWithDegreeLT<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let stop_offset = unsafe { off_mmap.add(node_count).read() };
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            stop_offset,
+            offset,
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> UnindexedProducer
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+    type Item = usize;
+
+    fn split(self) -> (Self, Option<Self>) {
+        let len = self.stop_offset - self.offset;
+        if len <= 4096 {
+            (self, None) // small enough: stop splitting
+        } else {
+            let mid = self.offset + len / 2;
+            (
+                Self {
+                    off_ptr: self.off_ptr,
+                    stop_offset: mid,
+                    offset: self.offset,
+                    target_deg: self.target_deg,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                },
+                Some(Self {
+                    off_ptr: self.off_ptr,
+                    stop_offset: self.stop_offset,
+                    offset: mid,
+                    target_deg: self.target_deg,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                }),
+            )
+        }
+    }
+
+    // Sequential fold of a chunk
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        for i in self.offset..self.stop_offset {
+            let deg = unsafe { self.off_ptr.add(i + 1).read() - self.off_ptr.add(i).read() };
+            if deg < self.target_deg {
+                folder = folder.consume(i);
+            }
+        }
+        folder
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Producer
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+    type Item = usize;
+    type IntoIter = NodesWithDegreeLT<N, E, Ix>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        NodesWithDegreeLT::new(
+            unsafe { self.off_ptr.add(self.offset) },
+            self.stop_offset - self.offset,
+            self.target_deg,
+        )
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        debug_assert!(index <= self.stop_offset - self.offset);
+        let mid = self.offset + index;
+        (
+            Self {
+                off_ptr: self.off_ptr,
+                stop_offset: mid,
+                offset: self.offset,
+                target_deg: self.target_deg,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+            Self {
+                off_ptr: self.off_ptr,
+                stop_offset: self.stop_offset,
+                offset: mid,
+                target_deg: self.target_deg,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParallelIterator
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+    type Item = usize;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.stop_offset - self.offset)
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> IndexedParallelIterator
+    for ParNodesWithDegreeLT<N, E, Ix>
+{
+    fn drive<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::Consumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.stop_offset - self.offset
+    }
+
+    fn with_producer<CB>(self, callback: CB) -> CB::Output
+    where
+        CB: rayon::iter::plumbing::ProducerCallback<Self::Item>,
+    {
+        callback.callback(self)
+    }
+}
+
+#[derive(Clone)]
+pub struct ParalelizableNodesWithDegreeGE<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
     off_ptr: *const usize,
     stop_offset: usize,
     offset: Arc<AtomicUsize>,
@@ -1496,7 +2208,7 @@ pub struct ParNodesWithDegreeGE<N: crate::graph::N, E: crate::graph::E, Ix: crat
 
 #[allow(dead_code)]
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
-    ParNodesWithDegreeGE<N, E, Ix>
+    ParalelizableNodesWithDegreeGE<N, E, Ix>
 {
     fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
         let stop_offset = unsafe { off_mmap.add(node_count).read() };
@@ -1515,7 +2227,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
 }
 
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
-    for ParNodesWithDegreeGE<N, E, Ix>
+    for ParalelizableNodesWithDegreeGE<N, E, Ix>
 {
     type Item = usize;
 
@@ -1541,7 +2253,195 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
-pub struct ParNodesWithDegree<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+#[cfg(feature = "rayon")]
+#[derive(Copy, Clone)]
+pub struct ParNodesWithDegreeGE<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+{
+    off_ptr: *const usize,
+    stop_offset: usize,
+    offset: usize,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Send
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Sync
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ExactSizeIterator
+    for NodesWithDegreeGE<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParNodesWithDegreeGE<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let stop_offset = unsafe { off_mmap.add(node_count).read() };
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            stop_offset,
+            offset,
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> UnindexedProducer
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+    type Item = usize;
+
+    fn split(self) -> (Self, Option<Self>) {
+        let len = self.stop_offset - self.offset;
+        if len <= 4096 {
+            (self, None) // small enough: stop splitting
+        } else {
+            let mid = self.offset + len / 2;
+            (
+                Self {
+                    off_ptr: self.off_ptr,
+                    stop_offset: mid,
+                    offset: self.offset,
+                    target_deg: self.target_deg,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                },
+                Some(Self {
+                    off_ptr: self.off_ptr,
+                    stop_offset: self.stop_offset,
+                    offset: mid,
+                    target_deg: self.target_deg,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                }),
+            )
+        }
+    }
+
+    // Sequential fold of a chunk
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        for i in self.offset..self.stop_offset {
+            let deg = unsafe { self.off_ptr.add(i + 1).read() - self.off_ptr.add(i).read() };
+            if deg >= self.target_deg {
+                folder = folder.consume(i);
+            }
+        }
+        folder
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Producer
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+    type Item = usize;
+    type IntoIter = NodesWithDegreeGE<N, E, Ix>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        NodesWithDegreeGE::new(
+            unsafe { self.off_ptr.add(self.offset) },
+            self.stop_offset - self.offset,
+            self.target_deg,
+        )
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        debug_assert!(index <= self.stop_offset - self.offset);
+        let mid = self.offset + index;
+        (
+            Self {
+                off_ptr: self.off_ptr,
+                stop_offset: mid,
+                offset: self.offset,
+                target_deg: self.target_deg,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+            Self {
+                off_ptr: self.off_ptr,
+                stop_offset: self.stop_offset,
+                offset: mid,
+                target_deg: self.target_deg,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParallelIterator
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+    type Item = usize;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.stop_offset - self.offset)
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> IndexedParallelIterator
+    for ParNodesWithDegreeGE<N, E, Ix>
+{
+    fn drive<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::Consumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.stop_offset - self.offset
+    }
+
+    fn with_producer<CB>(self, callback: CB) -> CB::Output
+    where
+        CB: rayon::iter::plumbing::ProducerCallback<Self::Item>,
+    {
+        callback.callback(self)
+    }
+}
+
+#[derive(Clone)]
+pub struct ParalelizableNodesWithDegree<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
     off_ptr: *const usize,
     stop_offset: usize,
     offset: Arc<AtomicUsize>,
@@ -1553,7 +2453,7 @@ pub struct ParNodesWithDegree<N: crate::graph::N, E: crate::graph::E, Ix: crate:
 
 #[allow(dead_code)]
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
-    ParNodesWithDegree<N, E, Ix>
+    ParalelizableNodesWithDegree<N, E, Ix>
 {
     fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
         let stop_offset = unsafe { off_mmap.add(node_count).read() };
@@ -1572,7 +2472,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
 }
 
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
-    for ParNodesWithDegree<N, E, Ix>
+    for ParalelizableNodesWithDegree<N, E, Ix>
 {
     type Item = usize;
 
@@ -1598,6 +2498,188 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
+#[cfg(feature = "rayon")]
+#[derive(Copy, Clone)]
+pub struct ParNodesWithDegree<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    off_ptr: *const usize,
+    stop_offset: usize,
+    offset: usize,
+    target_deg: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Send
+    for ParNodesWithDegree<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Sync
+    for ParNodesWithDegree<N, E, Ix>
+{
+}
+
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ExactSizeIterator
+    for NodesWithDegree<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParNodesWithDegree<N, E, Ix>
+{
+    fn new(off_mmap: *const usize, node_count: usize, target_deg: usize) -> Self {
+        let stop_offset = unsafe { off_mmap.add(node_count).read() };
+        let offset = unsafe { off_mmap.read() };
+
+        Self {
+            off_ptr: off_mmap,
+            stop_offset,
+            offset,
+            target_deg,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> UnindexedProducer
+    for ParNodesWithDegree<N, E, Ix>
+{
+    type Item = usize;
+
+    fn split(self) -> (Self, Option<Self>) {
+        let len = self.stop_offset - self.offset;
+        if len <= 4096 {
+            (self, None) // small enough: stop splitting
+        } else {
+            let mid = self.offset + len / 2;
+            (
+                Self {
+                    off_ptr: self.off_ptr,
+                    stop_offset: mid,
+                    offset: self.offset,
+                    target_deg: self.target_deg,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                },
+                Some(Self {
+                    off_ptr: self.off_ptr,
+                    stop_offset: self.stop_offset,
+                    offset: mid,
+                    target_deg: self.target_deg,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                }),
+            )
+        }
+    }
+
+    // Sequential fold of a chunk
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        for i in self.offset..self.stop_offset {
+            let deg = unsafe { self.off_ptr.add(i + 1).read() - self.off_ptr.add(i).read() };
+            if deg == self.target_deg {
+                folder = folder.consume(i);
+            }
+        }
+        folder
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Producer
+    for ParNodesWithDegree<N, E, Ix>
+{
+    type Item = usize;
+    type IntoIter = NodesWithDegree<N, E, Ix>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        NodesWithDegree::new(
+            unsafe { self.off_ptr.add(self.offset) },
+            self.stop_offset - self.offset,
+            self.target_deg,
+        )
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        debug_assert!(index <= self.stop_offset - self.offset);
+        let mid = self.offset + index;
+        (
+            Self {
+                off_ptr: self.off_ptr,
+                stop_offset: mid,
+                offset: self.offset,
+                target_deg: self.target_deg,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+            Self {
+                off_ptr: self.off_ptr,
+                stop_offset: self.stop_offset,
+                offset: mid,
+                target_deg: self.target_deg,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParallelIterator
+    for ParNodesWithDegree<N, E, Ix>
+{
+    type Item = usize;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.stop_offset - self.offset)
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> IndexedParallelIterator
+    for ParNodesWithDegree<N, E, Ix>
+{
+    fn drive<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::Consumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.stop_offset - self.offset
+    }
+
+    fn with_producer<CB>(self, callback: CB) -> CB::Output
+    where
+        CB: rayon::iter::plumbing::ProducerCallback<Self::Item>,
+    {
+        callback.callback(self)
+    }
+}
+
 pub struct Neighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
     neigh_ptr: *const usize,
     count: usize,
@@ -1616,6 +2698,17 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Neighb
         Self {
             neigh_ptr: unsafe { neigh_mmap.add(offset) },
             count: unsafe { off_ptr.add(1).read_unaligned() - offset },
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+    #[cfg(feature = "rayon")]
+    fn new_by_offset(neigh_mmap: *const usize, offset: usize, stop_offset: usize) -> Self {
+        Self {
+            neigh_ptr: unsafe { neigh_mmap.add(offset) },
+            count: stop_offset - offset,
             offset,
             _phantom1: std::marker::PhantomData::<N>,
             _phantom2: std::marker::PhantomData::<E>,
@@ -1673,7 +2766,12 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     }
 }
 
-pub struct ParNeighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+#[derive(Clone)]
+pub struct ParalelizableNeighbors<
+    N: crate::graph::N,
+    E: crate::graph::E,
+    Ix: crate::graph::IndexType,
+> {
     neigh_ptr: *const usize,
     stop_offset: usize,
     offset: Arc<AtomicUsize>,
@@ -1683,7 +2781,9 @@ pub struct ParNeighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph
 }
 
 #[allow(dead_code)]
-impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNeighbors<N, E, Ix> {
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType>
+    ParalelizableNeighbors<N, E, Ix>
+{
     fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
         let offset = unsafe { off_mmap.add(node_id).read() };
         let stop_offset = unsafe { off_mmap.add(node_id + 1).read() };
@@ -1700,7 +2800,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNei
 }
 
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterator
-    for ParNeighbors<N, E, Ix>
+    for ParalelizableNeighbors<N, E, Ix>
 {
     type Item = usize;
 
@@ -1717,6 +2817,174 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Iterat
     fn size_hint(&self) -> (usize, Option<usize>) {
         let remaining = self.stop_offset - self.offset.load(Ordering::Relaxed);
         (remaining, Some(remaining))
+    }
+}
+
+#[cfg(feature = "rayon")]
+#[derive(Copy, Clone)]
+pub struct ParNeighbors<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> {
+    neigh_ptr: *const usize,
+    stop_offset: usize,
+    offset: usize,
+    _phantom1: std::marker::PhantomData<N>,
+    _phantom2: std::marker::PhantomData<E>,
+    _phantom3: std::marker::PhantomData<Ix>,
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Send
+    for ParNeighbors<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+unsafe impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Sync
+    for ParNeighbors<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ExactSizeIterator
+    for Neighbors<N, E, Ix>
+{
+}
+
+#[cfg(feature = "rayon")]
+#[allow(dead_code)]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParNeighbors<N, E, Ix> {
+    fn new(neigh_mmap: *const usize, off_mmap: *const usize, node_id: usize) -> Self {
+        let offset = unsafe { off_mmap.add(node_id).read() };
+        let stop_offset = unsafe { off_mmap.add(node_id + 1).read() };
+
+        Self {
+            neigh_ptr: neigh_mmap,
+            stop_offset,
+            offset,
+            _phantom1: std::marker::PhantomData::<N>,
+            _phantom2: std::marker::PhantomData::<E>,
+            _phantom3: std::marker::PhantomData::<Ix>,
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> UnindexedProducer
+    for ParNeighbors<N, E, Ix>
+{
+    type Item = usize;
+
+    fn split(self) -> (Self, Option<Self>) {
+        let len = self.stop_offset - self.offset;
+        if len <= 4096 {
+            (self, None) // small enough: stop splitting
+        } else {
+            let mid = self.offset + len / 2;
+            (
+                Self {
+                    neigh_ptr: self.neigh_ptr,
+                    stop_offset: mid,
+                    offset: self.offset,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                },
+                Some(Self {
+                    neigh_ptr: self.neigh_ptr,
+                    stop_offset: self.stop_offset,
+                    offset: mid,
+                    _phantom1: std::marker::PhantomData::<N>,
+                    _phantom2: std::marker::PhantomData::<E>,
+                    _phantom3: std::marker::PhantomData::<Ix>,
+                }),
+            )
+        }
+    }
+
+    // Sequential fold of a chunk
+    fn fold_with<F>(self, mut folder: F) -> F
+    where
+        F: Folder<Self::Item>,
+    {
+        for i in self.offset..self.stop_offset {
+            unsafe { folder = folder.consume(self.neigh_ptr.add(i).read()) };
+        }
+        folder
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> Producer
+    for ParNeighbors<N, E, Ix>
+{
+    type Item = usize;
+    type IntoIter = Neighbors<N, E, Ix>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Neighbors::new_by_offset(self.neigh_ptr, self.offset, self.stop_offset)
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        debug_assert!(index <= self.stop_offset - self.offset);
+        let mid = self.offset + index;
+        (
+            Self {
+                neigh_ptr: self.neigh_ptr,
+                stop_offset: mid,
+                offset: self.offset,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+            Self {
+                neigh_ptr: self.neigh_ptr,
+                stop_offset: self.stop_offset,
+                offset: mid,
+                _phantom1: std::marker::PhantomData::<N>,
+                _phantom2: std::marker::PhantomData::<E>,
+                _phantom3: std::marker::PhantomData::<Ix>,
+            },
+        )
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> ParallelIterator
+    for ParNeighbors<N, E, Ix>
+{
+    type Item = usize;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge_unindexed(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.stop_offset - self.offset)
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> IndexedParallelIterator
+    for ParNeighbors<N, E, Ix>
+{
+    fn drive<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::Consumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.stop_offset - self.offset
+    }
+
+    fn with_producer<CB>(self, callback: CB) -> CB::Output
+    where
+        CB: rayon::iter::plumbing::ProducerCallback<Self::Item>,
+    {
+        callback.callback(self)
     }
 }
 
