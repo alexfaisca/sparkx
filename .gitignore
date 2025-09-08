@@ -7,6 +7,8 @@ dog/
 drosophilia/
 mus/
 main/datasets/
+main/artifacts/
+main/xtask/artifacts/
 main/derive_macros/target/
 /exact_values_backup
 /thesis_books
