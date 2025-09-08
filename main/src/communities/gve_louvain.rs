@@ -134,6 +134,14 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
         Self::new(g)
     }
 
+    pub fn coalesce_isolated_nodes(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.community_count = self.g.coallesce_isolated_nodes_community(
+            self.community.shared_slice(),
+            self.community_count,
+        )?;
+        Ok(())
+    }
+
     /// Returns the number of communities in the Louvain partition.
     pub fn community_count(&self) -> usize {
         self.community_count

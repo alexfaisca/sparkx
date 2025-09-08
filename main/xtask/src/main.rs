@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use duct::cmd;
 use serde::Serialize;
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
@@ -25,9 +25,9 @@ enum Cmd {
         /// Dataset name (used by your builder)
         #[arg(long, default_value = "default")]
         dataset: String,
-        /// Binary to run (cargo run -r --bin <name>)
-        #[arg(long, default_value = "your-crate")]
-        bin: String,
+        /// Extra args passed to your binary
+        #[arg(short)]
+        target: usize,
         /// Extra args passed to your binary
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
@@ -38,6 +38,7 @@ enum Cmd {
 enum Tool {
     Cachegrind,
     Massif,
+    MassifPages,
 }
 
 #[derive(Serialize)]
@@ -64,9 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Cache {
             tool,
             dataset,
-            bin,
+            target,
             args,
-        } => run_cache(tool, dataset, bin, args)?,
+        } => run_cache(tool, dataset, target, args)?,
     }
     Ok(())
 }
@@ -74,11 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run_cache(
     tool: Tool,
     dataset: String,
-    bin: String,
+    target: usize,
     args: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 0) Ensure artifacts dir
-    let out = PathBuf::from("./artifacts").join("measurements");
+    let out = PathBuf::from("./.artifacts").join("measurements");
     fs::create_dir_all(&out)?;
 
     // 2) Resolve paths
@@ -134,6 +135,9 @@ fn run_cache(
                 &out,
                 "./target/bench_cache/tool",
                 "-v",
+                "-c",
+                &target.to_string(),
+                "-t32",
                 "-m",
                 "-f",
                 &dataset
@@ -178,9 +182,65 @@ fn run_cache(
             cmd!(
                 "valgrind",
                 "--tool=massif",
+                "--time-unit=ms",
                 &out,
                 "./target/bench_cache/tool",
                 "-v",
+                "-c",
+                &target.to_string(),
+                "-t32",
+                "-m",
+                "-f",
+                &dataset
+            )
+            .run()?;
+            // Optional: keep both ms_print and raw
+            let txt = prefix.with_extension("massif.txt");
+            let ms = cmd!("ms_print", &outfile).read()?;
+            drop(File::create(txt.as_path())?);
+            fs::write(txt, ms)?;
+            println!("Results in {:?}", outfile);
+        }
+        Tool::MassifPages => {
+            let outfile = prefix.with_extension("massif.out");
+            let outfile = outfile
+                .with_extension("massif.out")
+                .canonicalize()
+                .unwrap_or_else(|_| {
+                    // fallback if the file doesn’t exist yet
+                    std::env::current_dir().unwrap().join(&outfile)
+                });
+            if outfile.exists() {
+                // Best-effort; if this fails, you’ll see a clear error here rather than from Valgrind
+                fs::remove_file(&outfile)?;
+            }
+            if let Some(p) = outfile.parent() {
+                fs::create_dir_all(p)?;
+            }
+            let f = std::fs::File::create(&outfile)?; // writable by you
+            let mut perm = f.metadata()?.permissions();
+            perm.set_mode(0o777);
+            f.set_permissions(perm)?;
+            drop(f); // close before launching valgrind
+            let out = format!(
+                "--massif-out-file={}",
+                outfile
+                    .as_path()
+                    .as_os_str()
+                    .to_str()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> { "error".into() })?
+            );
+            cmd!(
+                "valgrind",
+                "--tool=massif",
+                "--time-unit=ms",
+                "--pages-as-heap=yes",
+                &out,
+                "./target/bench_cache/tool",
+                "-v",
+                "-c",
+                &target.to_string(),
+                "-t32",
                 "-m",
                 "-f",
                 &dataset

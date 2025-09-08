@@ -39,10 +39,9 @@ const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 #[derive(Parser)]
 #[command(
-    name = "'The Tool'",
+    name = "'SparkX'",
     version = "0.1",
-    about = "Named 'The Tool'",
-    long_about = "Very pretentious name. I know... ('~') but a man has to make an impression for his dissertation. (T.T)\n The contents of this crate should be a good start though. :)"
+    long_about = "Very pretentious name, for a library so small. I know... ('~')\n The contents of this crate should be a good start for a solid tool though. :)"
 )]
 struct ProgramArgs {
     /// Enable debugging mode
@@ -74,6 +73,10 @@ struct ProgramArgs {
     /// Required — input file (.txt, .lz4, .mmap are accepted)
     #[arg(short, long, required = true)]
     file: String,
+
+    /// Executes a given cache profiling target flow.
+    #[arg(short)]
+    cache_target: Option<u64>,
 }
 
 fn main() {
@@ -87,96 +90,105 @@ fn main() {
     unsafe { std::env::set_var("BRUIJNX_VERBOSE", if args.verbose { "1" } else { "0" }) };
 
     if BITS < BITS_U64 {
-        panic!("error program can't operate on <64-bit systems");
+        panic!("error program can't operate on 64-bit systems");
     }
 
-    // Check if <FILE> is of type .mmap, if so guarantee index file is provided
-    // # monster match xD
-    let _monster_match: () = match (
-        Path::new(args.file.as_str())
-            .extension()
-            .and_then(|s| s.to_str()),
-        Path::new(("./cache/index_".to_string() + args.file.as_str()).as_str()).try_exists(),
-    ) {
-        // .txt input file
-        (Some("txt"), _) => {
-            if args.mmap {
-                mmapped_suite(
-                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
-                        args.file.clone(),
-                        args.threads,
-                        args.output_id,
-                    )
-                    .expect("error couldn't parse file"),
-                );
+    if let Some(cache_target) = args.cache_target {
+        println!("going into mem_target {cache_target}");
+        match cache_target {
+            0 => {
+                cache_profile_0::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 0 shouldn't fail");
+            }
+            1 => {
+                cache_profile_1::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 1 shouldn't fail");
+            }
+            2 => {
+                cache_profile_2::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 2 shouldn't fail");
+            }
+            3 => {
+                pages_profile_0::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 3 shouldn't fail");
+            }
+            4 => {
+                pages_profile_1::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 4 shouldn't fail");
+            }
+            5 => {
+                pages_profile_2::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 5 shouldn't fail");
+            }
+            6 => {
+                pages_profile_3::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 6 shouldn't fail");
+            }
+            7 => {
+                pages_profile_4::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 7 shouldn't fail");
+            }
+            8 => {
+                pages_profile_5::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 8 shouldn't fail");
+            }
+            9 => {
+                pages_profile_6::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 9 shouldn't fail");
+            }
+            _ => {
+                pages_profile_7::<(), (), usize, _>(
+                    args.file.clone(),
+                    args.threads,
+                    args.output_id,
+                )
+                .expect("target 10 shouldn't fail");
             }
         }
-        // .lz4 input file
-        (Some("lz4"), _) => {
-            if args.mmap {
-                mmapped_suite(
-                    parse_bytes_mmaped::<(), (), usize, _>(
-                        args.file.clone(),
-                        args.threads,
-                        args.output_id,
-                    )
-                    .expect("error couldn't parse file"),
-                );
-            }
-        }
-        // .mtx input file
-        (Some("mtx"), _) => {
-            if args.mmap {
-                mmapped_suite(
-                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
-                        args.file.clone(),
-                        args.threads,
-                        args.output_id,
-                    )
-                    .expect("error couldn't parse file"),
-                );
-            }
-        }
-        // .nodes input file
-        (Some("nodes"), _) => {
-            if args.mmap {
-                mmapped_suite(
-                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
-                        args.file.clone(),
-                        args.threads,
-                        args.output_id,
-                    )
-                    .expect("error couldn't parse file"),
-                );
-            }
-        }
-        // .edges input file
-        (Some("edges"), _) => {
-            if args.mmap {
-                mmapped_suite(
-                    parse_bytes_mmaped::<VoidLabel, VoidLabel, usize, _>(
-                        args.file.clone(),
-                        args.threads,
-                        args.output_id,
-                    )
-                    .expect("error couldn't parse file"),
-                );
-            }
-        }
-        // .mmap input file
-        (Some("mmap"), Ok(false)) => match args.mmap {
-            true => {}
-            false => panic!("error input file of type .mmap requires setting the -m --mmap flag"),
-        },
-        (Some("mmap"), Ok(true)) => {
-            panic!(
-                "error input file <filename>.mmap requires a valid .mmap index file with name \"index_<filename>.mmap\": {}",
-                "index_".to_string() + args.file.as_str()
-            )
-        }
-        (Some("mmap"), Err(e)) => panic!("error couldn't find index file: {}", e),
-        (a, b) => panic!("error invalid input file extension {:?} {:?}", a, b),
-    };
+    } else {
+        sandbox_parse::<(), (), usize, _>(args.file.clone(), args.threads, args.output_id)
+            .expect("error couldn't parse file");
+    }
 }
 
 fn mmapped_suite<N: graph::N, E: graph::E, Ix: graph::IndexType>(_graph: GraphMemoryMap<N, E, Ix>) {
@@ -184,7 +196,7 @@ fn mmapped_suite<N: graph::N, E: graph::E, Ix: graph::IndexType>(_graph: GraphMe
 
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
 #[expect(dead_code)]
-fn mmap_from_file<N: graph::N, E: graph::E, Ix: graph::IndexType>(
+fn sandbox_open<N: graph::N, E: graph::E, Ix: graph::IndexType>(
     data_path: String,
     threads: Option<u8>,
 ) -> Result<GraphMemoryMap<N, E, Ix>, Box<dyn std::error::Error>> {
@@ -224,7 +236,7 @@ fn metalabel_search<N: graph::N, E: graph::E, Ix: graph::IndexType>(
     }
 }
 
-fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
     path: P,
     threads: Option<u8>,
     id: Option<String>,
@@ -263,6 +275,33 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     println!("k-core liu et al {:?}", time.elapsed());
     println!();
     _liu_et_al.drop_cache()?;
+
+    let time = Instant::now();
+    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    println!("found {} communities", _louvain.community_count());
+    println!("partition modularity {} ", _louvain.partition_modularity());
+    println!("louvain finished in {:?}", time.elapsed());
+    println!(
+        "partition modularity according to graph_mmaped method {}",
+        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
+    println!("hyperball {:?}", time.elapsed());
+    hyperball.drop_cache()?;
+
+    // _louvain.coalesce_isolated_nodes()?;
+    // println!("found {} communities", _louvain.community_count());
+    // println!("partition modularity {} ", _louvain.partition_modularity());
+    // println!("louvain finished in {:?}", time.elapsed());
+    // println!(
+    //     "partition modularity according to graph_mmaped method {}",
+    //     graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    // );
+    // println!();
+    // _louvain.drop_cache()?;
 
     // let time = Instant::now();
     // graph_cache.rebuild_fst_from_ggcat_file(path, None, None)?;
@@ -346,11 +385,6 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     // _euler_trail.drop_cache()?;
 
     // let time = Instant::now();
-    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped)?;
-    // println!("hyperball {:?}", time.elapsed());
-    // hyperball.drop_cache()?;
-
-    // let time = Instant::now();
     // hyperball.compute_harmonic_centrality(None)?;
     // println!("harmonic centrality {:?}", time.elapsed());
     // println!();
@@ -364,17 +398,6 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     //     i += 1234600;
     // }
     //
-    let time = Instant::now();
-    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    println!("found {} communities", _louvain.community_count());
-    println!("partition modularity {} ", _louvain.partition_modularity());
-    println!("louvain finished in {:?}", time.elapsed());
-    println!(
-        "partition modularity according to graph_mmaped method {}",
-        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
-    );
-    println!();
-    _louvain.drop_cache()?;
     //
     // let time = Instant::now();
     // let conductivity = ClusteringCoefficient::new(&graph_mmaped)?;
@@ -417,6 +440,371 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     //     time.elapsed()
     // );
     Ok(graph_mmaped)
+}
+
+fn cache_profile_0<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
+    println!("k-truss pkt {:?}", time.elapsed());
+    println!();
+    _pkt.drop_cache()?;
+
+    let time = Instant::now();
+    let mut _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    println!("k-truss burkhardt et al {:?}", time.elapsed());
+    println!();
+    _burkhardt_et_al.drop_cache()?;
+
+    let time = Instant::now();
+    let mut _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    _bz.drop_cache()?;
+
+    let time = Instant::now();
+    let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
+    println!();
+    _liu_et_al.drop_cache()?;
+
+    let time = Instant::now();
+    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    println!("found {} communities", _louvain.community_count());
+    println!("partition modularity {} ", _louvain.partition_modularity());
+    println!("louvain finished in {:?}", time.elapsed());
+    println!(
+        "partition modularity according to graph_mmaped method {}",
+        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
+    println!("hyperball {:?}", time.elapsed());
+    hyperball.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn cache_profile_1<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
+    println!();
+
+    _euler_trail.drop_cache()?;
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn cache_profile_2<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let mut i = 0;
+    let size = graph_mmaped.size();
+    while i < size {
+        let time = Instant::now();
+        let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.01, vec![i], None, None)?;
+        let _ = hk_relax.compute()?;
+        println!("HKRelax {:?}", time.elapsed());
+        i += size / 50;
+    }
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_0<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_1<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
+    println!("found {} euler trails", _euler_trail.trail_number());
+    println!("euler trail built {:?}", time.elapsed());
+    println!();
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_2<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    _bz.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_3<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
+    println!();
+    _liu_et_al.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_4<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _burkhardt_et_al = AlgoBurkhardtEtAl::new(&graph_mmaped)?;
+    println!("k-truss burkhardt et al {:?}", time.elapsed());
+    println!();
+    _burkhardt_et_al.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_5<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
+    println!("k-truss pkt {:?}", time.elapsed());
+    println!();
+    _pkt.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_6<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    println!("found {} communities", _louvain.community_count());
+    println!("partition modularity {} ", _louvain.partition_modularity());
+    println!("louvain finished in {:?}", time.elapsed());
+    println!(
+        "partition modularity according to graph_mmaped method {}",
+        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    );
+    println!();
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+fn pages_profile_7<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let time = Instant::now();
+    let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
+    println!("hyperball {:?}", time.elapsed());
+    hyperball.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
 }
 
 #[derive(Debug)]

@@ -1,8 +1,14 @@
 use super::{Community, GraphMemoryMap};
-use crate::shared_slice::SharedSliceMut;
+use crate::shared_slice::{SharedSlice, SharedSliceMut};
 
+use crossbeam::thread;
+use num_cpus::get_physical;
 use ordered_float::OrderedFloat;
-use std::collections::HashSet;
+use portable_atomic::{AtomicUsize, Ordering};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Barrier},
+};
 
 #[allow(dead_code)]
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
@@ -66,6 +72,90 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         self.cleanup_helpers()?;
 
         Ok(partition_modularity)
+    }
+
+    pub(crate) fn coallesce_isolated_nodes_community(
+        &self,
+        communities: SharedSliceMut<usize>,
+        comm_count: usize,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let node_count = self.size();
+        if node_count <= 1 {
+            return Ok(node_count);
+        }
+        let threads = self.thread_num().max(get_physical() * 2);
+        let node_load = node_count.div_ceil(threads);
+
+        let offsets_ptr = SharedSlice::<usize>::new(self.offsets_ptr(), self.offsets_size());
+        // helper indexer
+        let h_fn = self.build_helper_filename(1)?;
+        // allocate |V| + 1 usize's to store the beginning and end offsets for each node's edges
+        let counter = SharedSliceMut::<usize>::abst_mem_mut(&h_fn, comm_count, true)?;
+
+        let isolated_nodes_comm = Arc::new(AtomicUsize::new(0));
+        thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            // Thread syncronization
+            let synchronize = Arc::new(Barrier::new(threads));
+            let mut handles = vec![];
+
+            for tid in 0..threads {
+                let begin = std::cmp::min(tid * node_load, node_count);
+                let end = std::cmp::min(begin + node_load, node_count);
+                let mut counter = counter.shared_slice();
+                let mut communities = communities;
+
+                let synchronize = synchronize.clone();
+                let isolated_nodes_comm = isolated_nodes_comm.clone();
+
+                handles.push(scope.spawn(move |_| {
+                    // mark isolated nodes
+                    for u in begin..end {
+                        if offsets_ptr.get(u + 1) - *offsets_ptr.get(u) == 0 {
+                            let comm_u = *communities.get(u);
+                            assert!(comm_u <= comm_count);
+                            *counter.get_mut(comm_u) = 1;
+                        }
+                    }
+
+                    synchronize.wait();
+                    if tid == 0 {
+                        // prefix sum marks
+                        let mut sum = 0;
+                        for u in 0..comm_count {
+                            let mark = *counter.get(u);
+                            *counter.get_mut(u) = sum;
+                            sum += mark;
+                        }
+                        let isolated_comm = comm_count - sum;
+                        isolated_nodes_comm.store(isolated_comm, Ordering::Relaxed);
+                        println!("new max comm {isolated_comm}");
+                    }
+                    synchronize.wait();
+
+                    let isolated_nodes_comm = isolated_nodes_comm.load(Ordering::Relaxed);
+
+                    for u in begin..end {
+                        if offsets_ptr.get(u + 1) - *offsets_ptr.get(u) == 0 {
+                            *communities.get_mut(u) = isolated_nodes_comm;
+                        } else {
+                            *communities.get_mut(u) -= *counter.get(*communities.get(u));
+                            if *communities.get_mut(u) > 1000000000 {
+                                println!("{u}");
+                            }
+                        }
+                    }
+                }));
+            }
+            // check for errors
+            for (tid, r) in handles.into_iter().enumerate() {
+                r.join().map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("error in thread {tid}: {:?}", e).into()
+                })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
+        Ok(isolated_nodes_comm.load(Ordering::Relaxed) + 1)
     }
 
     /// Performs a sweep cut over a given diffusion vector[^1] by partition conductance.
