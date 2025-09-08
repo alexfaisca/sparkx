@@ -329,6 +329,7 @@ pub enum CacheFile {
     General,
     BFS,
     DFS,
+    EulerIndex,
     EulerTrail,
     KCoreBZ,
     KCoreLEA,

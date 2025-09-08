@@ -1100,6 +1100,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             CacheFile::General => FileType::General,
             CacheFile::BFS => FileType::BFS(H::H),
             CacheFile::DFS => FileType::DFS(H::H),
+            CacheFile::EulerIndex => FileType::EulerIndex(H::H),
             CacheFile::EulerTrail => FileType::EulerTrail(H::H),
             CacheFile::KCoreBZ => FileType::KCoreBZ(H::H),
             CacheFile::KCoreLEA => FileType::KCoreLEA(H::H),

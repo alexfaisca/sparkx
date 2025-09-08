@@ -21,7 +21,7 @@ mod _verify {
     pub(super) fn verify_trails(
         graph: &GraphMemoryMap,
         euler_trails: AbstractedProceduralMemoryMut<usize>,
-        euler_index: Vec<usize>,
+        euler_index: AbstractedProceduralMemoryMut<usize>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // trails length == graph width
         if euler_trails.len() != graph.width() {
@@ -69,13 +69,14 @@ mod _verify {
         }
 
         let trails: Vec<(usize, usize)> = euler_index
+            .as_slice()
             .iter()
             .enumerate()
             .map(|(idx, end)| {
                 if idx == 0 {
                     (0, *end)
                 } else {
-                    (euler_index[idx - 1], *end)
+                    (*euler_index.get(idx - 1), *end)
                 }
             })
             .collect();

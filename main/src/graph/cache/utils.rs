@@ -246,6 +246,7 @@ pub enum FileType {
     Helper(H),
     BFS(H),
     DFS(H),
+    EulerIndex(H),
     EulerTrail(H),
     KCoreBZ(H),
     KCoreLEA(H),
@@ -261,11 +262,11 @@ pub enum FileType {
     HyperBallHarmonicCentrality(H),
     HyperBallLinCentrality(H),
     GVELouvain(H),
-    #[cfg(any(test, feature = "bench"))]
-    Test(H),
     ExactClosenessCentrality(H),
     ExactHarmonicCentrality(H),
     ExactLinCentrality(H),
+    #[cfg(any(test, feature = "bench"))]
+    Test(H),
 }
 
 pub fn cache_file_name_from_id(
@@ -309,6 +310,7 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
     static SUFFIX_FOR_HELPER: &str = "helper";
     static SUFFIX_FOR_BFS: &str = "bfs";
     static SUFFIX_FOR_DFS: &str = "dfs";
+    static SUFFIX_FOR_EULER_INDEX: &str = "eulerindex";
     static SUFFIX_FOR_EULER_TRAIL: &str = "eulertrail";
     static SUFFIX_FOR_KCORE_BZ: &str = "kcoresbz";
     static SUFFIX_FOR_KCORE_LEA: &str = "kcoreslea";
@@ -340,6 +342,7 @@ pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
         FileType::Helper(_) => SUFFIX_FOR_HELPER,
         FileType::BFS(_) => SUFFIX_FOR_BFS,
         FileType::DFS(_) => SUFFIX_FOR_DFS,
+        FileType::EulerIndex(_) => SUFFIX_FOR_EULER_INDEX,
         FileType::EulerTrail(_) => SUFFIX_FOR_EULER_TRAIL,
         FileType::KCoreBZ(_) => SUFFIX_FOR_KCORE_BZ,
         FileType::KCoreLEA(_) => SUFFIX_FOR_KCORE_LEA,
@@ -427,6 +430,7 @@ impl std::fmt::Display for FileType {
             FileType::Helper(_) => "Helper",
             FileType::BFS(_) => "BFS",
             FileType::DFS(_) => "DFS",
+            FileType::EulerIndex(_) => "EulerIndex",
             FileType::EulerTrail(_) => "EulerTrail",
             FileType::KCoreBZ(_) => "KCoreBatageljZaversnik",
             FileType::KCoreLEA(_) => "KCoreLiuEtAl",

@@ -4,8 +4,8 @@ use crate::shared_slice::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
-use std::fs::OpenOptions;
 use std::mem::ManuallyDrop;
+use std::path::Path;
 
 type ProceduralMemoryHierholzers = (
     AbstractedProceduralMemoryMut<usize>,
@@ -23,8 +23,8 @@ pub struct AlgoHierholzer<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the euler trails.
     euler_trails: AbstractedProceduralMemoryMut<usize>,
-    /// Array containing the starting position of each euler trail.
-    trail_index: Vec<usize>,
+    /// Memmapped slice containing the starting position of each euler trail.
+    euler_indices: AbstractedProceduralMemoryMut<usize>,
 }
 
 #[allow(dead_code)]
@@ -54,9 +54,31 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
         Ok(euler)
     }
 
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let t_fn = g.build_cache_filename(CacheFile::EulerTrail, None)?;
+        if Path::new(&t_fn).exists() {
+            if let Ok(euler_trails) = AbstractedProceduralMemoryMut::from_file_name(&t_fn) {
+                let i_fn = g.build_cache_filename(CacheFile::EulerIndex, None)?;
+                if Path::new(&i_fn).exists() {
+                    if let Ok(euler_indices) = AbstractedProceduralMemoryMut::from_file_name(&i_fn)
+                    {
+                        return Ok(Self {
+                            g,
+                            euler_trails,
+                            euler_indices,
+                        });
+                    }
+                }
+            }
+        }
+        Self::new(g)
+    }
+
     /// Returns the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm.
     pub fn trail_number(&self) -> usize {
-        self.trail_index.len()
+        self.euler_indices.len()
     }
 
     /// Returns the number of (strongly[^1]) connected components on the [`GraphMemoryMap`] instance.
@@ -81,14 +103,14 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn get_trail(&self, idx: usize) -> Option<&[usize]> {
-        if idx < self.trail_index.len() {
+        if idx < self.euler_indices.len() {
             // get trail start index
             let start = match idx.overflowing_sub(1) {
                 (_, true) => 0,
-                (i, false) => self.trail_index[i],
+                (i, false) => *self.euler_indices.get(i),
             };
             // get trail end index
-            let end = self.trail_index[idx];
+            let end = *self.euler_indices.get(idx);
             // slice concatenated trails based on start & end indexes
             self.euler_trails.slice(start, end)
         } else {
@@ -105,14 +127,15 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn get_all_trails(&'a self) -> AllEulerTrailsConcatenatedWithBounds<'a> {
-        let mut bounds: Vec<(usize, usize)> = Vec::with_capacity(self.trail_index.len());
-        self.trail_index
+        let mut bounds: Vec<(usize, usize)> = Vec::with_capacity(self.euler_indices.len());
+        self.euler_indices
+            .as_slice()
             .iter()
             .enumerate()
             .for_each(|(idx, &end_pos)| {
                 let start = match idx.overflowing_sub(1) {
                     (_, true) => 0,
-                    (i, false) => self.trail_index[i],
+                    (i, false) => *self.euler_indices.get(i),
                 };
                 bounds.push((start, end_pos));
             });
@@ -197,11 +220,12 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     fn new_no_compute_impl(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let out_fn = g.build_cache_filename(CacheFile::EulerTrail, None)?;
+        let i_fn = g.build_cache_filename(CacheFile::EulerIndex, None)?;
+        let t_fn = g.build_cache_filename(CacheFile::EulerTrail, None)?;
         Ok(Self {
             g,
-            euler_trails: SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.width(), true)?,
-            trail_index: Vec::new(),
+            euler_trails: SharedSliceMut::<usize>::abst_mem_mut(&t_fn, g.width(), true)?,
+            euler_indices: SharedSliceMut::<usize>::abst_mem_mut(&i_fn, 1, true)?,
         })
     }
 
@@ -260,6 +284,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
         let mut start_vertex_counter = 0usize;
         let mut cycles = self.euler_trails.shared_slice();
         let mut write_idx = 0usize;
+        let mut indices = Vec::<usize>::with_capacity(128);
         // find cycles until no unused edges remain
         loop {
             let start_v = loop {
@@ -310,9 +335,19 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
                         "error couldn't slice mmap to write cycle".into()
                     })?;
 
-                self.trail_index.push(write_idx);
+                indices.push(write_idx);
                 cycle.clear();
             }
+        }
+
+        if indices.len() == 1 {
+            *self.euler_indices.get_mut(0) = indices[0];
+        } else {
+            let i_fn = self.build_cache_filename(CacheFile::EulerIndex, None)?;
+            self.euler_indices = SharedSliceMut::abst_mem_mut(&i_fn, indices.len(), true)?;
+            indices.iter().enumerate().for_each(|(idx, &val)| {
+                *self.euler_indices.get_mut(idx) = val;
+            });
         }
 
         self.euler_trails.flush()?;
@@ -353,7 +388,7 @@ mod test {
         )?;
         let het = AlgoHierholzer::new(&graph)?;
 
-        verify_trails(&graph, het.euler_trails, het.trail_index)
+        verify_trails(&graph, het.euler_trails, het.euler_indices)
     }
 
     // generate test cases from dataset
