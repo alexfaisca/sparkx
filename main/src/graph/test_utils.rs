@@ -5,8 +5,8 @@ use crate::{
         cache::{
             GraphCache,
             utils::{
-                CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name,
-                cache_file_name_from_id, id_from_filename,
+                CACHE_DIR, EXACT_VALUE_CACHE_DIR, FileType, H, cache_file_name_from_id,
+                id_from_filename, pers_cache_file_name,
             },
         },
         label::VoidLabel,
@@ -60,7 +60,7 @@ fn cache_file_for(graph_path: &Path) -> Result<String, Box<dyn std::error::Error
             .into()
         })?;
     Ok(cache_file_name_from_id(
-        FileType::Edges(H::H),
+        &FileType::Edges(H::H),
         &id_from_filename(filename)?,
         None,
     ))
@@ -163,7 +163,7 @@ pub(crate) fn get_or_init_dataset_exact_value<N: graph::N, E: graph::E, Ix: grap
         .into());
     }
     let cache_id = graph_id_from_dataset_file_name(graph_path)?;
-    let e_fn = cache_file_name(&graph.cache_fst_filename(), value_type.clone(), None)?;
+    let e_fn = pers_cache_file_name(&graph.cache_fst_filename(), &value_type, None)?;
 
     // Get or create the per-key OnceLock
     let test_entry = exact_value_cache()

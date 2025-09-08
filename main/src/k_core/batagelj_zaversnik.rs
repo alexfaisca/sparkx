@@ -10,7 +10,6 @@ use std::path::Path;
 type ProceduralMemoryBZ = (
     AbstractedProceduralMemoryMut<u8>,
     AbstractedProceduralMemoryMut<usize>,
-    AbstractedProceduralMemoryMut<u8>,
     AbstractedProceduralMemoryMut<usize>,
 );
 
@@ -30,9 +29,9 @@ pub struct AlgoBatageljZaversnik<'a, N: graph::N, E: graph::E, Ix: graph::IndexT
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'a, N, E, Ix> {
     /// Performs k-core decomposition as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
     ///
-    /// The resulting k-core subgraphs are stored in memory (in a memmapped file) edgewise[^1].
+    /// The resulting k-core subgraphs are stored in memory (in a memmapped file) nodewise[^1].
     ///
-    /// [^1]: for each edge of the graph it's coreness is stored in an array.
+    /// [^1]: for each node of the graph it's coreness is stored in an array.
     ///
     /// # Arguments
     ///
@@ -145,7 +144,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KCoreBZ, None)?;
-        let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
+        let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.size(), true)?;
         Ok(Self { g, k_cores })
     }
 
@@ -154,15 +153,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
 
         let d_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(0))?;
         let n_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(1))?;
-        let c_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(2))?;
-        let p_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(3))?;
+        let p_fn = self.g.build_cache_filename(CacheFile::KCoreBZ, Some(2))?;
 
         let degree = SharedSliceMut::<u8>::abst_mem_mut(&d_fn, node_count, true)?;
         let node = SharedSliceMut::<usize>::abst_mem_mut(&n_fn, node_count, true)?;
-        let core = SharedSliceMut::<u8>::abst_mem_mut(&c_fn, node_count, true)?;
         let pos = SharedSliceMut::<usize>::abst_mem_mut(&p_fn, node_count, true)?;
 
-        Ok((degree, node, core, pos))
+        Ok((degree, node, pos))
     }
 
     fn compute_with_proc_mem_impl(
@@ -176,7 +173,8 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
             return Ok(());
         }
 
-        let (degree, mut node, mut core, mut pos) = proc_mem;
+        let (degree, mut node, mut pos) = proc_mem;
+        let mut core = self.k_cores.shared_slice();
         // compute out-degrees in parallel
         let index_ptr = SharedSlice::<usize>::new(self.g.offsets_ptr(), self.g.offsets_size());
         let graph_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
@@ -244,9 +242,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
             })?;
         bins.resize(max_degree + 1, 0);
 
-        // println!()
-        let dead_nodes = bins[0];
-
         // prefix sum to get starting indices for each degree
         let mut start_index = 0usize;
         for i in bins.iter_mut() {
@@ -301,71 +296,21 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
                 }
             }
         }
-        core.flush()?;
 
-        let out_slice = self.k_cores.shared_slice();
-
-        thread::scope(|scope| {
-            // use at least two threads per core to get edgewise results
-            let threads = self.g.thread_num().max(get_physical() * 2);
-            let node_load = node_count.div_ceil(threads);
-
-            let mut res = vec![];
-
-            for tid in 0..threads {
-                let mut out_ptr = out_slice;
-                let core = core.shared_slice();
-
-                let start = std::cmp::min(tid * node_load, node_count);
-                let end = std::cmp::min(start + node_load, node_count);
-
-                res.push(scope.spawn(move |_| -> Vec<usize> {
-                    let mut res = vec![0usize; u8::MAX as usize];
-                    for u in start..end {
-                        let core_u = *core.get(u);
-                        for e in *index_ptr.get(u)..*index_ptr.get(u + 1) {
-                            let v = *graph_ptr.get(e);
-                            // edge core = min(core[u], core[v])
-                            let core_val = if *core.get(u) < *core.get(v) {
-                                core_u
-                            } else {
-                                *core.get(v)
-                            };
-                            *out_ptr.get_mut(e) = core_val;
-                            res[core_val as usize] += 1;
-                        }
-                    }
-                    res
-                }));
-            }
-            let joined_res: Vec<Vec<usize>> = res
-                .into_iter()
-                .map(|v| v.join().expect("error thread panicked"))
-                .collect();
-            let env_verbose_val =
-                std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());
-            let verbose: bool = env_verbose_val == "1";
-            if verbose {
-                let mut r = vec![0usize; u8::MAX as usize];
-                for i in 0..u8::MAX as usize {
-                    for v in joined_res.clone() {
-                        r[i] += v[i];
-                    }
+        let env_verbose_val = std::env::var("BRUIJNX_VERBOSE").unwrap_or_else(|_| "0".to_string());
+        let verbose: bool = env_verbose_val == "1";
+        if verbose {
+            let mut r = vec![0usize; u8::MAX as usize];
+            let mut max = 0;
+            for i in 0..node_count {
+                if *core.get(i) > max {
+                    max = *core.get(i);
                 }
-                // safe because max_degree is at least 0
-                r[0] += dead_nodes;
-                let mut max = 0;
-                r.iter().enumerate().for_each(|(i, v)| {
-                    if *v != 0 && i > max {
-                        max = i;
-                    }
-                });
-                r.resize(max + 1, 0);
-                println!("k-cores {:?}", r);
+                r[*core.get(i) as usize] += 1;
             }
-        })
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
-
+            r.resize(max as usize + 1, 0);
+            println!("k-cores {:?}", r);
+        }
         // flush output to ensure all data is written to disk
         self.k_cores.flush_async()?;
         // cleanup cache

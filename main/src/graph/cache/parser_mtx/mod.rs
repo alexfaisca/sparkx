@@ -52,7 +52,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
 
         let n_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
         let o_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
-        let h_fn = cache_file_name(&n_fn, FileType::Helper(H::H), Some(0))?;
+        let h_fn = cache_file_name(&n_fn, &FileType::Helper(H::H), Some(0))?;
         let offset_size = match node_count.overflowing_add(1) {
             (_, true) => {
                 return Err(

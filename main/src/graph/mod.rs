@@ -730,7 +730,20 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         self.graph_cache.cleanup_helpers()
     }
 
-    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphMemoryMap`] instance.
+    /// Build a persistent cached file (`.mmap`) of a given [`CacheFile`] type for the [`GraphMemoryMap`] instance.
+    ///
+    /// [`CacheFile`]: ./enum.CacheFile.html#
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
+    #[inline(always)]
+    pub fn build_pers_cache_filename(
+        &self,
+        file_type: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.graph_cache.build_pers_cache_filename(file_type, seq)
+    }
+
+    /// Build a cached file (either `.mmap` or `.tmp`) of a given [`CacheFile`] type for the [`GraphMemoryMap`] instance.
     ///
     /// [`CacheFile`]: ./enum.CacheFile.html#
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#

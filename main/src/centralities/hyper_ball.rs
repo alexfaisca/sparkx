@@ -187,7 +187,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
             Centrality::Lin => (CacheFile::HyperBallLinCentrality, Some(0)),
         };
 
-        self.build_cache_filename(cache_file_type, seq)
+        self.build_pers_cache_filename(cache_file_type, seq)
     }
 
     fn index_by_normalization(normalization: Option<bool>) -> usize {
@@ -640,6 +640,15 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         swap: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.compute_with_proc_mem_impl(swap)
+    }
+
+    #[inline(always)]
+    fn build_pers_cache_filename(
+        &self,
+        file_type: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        self.g.build_pers_cache_filename(file_type, seq)
     }
 
     #[inline(always)]

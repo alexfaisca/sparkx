@@ -8,7 +8,7 @@ mod parser_ggcat;
 
 use super::{CacheFile, GraphFile, E, N, IndexType};
 use utils::{
-    cache_file_name, cache_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, FileType, CACHE_DIR, H
+    cache_file_name, cache_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, pers_cache_file_name, FileType, CACHE_DIR, H
 };
 
 #[cfg(any(test, feature = "bench"))]
@@ -108,18 +108,18 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 
         Ok(
             match target_type {
-                FileType::Edges(_) => cache_file_name_from_id(FileType::Edges(H::H), &id, seq),
-                FileType::Index(H::H) => cache_file_name_from_id(FileType::Index(H::H), &id, seq),
+                FileType::Edges(_) => cache_file_name_from_id(&FileType::Edges(H::H), &id, seq),
+                FileType::Index(H::H) => cache_file_name_from_id(&FileType::Index(H::H), &id, seq),
                 FileType::NodeLabel(H::H) => {
-                    cache_file_name_from_id(FileType::NodeLabel(H::H), &id, seq)
+                    cache_file_name_from_id(&FileType::NodeLabel(H::H), &id, seq)
                 }
                 FileType::EdgeLabel(H::H) => {
-                    cache_file_name_from_id(FileType::EdgeLabel(H::H), &id, seq)
+                    cache_file_name_from_id(&FileType::EdgeLabel(H::H), &id, seq)
                 }
                 FileType::MetaLabel(H::H) => {
-                    cache_file_name_from_id(FileType::MetaLabel(H::H), &id, seq)
+                    cache_file_name_from_id(&FileType::MetaLabel(H::H), &id, seq)
                 }
-                FileType::Helper(H::H) => cache_file_name_from_id(FileType::Helper(H::H), &id, seq),
+                FileType::Helper(H::H) => cache_file_name_from_id(&FileType::Helper(H::H), &id, seq),
                 _ => {
                     return Err(format!(
                         "error unsupported file type for GraphCache: {target_type}"
@@ -766,9 +766,9 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     fn build_fst_from_sorted_file(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Build finite state tranducer for k-mer to node id
         let fst_filename =
-            cache_file_name(&self.metalabel_filename, FileType::MetaLabel(H::H), None)?;
+            cache_file_name(&self.metalabel_filename, &FileType::MetaLabel(H::H), None)?;
         let sorted_file =
-            cache_file_name(&self.metalabel_filename, FileType::MetaLabel(H::H), Some(1))?;
+            cache_file_name(&self.metalabel_filename, &FileType::MetaLabel(H::H), Some(1))?;
 
         Self::external_sort_by_content(&self.metalabel_filename, &sorted_file)?;
 
@@ -894,7 +894,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         batch.sort_by(|a, b| a.0.cmp(&b.0));
         let tempfst_fn = cache_file_name(
             &self.metalabel_filename,
-            FileType::MetaLabel(H::H),
+            &FileType::MetaLabel(H::H),
             Some(batch_num + 1),
         )?;
 
@@ -922,7 +922,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         batch.sort_by(|a, b| a.0.cmp(b.0));
         let tempfst_fn = cache_file_name(
             &self.metalabel_filename,
-            FileType::MetaLabel(H::H),
+            &FileType::MetaLabel(H::H),
             Some(batch_num + 1),
         )?;
 
@@ -943,7 +943,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     /// Merge multiple FST batch files into a final FST.
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
         // open output FST file for writing
-        let out_fn = cache_file_name(&self.metalabel_filename, FileType::MetaLabel(H::H), None)?;
+        let out_fn = cache_file_name(&self.metalabel_filename, &FileType::MetaLabel(H::H), None)?;
         let out = Arc::new(
             OpenOptions::new()
                 .create(true)
@@ -1136,12 +1136,24 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ///
     /// [`CacheFile`]: ./enum.CacheFile.html#
     /// [`GraphCache`]: ./struct.GraphCache.html#
+    pub(super) fn build_pers_cache_filename(
+        &self,
+        target: CacheFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        pers_cache_file_name(&self.neighbors_filename, &Self::convert_cache_file(target), seq)
+    }
+
+    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphCache`] instance.
+    ///
+    /// [`CacheFile`]: ./enum.CacheFile.html#
+    /// [`GraphCache`]: ./struct.GraphCache.html#
     pub(super) fn build_cache_filename(
         &self,
         target: CacheFile,
         seq: Option<usize>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        cache_file_name(&self.neighbors_filename, Self::convert_cache_file(target), seq)
+        cache_file_name(&self.neighbors_filename, &Self::convert_cache_file(target), seq)
     }
 
     /// Build a cached (either `.mmap` or `.tmp`) file of a given [`GaraphFile`] type for the [`GraphCache`] instance.
@@ -1153,7 +1165,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         target: GraphFile,
         seq: Option<usize>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        cache_file_name(id, Self::convert_graph_file(target), seq)
+        cache_file_name(id, &Self::convert_graph_file(target), seq)
     }
 
     /// Build a cached `.tmp` file of type [`FileType`]::Helper(_) for the [`GraphCache`] instance.
@@ -1164,7 +1176,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         &self,
         seq: usize,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        cache_file_name(&self.neighbors_filename, FileType::Helper(H::H), Some(seq))
+        cache_file_name(&self.neighbors_filename, &FileType::Helper(H::H), Some(seq))
     }
 
     /// Remove [`GraphCache`] instance's cached `.tmp` files of type [`FileType`]::Helper(_).
@@ -1172,7 +1184,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`FileType`]: ../utils/enum.FileType.html#
     pub(super) fn cleanup_helpers(&self) -> Result<(), Box<dyn std::error::Error>> {
-        cleanup_cache(&self.cache_id()?, FileType::Helper(H::H))
+        cleanup_cache(&self.cache_id()?, &FileType::Helper(H::H))
     }
 
     /// Remove [`GraphCache`] instance's cached `.tmp` files for a given [`FileType`].
@@ -1183,14 +1195,14 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         &self,
         target: FileType,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        cleanup_cache(&self.cache_id()?, target)
+        cleanup_cache(&self.cache_id()?, &target)
     }
 
     /// Remove [`GraphCache`] instance's cached `.tmp` files for a given [`CacheFile`] in the cache directory.
     ///
     /// [`CacheFile`]: ./enum.CacheFile.html#
     pub(super) fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
-        cleanup_cache(&self.cache_id()?, Self::convert_cache_file(target))
+        cleanup_cache(&self.cache_id()?, &Self::convert_cache_file(target))
     }
 
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {

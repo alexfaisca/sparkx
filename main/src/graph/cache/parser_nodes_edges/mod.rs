@@ -333,7 +333,8 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         let _batch_num = Arc::new(AtomicUsize::new(0));
         let _batch_size = self.batch.map_or(Self::DEFAULT_BATCHING_SIZE, |s| s);
 
-        let counters_fn = cache_file_name(&self.offsets_filename, FileType::Helper(H::H), Some(0))?;
+        let counters_fn =
+            cache_file_name(&self.offsets_filename, &FileType::Helper(H::H), Some(0))?;
         let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&counters_fn, node_count, true)?;
 
         // write edges
@@ -383,6 +384,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                                         offsets.get(orig_id).load(Ordering::Relaxed)
                                             + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
                                     ) = dest_id;
+                                    break;
                                 }
                             } else {
                                 first_node = Some(orig_id);

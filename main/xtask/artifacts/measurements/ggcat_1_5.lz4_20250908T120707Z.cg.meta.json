@@ -1,8 +1,8 @@
 {
-  "timestamp_utc": "20250907T152153Z",
+  "timestamp_utc": "20250908T120707Z",
   "rustc": "rustc 1.86.0-nightly (8239a37f9 2025-02-01)",
-  "git_rev": "666a0dec65a107b186abb6c30533b97693e8ccc8",
-  "tool": "Cachegrind",
+  "git_rev": "06e6fb2683ecd35a2a4e0f1f9d839c9c5751ca7c",
+  "tool": "Massif",
   "dataset": "../../datasets/graphs/ggcat_1_5.lz4",
   "cmdline": [
     "--flagX"

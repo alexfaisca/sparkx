@@ -52,7 +52,7 @@ mod _verify {
 
         let trussness = edge_trussness.shared_slice();
         // suport check test filename
-        let sct_fn = cache_file_name("", FileType::Test(H::H), None)?;
+        let sct_fn = cache_file_name("", &FileType::Test(H::H), None)?;
         let support = SharedSliceMut::<AtomicU8>::abst_mem_mut(&sct_fn, edge_count, true)?;
 
         let edge_reciprocal = graph.edge_reciprocal()?;

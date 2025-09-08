@@ -57,7 +57,7 @@ mod _verify {
         }
 
         let edge_checker = SharedSliceMut::<bool>::abst_mem_mut(
-            cache_file_name("", FileType::Test(H::H), None)?.as_str(),
+            cache_file_name("", &FileType::Test(H::H), None)?.as_str(),
             graph.width(),
             true,
         )?;

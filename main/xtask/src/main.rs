@@ -3,7 +3,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use duct::cmd;
 use serde::Serialize;
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -77,7 +78,7 @@ fn run_cache(
     args: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 0) Ensure artifacts dir
-    let out = PathBuf::from("artifacts").join("measurements");
+    let out = PathBuf::from("./artifacts").join("measurements");
     fs::create_dir_all(&out)?;
 
     // 2) Resolve paths
@@ -119,49 +120,80 @@ fn run_cache(
     // 4) Run under the chosen tool
     match tool {
         Tool::Cachegrind => {
+            let out = format!(
+                "--cachegrind-out-file={}",
+                prefix
+                    .as_path()
+                    .as_os_str()
+                    .to_str()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> { "error".into() })?
+            );
             cmd!(
                 "valgrind",
                 "--tool=cachegrind",
-                "--cachegrind-out-file",
-                &prefix,
-                "cargo",
-                "run",
-                "-r",
-                "--release",
-                &bin,
-                "--",
-                &args.concat(),
+                &out,
+                "./target/bench_cache/tool",
+                "-v",
+                "-m",
+                "-f",
+                &dataset
             )
             .run()?;
             // Optional: postprocess
             let txt = prefix.with_extension("cg.txt");
             let cg = cmd!("cg_annotate", &prefix).read()?;
+            drop(File::create(txt.as_path())?);
             fs::write(txt, cg)?;
+            println!("Results in {:?}", prefix);
         }
         Tool::Massif => {
             let outfile = prefix.with_extension("massif.out");
+            let outfile = outfile
+                .with_extension("massif.out")
+                .canonicalize()
+                .unwrap_or_else(|_| {
+                    // fallback if the file doesn’t exist yet
+                    std::env::current_dir().unwrap().join(&outfile)
+                });
+            if outfile.exists() {
+                // Best-effort; if this fails, you’ll see a clear error here rather than from Valgrind
+                fs::remove_file(&outfile)?;
+            }
+            if let Some(p) = outfile.parent() {
+                fs::create_dir_all(p)?;
+            }
+            let f = std::fs::File::create(&outfile)?; // writable by you
+            let mut perm = f.metadata()?.permissions();
+            perm.set_mode(0o777);
+            f.set_permissions(perm)?;
+            drop(f); // close before launching valgrind
+            let out = format!(
+                "--massif-out-file={}",
+                outfile
+                    .as_path()
+                    .as_os_str()
+                    .to_str()
+                    .ok_or_else(|| -> Box<dyn std::error::Error> { "error".into() })?
+            );
             cmd!(
                 "valgrind",
                 "--tool=massif",
-                "--massif-out-file",
-                &outfile,
-                "cargo",
-                "run",
-                "-r",
-                "--release",
-                &bin,
-                "--",
-                &args.concat()
+                &out,
+                "./target/bench_cache/tool",
+                "-v",
+                "-m",
+                "-f",
+                &dataset
             )
             .run()?;
             // Optional: keep both ms_print and raw
             let txt = prefix.with_extension("massif.txt");
             let ms = cmd!("ms_print", &outfile).read()?;
+            drop(File::create(txt.as_path())?);
             fs::write(txt, ms)?;
+            println!("Results in {:?}", outfile);
         }
     }
-
-    println!("Results in {}", out.display());
     Ok(())
 }
 

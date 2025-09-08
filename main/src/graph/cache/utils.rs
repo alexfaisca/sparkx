@@ -107,7 +107,8 @@ pub fn graph_id_from_cache_file_name(
 #[allow(dead_code)]
 fn graph_id_and_dir_from_cache_file_name(
     cache_filename: &str,
-) -> Result<(&str, PathBuf), Box<dyn std::error::Error>> {
+    target_type: &FileType,
+) -> Result<(String, PathBuf), Box<dyn std::error::Error>> {
     let path = Path::new(cache_filename);
 
     let file_name = path
@@ -140,52 +141,51 @@ fn graph_id_and_dir_from_cache_file_name(
         .ok_or_else(|| -> Box<dyn std::error::Error> {
             "error capturing file name (regex captures failed: fail point 2)".into()
         })?
-        .as_str();
+        .as_str()
+        .to_string();
+
+    #[cfg(any(test, feature = "bench"))]
+    // check if parent_dir needs tweaking for specific target type
+    if *target_type == FileType::Test(H::H) {
+        return Ok((id, PathBuf::from(CACHE_DIR)));
+    } else if *target_type == FileType::ExactClosenessCentrality(H::H)
+        || *target_type == FileType::ExactHarmonicCentrality(H::H)
+        || *target_type == FileType::ExactLinCentrality(H::H)
+    {
+        return Ok((id, PathBuf::from(parent_dir).join(EXACT_VALUE_CACHE_DIR)));
+    }
 
     Ok((id, PathBuf::from(parent_dir)))
 }
 
 #[allow(dead_code)]
-pub fn cache_file_name(
+pub fn pers_cache_file_name(
     original_filename: &str,
-    target_type: FileType,
+    target_type: &FileType,
     sequence_number: Option<usize>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    #[cfg(any(test, feature = "bench"))]
-    if target_type == FileType::Test(H::H) {
-        return Ok(CACHE_DIR.to_string()
-            + file_name_from_id_and_sequence_for_type(
-                target_type,
-                original_filename,
-                sequence_number,
-            )
-            .as_str());
-    }
-    // If in test or bench mode store/lookup exact values in dir {cache}/exact_values/
-    #[cfg(any(test, feature = "bench"))]
-    if target_type == FileType::ExactClosenessCentrality(H::H)
-        || target_type == FileType::ExactHarmonicCentrality(H::H)
-        || target_type == FileType::ExactLinCentrality(H::H)
-    {
-        let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename)?;
-        let new_filename =
-            file_name_from_id_and_sequence_for_type(target_type, id, sequence_number);
-        return Ok(parent_dir
-            .join(EXACT_VALUE_CACHE_DIR)
-            .join(new_filename)
-            .to_string_lossy()
-            .into_owned());
-    }
-    let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename)?;
-    let new_filename = file_name_from_id_and_sequence_for_type(target_type, id, sequence_number);
+    let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename, target_type)?;
+    let new_filename =
+        pers_file_name_from_id_and_sequence_for_type(target_type, &id, sequence_number);
+    Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
+}
+
+#[allow(dead_code)]
+pub fn cache_file_name(
+    original_filename: &str,
+    target_type: &FileType,
+    sequence_number: Option<usize>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename, target_type)?;
+    let new_filename = file_name_from_id_and_sequence_for_type(target_type, &id, sequence_number);
     Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
 }
 
 pub fn id_for_subgraph_export(id: String, sequence_number: Option<usize>) -> String {
     // this isn't a filename --- it's an id to be used in filenames
     match sequence_number {
-        Some(i) => format!("{}<{}>{}", "maskedexport", i, id),
-        None => format!("{}{}", "maskedexport", id),
+        Some(i) => format!("{}<{}>{}", "inducedsubgraph", i, id),
+        None => format!("{}{}", "inducedsubgraph", id),
     }
 }
 
@@ -195,7 +195,7 @@ pub fn id_for_subgraph_export(id: String, sequence_number: Option<usize>) -> Str
 #[allow(dead_code)]
 pub(crate) fn cleanup_cache(
     id: &str,
-    target_type: FileType,
+    target_type: &FileType,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let match_entries_to =
         CACHE_DIR.to_string() + suffix_for_file_type(target_type) + "*" + id + ".tmp";
@@ -270,7 +270,7 @@ pub enum FileType {
 }
 
 pub fn cache_file_name_from_id(
-    target_type: FileType,
+    target_type: &FileType,
     id: &str,
     sequence_number: Option<usize>,
 ) -> String {
@@ -278,21 +278,23 @@ pub fn cache_file_name_from_id(
         + file_name_from_id_and_sequence_for_type(target_type, id, sequence_number).as_str()
 }
 
-fn file_name_from_id_and_sequence_for_type(
-    target: FileType,
+fn pers_file_name_from_id_and_sequence_for_type(
+    target: &FileType,
     id: &str,
     seq: Option<usize>,
 ) -> String {
-    if target == FileType::HyperBallClosenessCentrality(H::H)
-        || target == FileType::HyperBallHarmonicCentrality(H::H)
-        || target == FileType::HyperBallLinCentrality(H::H)
-    {
-        return match seq {
-            None => format!("{}_{}.{}", suffix_for_file_type(target), id, "mmap"),
-            // sequenced files are temporary
-            Some(i) => format!("{}_{}_{}.{}", suffix_for_file_type(target), i, id, "mmap"),
-        };
+    match seq {
+        None => format!("{}_{}.{}", suffix_for_file_type(target), id, "mmap"),
+        // sequenced files are temporary
+        Some(i) => format!("{}_{}_{}.{}", suffix_for_file_type(target), i, id, "mmap"),
     }
+}
+
+fn file_name_from_id_and_sequence_for_type(
+    target: &FileType,
+    id: &str,
+    seq: Option<usize>,
+) -> String {
     match seq {
         None => format!("{}_{}.{}", suffix_for_file_type(target), id, "mmap"),
         // sequenced files are temporary
@@ -300,7 +302,7 @@ fn file_name_from_id_and_sequence_for_type(
     }
 }
 
-pub fn suffix_for_file_type(target_type: FileType) -> &'static str {
+pub fn suffix_for_file_type(target_type: &FileType) -> &'static str {
     static SUFFIX_FOR_GENERAL: &str = "miscelanious";
     static SUFFIX_FOR_EDGES: &str = "edges";
     static SUFFIX_FOR_INDEX: &str = "index";

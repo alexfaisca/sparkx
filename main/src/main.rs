@@ -253,6 +253,17 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     println!();
     _burkhardt_et_al.drop_cache()?;
 
+    let time = Instant::now();
+    let mut _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
+    println!("k-core batagelj zaversnik {:?}", time.elapsed());
+    _bz.drop_cache()?;
+
+    let time = Instant::now();
+    let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
+    println!("k-core liu et al {:?}", time.elapsed());
+    println!();
+    _liu_et_al.drop_cache()?;
+
     // let time = Instant::now();
     // graph_cache.rebuild_fst_from_ggcat_file(path, None, None)?;
     // println!("cache fst rebuilt {:?}", time.elapsed());
@@ -378,19 +389,9 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     // println!("clustering coefficient finished in {:?}", time.elapsed());
     // println!();
 
-    // let time = Instant::now();
-    // let mut _liu_et_al = AlgoLiuEtAl::new(&graph_mmaped)?;
-    // println!("k-core liu et al {:?}", time.elapsed());
-    // println!();
-    // _liu_et_al.drop_cache()?;
-
     println!("droping");
     graph_mmaped.drop_cache()?;
     println!("dropped");
-
-    // let time = Instant::now();
-    // let _bz = AlgoBatageljZaversnik::new(&graph_mmaped)?;
-    // println!("k-core batagelj zaversnik {:?}", time.elapsed());
 
     // let mut i = 0;
     // while i < graph_mmaped.size().map_or(0, |s| s) {

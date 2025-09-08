@@ -39,7 +39,7 @@ mod _verify {
 
         let e_coreness = edge_coreness.shared_slice();
         // coreness check test filename
-        let cct_fn = cache_file_name("", FileType::Test(H::H), None)?;
+        let cct_fn = cache_file_name("", &FileType::Test(H::H), None)?;
         let node_coreness = SharedSliceMut::<u8>::abst_mem_mut(
             &cct_fn,
             node_count,

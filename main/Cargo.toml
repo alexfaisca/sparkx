@@ -6,6 +6,14 @@ edition = "2024"
 [workspace]
 members = ["xtask", "."]
 
+[profile.bench_cache]
+inherits = "release" # or "dev"
+debug = 2            # generate full debuginfo
+strip = false        # ensure it isn't stripped after build
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
 [features]
 default = ["mtx", "ggcat", "nodes_edges"]
 # no extra dependencies, just a switch you to pass on to `cargo`
