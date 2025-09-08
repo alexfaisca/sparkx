@@ -1,0 +1,15 @@
+{
+  "timestamp_utc": "20250907T152154Z",
+  "rustc": "rustc 1.86.0-nightly (8239a37f9 2025-02-01)",
+  "git_rev": "666a0dec65a107b186abb6c30533b97693e8ccc8",
+  "tool": "Cachegrind",
+  "dataset": "../../datasets/graphs/ggcat_1_5.lz4",
+  "cmdline": [
+    "--flagX"
+  ],
+  "sysinfo": {
+    "cpu": "Architecture:                         x86_64",
+    "governor": "powersave",
+    "numa_nodes": "0"
+  }
+}

@@ -5,6 +5,7 @@ use crate::shared_slice::*;
 use crossbeam::thread;
 use num_cpus::get_physical;
 use std::mem::ManuallyDrop;
+use std::path::Path;
 
 type ProceduralMemoryBZ = (
     AbstractedProceduralMemoryMut<u8>,
@@ -45,6 +46,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
         bz.compute_with_proc_mem(proc_mem)?;
 
         Ok(bz)
+    }
+
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let c_fn = g.build_cache_filename(CacheFile::KCoreBZ, None)?;
+        if Path::new(&c_fn).exists() {
+            if let Ok(k_cores) = AbstractedProceduralMemoryMut::from_file_name(&c_fn) {
+                return Ok(Self { g, k_cores });
+            }
+        }
+        Self::new(g)
     }
 
     /// Returns the coreness of a given edge of a [`GraphMemoryMap`] instance.

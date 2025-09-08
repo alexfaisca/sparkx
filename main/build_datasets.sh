@@ -214,5 +214,22 @@ for f in "${FILES[@]}"; do
 	((++idx))
 done
 
+echo "Building synthetic datasets using \`gen_dgd_mtx.py\`"
+
+# ~8.4M DNA edges (exact 8,388,604)
+python gen_dbg_mtx.py --alphabet dna --k 10 --out ./${WORKDIR}/graphs/synth_dna_k10_edges8_4M.mtx
+
+# ~33.5M DNA edges (exact 33,554,428)
+python gen_dbg_mtx.py --alphabet dna --k 11 --out ./${WORKDIR}/graphs/synth_dna_k11_edges33_5M.mtx
+
+# ~128M protein edges (exact 127,999,980)
+python gen_dbg_mtx.py --alphabet protein20 --k 5 --out ./${WORKDIR}/graphs/synth_prot20_k5_edges128M.mtx
+
+# ~296M protein edges (exact 296,071,755)
+python gen_dbg_mtx.py --alphabet protein23 --k 5 --out ./${WORKDIR}/graphs/synth_prot23_k5_edges296M.mtx
+
+# ~6.8B protein edges (exact 6,809,650,871) **WARNING!!!: Gigabyte A1 took 1 hour to parse the resulting file into a graph.**
+python gen_dbg_mtx.py --alphabet protein23 --k 6 --out ./${WORKDIR}/graphs/synth_prot23_k6_edges6_8B.mtx
+
 echo
 echo "All graphs built under: $(pwd)/${WORKDIR}/graphs"

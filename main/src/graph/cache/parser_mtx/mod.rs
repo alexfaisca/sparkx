@@ -7,7 +7,7 @@ use crate::{
 
 use num_cpus::get_physical;
 use portable_atomic::{AtomicUsize, Ordering};
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 use super::{GraphCache, utils::apply_permutation_in_place};
 
@@ -65,15 +65,12 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&h_fn, node_count, true)?;
 
         // accumulate node degrees on index
-        let edge_count = Arc::new(AtomicUsize::new(0));
         {
             Self::parallel_no_labels_parse_mtx_with(
                 path.as_ref(),
                 {
-                    let edge_count = edge_count.clone();
                     let offsets = offsets.shared_slice().clone();
                     move |u, _| {
-                        edge_count.add(1, Ordering::Relaxed);
                         offsets.get(u).add(1, Ordering::Relaxed);
                     }
                 },
@@ -102,11 +99,10 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             return Err(format!("Error graph has a max_degree of {max_degree} which, unforturnately, is bigger than {}, our current maximum supported size. If you feel a mistake has been made or really need this feature, please contact the developer team. We sincerely apologize.", u8::MAX).into());
         }
 
-        let mut neighbors =
-            SharedSliceMut::<usize>::abst_mem_mut(&n_fn, edge_count.load(Ordering::Relaxed), true)?;
+        let mut neighbors = SharedSliceMut::<usize>::abst_mem_mut(&n_fn, sum, true)?;
         let el_fn = Self::init_cache_file_from_id_or_random(&id, FileType::EdgeLabel(H::H), None)?;
-        let mut edgelabels =
-            SharedSliceMut::<E>::abst_mem_mut(&el_fn, edge_count.load(Ordering::Relaxed), true)?;
+        let mut edgelabels = SharedSliceMut::<E>::abst_mem_mut(&el_fn, sum, true)?;
+
         if E::is_labeled() {
             Self::parallel_edge_labels_parse_mtx_with(
                 path.as_ref(),
@@ -118,7 +114,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                     move |u, v, w| {
                         *neighbors.get_mut(
                             offsets.get(u).load(Ordering::Relaxed)
-                                + counters.get(u).fetch_add(1, Ordering::Relaxed),
+                                + counters.get(u).load(Ordering::Relaxed),
                         ) = v;
                         *edgelabels.get_mut(
                             offsets.get(u).load(Ordering::Relaxed)

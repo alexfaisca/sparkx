@@ -4,6 +4,7 @@ use crate::shared_slice::*;
 
 use crossbeam::thread;
 use num_cpus::get_physical;
+use std::fs::OpenOptions;
 use std::mem::ManuallyDrop;
 
 type ProceduralMemoryHierholzers = (

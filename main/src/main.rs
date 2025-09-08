@@ -232,7 +232,7 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None, Some(|_| false), threads)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -335,7 +335,7 @@ fn parse_bytes_mmaped<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<P
     // _euler_trail.drop_cache()?;
 
     // let time = Instant::now();
-    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped, None, None)?;
+    // let mut hyperball = HyperBallInner::<_, _, Precision8, 6>::new(&graph_mmaped)?;
     // println!("hyperball {:?}", time.elapsed());
     // hyperball.drop_cache()?;
 

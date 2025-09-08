@@ -8,6 +8,7 @@ use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 type ProceduralMemoryPKT = (
@@ -29,6 +30,7 @@ pub struct AlgoPKT<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the trussness of each edge.
     k_trusses: AbstractedProceduralMemoryMut<u8>,
+    threads: usize,
 }
 #[allow(dead_code)]
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
@@ -40,7 +42,42 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut pkt = Self::new_no_compute(g)?;
+        let mut pkt = Self::new_no_compute(g, g.thread_num().max(1))?;
+        let proc_mem = pkt.init_cache_mem()?;
+
+        pkt.compute_with_proc_mem(proc_mem)?;
+
+        Ok(pkt)
+    }
+
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let t_fn = g.build_cache_filename(CacheFile::KTrussPKT, None)?;
+        if Path::new(&t_fn).exists() {
+            if let Ok(k_trusses) = AbstractedProceduralMemoryMut::from_file_name(&t_fn) {
+                return Ok(Self {
+                    g,
+                    k_trusses,
+                    threads: g.thread_num().max(1),
+                });
+            }
+        }
+        Self::new(g)
+    }
+
+    /// Performs the *PKT Alrgorithm*'s 'k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn new_with_conf(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut pkt = Self::new_no_compute(g, threads)?;
         let proc_mem = pkt.init_cache_mem()?;
 
         pkt.compute_with_proc_mem(proc_mem)?;
@@ -82,16 +119,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     #[inline(always)]
     pub fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(feature = "bench")]
@@ -131,10 +170,15 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
 
     fn new_no_compute_impl(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KTrussPKT, None)?;
         let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
-        Ok(Self { g, k_trusses })
+        Ok(Self {
+            g,
+            k_trusses,
+            threads,
+        })
     }
 
     fn init_cache_mem_impl(&self) -> Result<ProceduralMemoryPKT, Box<dyn std::error::Error>> {
@@ -168,7 +212,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
         let node_count = self.g.size();
         let edge_count = self.g.width();
 
-        let threads = self.g.thread_num();
+        let threads = self.threads;
         let edge_load = edge_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.offsets_ptr(), self.g.offsets_size());

@@ -420,19 +420,21 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     pub fn from_file<P: AsRef<Path>>(
         p: P,
         id: Option<String>,
+        thread_count: Option<u8>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let graph_cache = GraphCache::<N, E, Ix>::from_file(p, id, None, None)?;
+        Self::init_from_cache(graph_cache, thread_count)
+    }
+
+    #[inline(always)]
+    pub fn from_file_with_fst<P: AsRef<Path>>(
+        p: P,
+        id: Option<String>,
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let graph_cache = GraphCache::<N, E, Ix>::from_file(p, id, batch, in_fst)?;
-        // println!(
-        //     "{:?}",
-        //     cache_file_name(
-        //         &graph_cache.graph_filename,
-        //         cache::utils::FileType::ExactClosenessCentrality(H::H),
-        //         None
-        //     )?
-        // );
         Self::init_from_cache(graph_cache, thread_count)
     }
 
@@ -682,7 +684,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     }
 
     #[inline(always)]
-    pub fn check_neighbour(&self, u: usize, v: usize) -> Option<usize> {
+    pub fn check_neighbor(&self, u: usize, v: usize) -> Option<usize> {
         self.is_neighbour_impl(u, v)
     }
 

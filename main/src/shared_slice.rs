@@ -142,6 +142,24 @@ impl<T> AbstractedProceduralMemory<T> {
 
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemoryMut<T> {
+    pub(crate) fn from_file_name(file_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .truncate(false)
+            .write(false)
+            .open(file_name)?;
+        let (slice, mmap) = SharedSliceMut::<T>::from_file(&file)?;
+        let mmap = Arc::new(mmap);
+
+        Ok(AbstractedProceduralMemoryMut {
+            slice,
+            mmap: Arc::try_unwrap(mmap).map_err(|_| -> Box<dyn std::error::Error> {
+                "error couldn't dereference Mmap shared pointer".into()
+            })?,
+            _vec: Vec::new(),
+            mmapped: true,
+        })
+    }
     pub(crate) fn from_file(file: &File, len: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let mmap_len = (len * size_of::<T>()).max(1) as u64;
         file.set_len(mmap_len)?;
@@ -260,16 +278,16 @@ impl<T> SharedSlice<T> {
     }
 
     pub(crate) fn from_file(file: &File) -> Result<(Self, Mmap), Box<dyn std::error::Error>> {
-        let file_len = file.metadata()?.len();
-        let mmap = unsafe { MmapOptions::new().len(file_len as usize).map(file)? };
-        let mmap_len = mmap.len();
-
+        let file_len = file.metadata()?.len() as usize;
         // Ensure the memory is properly aligned
-        if size_of::<T>() != 0 && mmap_len % size_of::<T>() != 0 {
+        if size_of::<T>() != 0 && file_len % size_of::<T>() != 0 {
             return Err("file length is not a multiple of u64".into());
-        } else if size_of::<T>() == 0 && mmap_len != 1 {
+        } else if size_of::<T>() == 0 && file_len != 1 {
+            // Memory mapped files may not be length zero ;)
             return Err("file length for o length types should be 1".into());
         }
+
+        let mmap = unsafe { MmapOptions::new().len(file_len).map(file)? };
 
         Ok((
             Self::new(
@@ -277,7 +295,7 @@ impl<T> SharedSlice<T> {
                 if size_of::<T>() == 0 {
                     1
                 } else {
-                    mmap_len / size_of::<T>()
+                    file_len / size_of::<T>()
                 },
             ),
             mmap,
@@ -403,7 +421,7 @@ impl<T> SharedSliceMut<T> {
         if size_of::<T>() != 0 && mmap_len % size_of::<T>() != 0 {
             return Err("file length is not a multiple of u64".into());
         } else if size_of::<T>() == 0 && mmap_len != 1 {
-            return Err("file length for o length types should be 1".into());
+            return Err("file length for 0 length types should be 1".into());
         }
 
         Ok((
@@ -543,6 +561,7 @@ impl<T> SharedSliceMut<T> {
         Some(idx + slice.len())
     }
 
+    /// Truncates file!
     pub fn abst_mem_mut(
         mfn: &str,
         len: usize,

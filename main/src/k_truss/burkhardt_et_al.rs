@@ -6,7 +6,9 @@ use crossbeam::thread;
 use num_cpus::get_physical;
 use portable_atomic::{AtomicU8, Ordering};
 use smallvec::SmallVec;
+use std::fs::OpenOptions;
 use std::mem::ManuallyDrop;
+use std::path::Path;
 use std::{
     collections::HashMap,
     sync::{Arc, Barrier},
@@ -49,6 +51,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N
         burkhardt_et_al.compute_with_proc_mem(proc_mem)?;
 
         Ok(burkhardt_et_al)
+    }
+
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let t_fn = g.build_cache_filename(CacheFile::KTrussBEA, None)?;
+        if Path::new(&t_fn).exists() {
+            if let Ok(k_trusses) = AbstractedProceduralMemoryMut::from_file_name(&t_fn) {
+                return Ok(Self { g, k_trusses });
+            }
+        }
+        Self::new(g)
     }
 
     /// Returns the trussness of a given edge of a [`GraphMemoryMap`] instance.

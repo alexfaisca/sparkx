@@ -3,6 +3,9 @@ name = "tool"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["xtask", "."]
+
 [features]
 default = ["mtx", "ggcat", "nodes_edges"]
 # no extra dependencies, just a switch you to pass on to `cargo`

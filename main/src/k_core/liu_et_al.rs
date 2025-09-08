@@ -3,9 +3,9 @@ use crate::graph::*;
 use crate::shared_slice::*;
 
 use crossbeam::thread;
-use num_cpus::get_physical;
 use portable_atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::mem::ManuallyDrop;
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 type ProceduralMemoryLiuEtAL = (
@@ -27,6 +27,7 @@ pub struct AlgoLiuEtAl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the coreness of each edge.
     k_cores: AbstractedProceduralMemoryMut<u8>,
+    threads: usize,
 }
 
 #[allow(dead_code)]
@@ -43,7 +44,46 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut liu_et_al = Self::new_no_compute(g)?;
+        let mut liu_et_al = Self::new_no_compute(g, g.thread_num().max(1))?;
+        let proc_mem = liu_et_al.init_cache_mem()?;
+
+        liu_et_al.compute_with_proc_mem(proc_mem)?;
+
+        Ok(liu_et_al)
+    }
+
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let c_fn = g.build_cache_filename(CacheFile::KCoreLEA, None)?;
+        if Path::new(&c_fn).exists() {
+            if let Ok(k_cores) = AbstractedProceduralMemoryMut::from_file_name(&c_fn) {
+                return Ok(Self {
+                    g,
+                    k_cores,
+                    threads: g.thread_num().max(1),
+                });
+            }
+        }
+        Self::new(g)
+    }
+
+    /// Performs k-core decomposition as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
+    ///
+    /// * Note: we did not implement the *Node Sampling*[^1] scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs.
+    ///
+    /// [^1]: details on how to implement this potimization and how it works can be found in the *4.1.2 Details about the Sampling Scheme.* section of the aforementioned paper in pp. 6-7.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn new_with_conf(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut liu_et_al = Self::new_no_compute(g, threads)?;
         let proc_mem = liu_et_al.init_cache_mem()?;
 
         liu_et_al.compute_with_proc_mem(proc_mem)?;
@@ -85,16 +125,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     #[inline(always)]
     pub fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(feature = "bench")]
@@ -136,10 +178,15 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
 
     fn new_no_compute_impl(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::KCoreLEA, None)?;
         let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
-        Ok(Self { g, k_cores })
+        Ok(Self {
+            g,
+            k_cores,
+            threads,
+        })
     }
 
     fn init_cache_mem_impl(&self) -> Result<ProceduralMemoryLiuEtAL, Box<dyn std::error::Error>> {
@@ -174,7 +221,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
             return Ok(());
         }
 
-        let threads = self.g.thread_num().max(get_physical());
+        let threads = self.threads;
         let thread_load = node_count.div_ceil(threads);
 
         let index_ptr = SharedSlice::<usize>::new(self.g.offsets_ptr(), self.g.offsets_size());

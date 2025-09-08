@@ -116,8 +116,11 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
 
                 let begin = std::cmp::min(tid * thread_load, node_count);
                 let end = std::cmp::min(begin + thread_load, node_count);
+
                 threads_res.push(scope.spawn(move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+
                     let mut edges_start = *index_ptr.get(begin);
+
                     for u in begin..end {
                         let mut eo_at_end = true;
                         let edges_stop = *index_ptr.get(u + 1);
@@ -177,9 +180,8 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                             } else if let OneOrMany::Many(ref mut vs) = prev {
                                 if vs[0].0 == v {
                                     // find reciprocal, dest is the same, offset is different from
-                                    // any of the recorded offsets
-                                    // greedy lookup (never actually loops)
-                                    let reciprocal = 'outer: loop {
+                                    // any of the recorded offsets: greedy lookup
+                                    let reciprocal = 'search_adjacents: {
                                         // search forwards
                                         let mut res = vs[0].1;
                                         while res < edge_count - 1 && *neighbours_ptr.get(res + 1) == u {
@@ -187,7 +189,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                                             if vs.iter().any(|&(_, b)| b == res) {
                                                 continue;
                                             } else {
-                                                break 'outer res;
+                                                break 'search_adjacents res;
                                             }
                                         }
                                         // reset and search backwards
@@ -197,7 +199,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
                                             if vs.iter().any(|&(_, b)| b == res) {
                                                 continue;
                                             } else {
-                                                break 'outer res;
+                                                break 'search_adjacents res;
                                             }
                                         }
 

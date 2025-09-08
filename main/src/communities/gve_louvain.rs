@@ -3,10 +3,10 @@ use crate::graph::*;
 use crate::shared_slice::*;
 
 use crossbeam::thread;
-use num_cpus::get_physical;
 use portable_atomic::{AtomicBool, AtomicF64, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Barrier;
 type ProceduralMemoryGVELouvain = (
@@ -46,6 +46,7 @@ pub struct AlgoGVELouvain<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     community_count: usize,
     /// Partition modularity.
     modularity: f64,
+    threads: usize,
 }
 #[allow(dead_code)]
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E, Ix> {
@@ -75,12 +76,62 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut gve_louvain = Self::new_no_compute(g)?;
+        let mut gve_louvain = Self::new_no_compute(g, g.thread_num().max(1))?;
         let proc_mem = gve_louvain.init_cache_mem()?;
 
         gve_louvain.compute_with_proc_mem(proc_mem)?;
 
         Ok(gve_louvain)
+    }
+
+    /// Performs the Louvain() function as described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876) p. 5.
+    ///
+    /// The resulting graph partition and its corresponding modularity are stored in memory (in
+    /// the partition's case in a memmapped file).
+    ///
+    /// * Note: isolated nodes remain in their own isolated community, in the final partition.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn new_with_conf(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut gve_louvain = Self::new_no_compute(g, threads)?;
+        let proc_mem = gve_louvain.init_cache_mem()?;
+
+        gve_louvain.compute_with_proc_mem(proc_mem)?;
+
+        Ok(gve_louvain)
+    }
+
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let l_fn = g.build_cache_filename(CacheFile::GVELouvain, None)?;
+        if Path::new(&l_fn).exists() {
+            if let Ok(comms) = AbstractedProceduralMemoryMut::from_file_name(&l_fn) {
+                let mut max = 0;
+                comms.as_slice().iter().for_each(|&c| {
+                    if c > max {
+                        max = c;
+                    }
+                });
+                if let Ok(modularity) = g.modularity(comms.as_slice(), max) {
+                    return Ok(Self {
+                        g,
+                        community: comms,
+                        community_count: max,
+                        modularity,
+                        threads: g.thread_num().max(1),
+                    });
+                }
+            }
+        }
+        Self::new(g)
     }
 
     /// Returns the number of communities in the Louvain partition.
@@ -119,16 +170,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
     #[inline(always)]
     pub fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(feature = "bench")]
@@ -179,6 +232,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
 
     fn new_no_compute_impl(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::GVELouvain, None)?;
         let coms = SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size(), true)?;
@@ -187,6 +241,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
             community: coms,
             community_count: 0,
             modularity: 0.,
+            threads,
         })
     }
 
@@ -224,7 +279,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
         // initialize
         thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
             // initializations always uses at least two threads per core
-            let threads = self.g.thread_num().max(get_physical() * 2);
+            let threads = self.threads;
             let node_load = node_count.div_ceil(threads);
 
             let mut threads_res = vec![];
@@ -737,7 +792,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
         let node_count = self.g.size();
         let edge_count = self.g.width();
 
-        let threads = self.g.thread_num();
+        let threads = self.threads;
 
         let (k, sigma, gdi, gde, gddi, gdde, processed, coms, helper) = proc_mem;
 

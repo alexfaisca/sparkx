@@ -148,6 +148,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphC
             let mut handles = Vec::new();
 
             for tid in 0..threads {
+                let mut local_seen = 0;
                 let begin_pos = std::cmp::min(header_offset + tid as u64 * thread_load, file_len);
                 let end_pos =
                     std::cmp::min(header_offset + (tid + 1) as u64 * thread_load, file_len)
@@ -232,8 +233,10 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphC
                                 emit(j, i);
                             }
 
-                            seen.add(1, Ordering::Relaxed);
+                            local_seen += 1;
                         }
+
+                        seen.add(local_seen, Ordering::Relaxed);
                         Ok(())
                     },
                 );

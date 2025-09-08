@@ -10,6 +10,7 @@ use hyperloglog_rs::prelude::*;
 use hyperloglog_rs::prelude::{HyperLogLog, HyperLogLogTrait};
 use portable_atomic::{AtomicUsize, Ordering};
 use std::mem::ManuallyDrop;
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 type ProceduralMemoryHB<P, const B: usize> = (
@@ -70,8 +71,6 @@ pub struct HyperBallInner<
     distances: AbstractedProceduralMemoryMut<f64>,
     /// Memmapped slice containing each node's inverse distance accumulator.
     inverse_distances: AbstractedProceduralMemoryMut<f64>,
-    /// Precision of the *HyperLogLog++* counters.
-    precision: u8,
     /// Maximum number of iteration --- default is 128, max is 1024 (details on how these values are ludicrously big are found in the abovementioned paper).
     max_t: usize,
     /// Closeness centralities' cached values --- under various degrees of normalization.
@@ -80,6 +79,7 @@ pub struct HyperBallInner<
     harmonic: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
     /// Lin's centrality's cached values.
     lin: Option<AbstractedProceduralMemoryMut<f64>>,
+    threads: usize,
     #[cfg(feature = "bench")]
     iters: usize,
 }
@@ -88,9 +88,6 @@ pub struct HyperBallInner<
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B: usize>
     HyperBallInner<'a, N, E, Ix, P, B>
 {
-    const DEAFULT_PRECISION: u8 = 8;
-    const MIN_PRECISION: u8 = 4;
-    const MAX_PRECISION: u8 = 18;
     const DEAFULT_MAX_DEPTH: usize = 100;
     const MAX_MAX_DEPTH: usize = 1024;
 
@@ -99,16 +96,10 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     /// # Arguments
     ///
     /// * `g` --- the [`GraphMemoryMap`] instance for which the *HyperBall Algorithm* is to be performed in.
-    /// * `precision` --- the precision to be used for each nodes *HyperLogLog++* counter (defaults to 8, equivalent to 2⁸-register bits per node).
-    /// * `max_depth` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
-    pub fn new(
-        g: &'a GraphMemoryMap<N, E, Ix>,
-        precision: Option<u8>,
-        max_depth: Option<usize>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut hyper_ball = Self::new_no_compute(g, precision, max_depth)?;
+    pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut hyper_ball = Self::new_no_compute(g, None, g.thread_num().max(1))?;
 
         let proc_mem = hyper_ball.init_cache_mem()?;
         hyper_ball.compute_with_proc_mem(proc_mem)?;
@@ -116,6 +107,69 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         hyper_ball.g.cleanup_cache(CacheFile::HyperBall)?;
 
         Ok(hyper_ball)
+    }
+
+    /// Performs the *HyperBall Algorithm* as described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the *HyperBall Algorithm* is to be performed in.
+    /// * `max_depth` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    pub fn new_with_conf(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+        max_depth: Option<usize>,
+        threads: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut hyper_ball = Self::new_no_compute(g, max_depth, threads.max(1))?;
+
+        let proc_mem = hyper_ball.init_cache_mem()?;
+        hyper_ball.compute_with_proc_mem(proc_mem)?;
+
+        hyper_ball.g.cleanup_cache(CacheFile::HyperBall)?;
+
+        Ok(hyper_ball)
+    }
+
+    pub fn get_or_compute(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let h_fn = g.build_cache_filename(CacheFile::HyperBall, None)?;
+        if Path::new(&h_fn).exists() {
+            if let Ok(counters) = AbstractedProceduralMemoryMut::from_file_name(&h_fn) {
+                let d_fn = g.build_cache_filename(CacheFile::HyperBallDistances, None)?;
+                let id_fn = g.build_cache_filename(CacheFile::HyperBallInvDistances, None)?;
+                if let Ok(distances) = AbstractedProceduralMemoryMut::from_file_name(&d_fn) {
+                    if let Ok(inverse_distances) =
+                        AbstractedProceduralMemoryMut::from_file_name(&id_fn)
+                    {
+                        let mut hb = Self {
+                            g,
+                            counters,
+                            distances,
+                            inverse_distances,
+                            max_t: Self::DEAFULT_MAX_DEPTH,
+                            threads: g.thread_num().max(1),
+                            closeness: [None, None, None],
+                            harmonic: [None, None, None],
+                            lin: None,
+                            #[cfg(any(test, feature = "bench"))]
+                            iters: 0,
+                        };
+                        let _ = hb.search_cache_closeness_centrality(None);
+                        let _ = hb.search_cache_harmonic_centrality(None);
+                        let _ = hb.search_cache_closeness_centrality(Some(false));
+                        let _ = hb.search_cache_harmonic_centrality(Some(false));
+                        let _ = hb.search_cache_closeness_centrality(Some(true));
+                        let _ = hb.search_cache_harmonic_centrality(Some(true));
+                        let _ = hb.search_cache_lins_centrality();
+                        return Ok(hb);
+                    }
+                }
+            }
+        }
+        Self::new(g)
     }
 
     /// Manager logic for centralities' caching filenames' creation.
@@ -144,6 +198,36 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         }
     }
 
+    fn centrality_normalization(centrality: Centrality, normalization: Option<bool>) -> Centrality {
+        let index = Self::index_by_normalization(normalization);
+        match centrality {
+            Centrality::Lin => Centrality::Lin,
+            Centrality::Harmonic => match index {
+                1 => Centrality::NHarmonic,
+                2 => Centrality::NCHarmonic,
+                _ => Centrality::Harmonic,
+            },
+            Centrality::Closeness => match index {
+                1 => Centrality::NCloseness,
+                2 => Centrality::NCCloseness,
+                _ => Centrality::Closeness,
+            },
+            a => a,
+        }
+    }
+
+    fn get_from_cent_file(
+        &self,
+        target: Centrality,
+    ) -> Result<AbstractedProceduralMemoryMut<f64>, Box<dyn std::error::Error>> {
+        let t_fn = self.centrality_cache_file_name(target)?;
+        if Path::new(&t_fn).exists() {
+            AbstractedProceduralMemoryMut::from_file_name(&t_fn)
+        } else {
+            Err(format!("error no {t_fn} centrality file").into())
+        }
+    }
+
     /// Gets (from a previously cached result) the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
     ///
     /// # Arguments
@@ -154,16 +238,32 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_closeness_centrality(
-        &self,
+        &'a self,
+        normalization: Option<bool>,
+    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+        let idx = Self::index_by_normalization(normalization);
+        if let Some(mem) = self.closeness[idx].as_ref() {
+            return Ok(mem.as_slice());
+        }
+        Err("error no such cached centrality".into())
+    }
+
+    /// Searches cache for the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
+    pub fn search_cache_closeness_centrality(
+        &mut self,
         normalization: Option<bool>,
     ) -> Result<&[f64], Box<dyn std::error::Error>> {
-        let idx = Self::index_by_normalization(normalization);
-        let mem = self.closeness[idx]
-            .as_ref() // borrow Option, do not move it
-            .ok_or_else(|| -> Box<dyn std::error::Error> {
-                "error closeness centrality isn't yet in cache".into()
-            })?;
-        Ok(mem.as_slice())
+        if let Ok(mem) = self.get_from_cent_file(Self::centrality_normalization(
+            Centrality::Closeness,
+            normalization,
+        )) {
+            let idx = Self::index_by_normalization(normalization);
+            self.closeness[idx] = Some(mem);
+            if let Some(mem) = self.closeness[idx].as_ref() {
+                return Ok(mem.as_slice());
+            }
+        }
+        Err("error no such cached centrality".into())
     }
 
     /// Gets (from a previously cached result) or computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
@@ -187,71 +287,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         }
     }
 
-    /// Computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
-    ///
-    /// # Arguments
-    ///
-    /// * `normalize` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
-    ///
-    pub fn compute_closeness_centrality(
-        &mut self,
-        normalize: Option<bool>,
-    ) -> Result<&[f64], Box<dyn std::error::Error>> {
-        let node_count = self.g.size(); // |V|
-
-        let c_fn =
-            self.centrality_cache_file_name(normalize.map_or(Centrality::Closeness, |local| {
-                if local {
-                    Centrality::NCCloseness
-                } else {
-                    Centrality::NCloseness
-                }
-            }))?;
-        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
-
-        // unnormalized
-        if normalize.is_none() {
-            for idx in 0..node_count {
-                if !self.distances.get(idx).is_normal() {
-                    *mem.get_mut(idx) = 0.;
-                } else {
-                    *mem.get_mut(idx) = *self.distances.get(idx);
-                }
-            }
-            self.closeness[0] = Some(mem);
-        // normalized by number of reacheable nodes
-        } else if normalize.unwrap() {
-            for idx in 0..node_count {
-                if !self.distances.get(idx).is_normal() {
-                    *mem.get_mut(idx) = 0.;
-                } else {
-                    *mem.get_mut(idx) = (self.counters.get_mut(idx).estimate_cardinality() as f64
-                        - 1.)
-                        / *self.distances.get(idx);
-                }
-            }
-            self.closeness[2] = Some(mem);
-        // normalized by node count (|V| - 1)
-        } else {
-            let normalize_factor = node_count as f64 - 1.; // |V| - 1
-            for idx in 0..node_count {
-                if !self.distances.get(idx).is_normal() {
-                    *mem.get_mut(idx) = 0.;
-                } else {
-                    *mem.get_mut(idx) = normalize_factor / *self.distances.get(idx);
-                }
-            }
-            self.closeness[1] = Some(mem);
-        }
-        // if let Some(s) = mem.slice(0, node_count) {
-        //     println!("{:?}\n centrality", s);
-        // }
-        self.get_closeness_centrality(normalize)
-    }
-
     /// Gets (from a previously cached result) the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
     ///
     /// # Arguments
@@ -262,16 +297,32 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_hamonic_centrality(
-        &self,
+        &'a self,
+        normalization: Option<bool>,
+    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+        let idx = Self::index_by_normalization(normalization);
+        if let Some(mem) = self.harmonic[idx].as_ref() {
+            return Ok(mem.as_slice());
+        }
+        Err("no such cached centrality".into())
+    }
+
+    /// Searches cache for the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
+    pub fn search_cache_harmonic_centrality(
+        &mut self,
         normalization: Option<bool>,
     ) -> Result<&[f64], Box<dyn std::error::Error>> {
-        let idx = Self::index_by_normalization(normalization);
-        let mem = self.harmonic[idx]
-            .as_ref() // borrow Option, do not move it
-            .ok_or_else(|| -> Box<dyn std::error::Error> {
-                "error harmonic centrality isn't yet in cache".into()
-            })?;
-        Ok(mem.as_slice())
+        if let Ok(mem) = self.get_from_cent_file(Self::centrality_normalization(
+            Centrality::Harmonic,
+            normalization,
+        )) {
+            let idx = Self::index_by_normalization(normalization);
+            self.harmonic[idx] = Some(mem);
+            if let Some(mem) = self.harmonic[idx].as_ref() {
+                return Ok(mem.as_slice());
+            }
+        }
+        Err("error no such cached centrality".into())
     }
 
     /// Gets (from a previously cached result) or computes the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
@@ -293,6 +344,103 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         } else {
             self.get_hamonic_centrality(normalization)
         }
+    }
+
+    /// Gets (from a previously cached result) the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
+    pub fn get_lins_centrality(&self) -> Result<&[f64], Box<dyn std::error::Error>> {
+        if let Some(mem) = self.lin.as_ref() {
+            return Ok(mem.as_slice());
+        }
+        Err("no such cached centrality".into())
+    }
+
+    /// Searches cache for the approximation of each node's *Lin's Centrality* from their respective distance accumulator.
+    pub fn search_cache_lins_centrality(&mut self) -> Result<&[f64], Box<dyn std::error::Error>> {
+        if let Ok(mem) =
+            self.get_from_cent_file(Self::centrality_normalization(Centrality::Lin, None))
+        {
+            self.lin = Some(mem);
+            if let Some(mem) = self.lin.as_ref() {
+                return Ok(mem.as_slice());
+            }
+        }
+        Err("error no such cached centrality".into())
+    }
+
+    /// Gets (from a previously cached result) or computes the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
+    pub fn get_or_compute_lins_centrality(&mut self) -> Result<&[f64], Box<dyn std::error::Error>> {
+        if self.lin.is_none() {
+            self.compute_lins_centrality()
+        } else {
+            self.get_lins_centrality()
+        }
+    }
+
+    /// Computes the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
+    ///
+    /// # Arguments
+    ///
+    /// * `normalize` --- tri-state flag determining the type of normalization that was used for the computation.
+    ///     - [`None`] --- no normalization.
+    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    ///
+    pub fn compute_closeness_centrality(
+        &'a mut self,
+        normalize: Option<bool>,
+    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
+        let node_count = self.g.size(); // |V|
+
+        let c_fn =
+            self.centrality_cache_file_name(normalize.map_or(Centrality::Closeness, |local| {
+                if local {
+                    Centrality::NCCloseness
+                } else {
+                    Centrality::NCloseness
+                }
+            }))?;
+        let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
+
+        // unnormalized
+        if normalize.is_none() {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = *self.distances.get(idx);
+                }
+            }
+        // normalized by number of reacheable nodes
+        } else if normalize.unwrap() {
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = (self.counters.get_mut(idx).estimate_cardinality() as f64
+                        - 1.)
+                        / *self.distances.get(idx);
+                }
+            }
+        // normalized by node count (|V| - 1)
+        } else {
+            let normalize_factor = node_count as f64 - 1.; // |V| - 1
+            for idx in 0..node_count {
+                if !self.distances.get(idx).is_normal() {
+                    *mem.get_mut(idx) = 0.;
+                } else {
+                    *mem.get_mut(idx) = normalize_factor / *self.distances.get(idx);
+                }
+            }
+        }
+        // if let Some(s) = mem.slice(0, node_count) {
+        //     println!("{:?}\n centrality", s);
+        // }
+        let idx = Self::index_by_normalization(normalize);
+        self.closeness[idx] = Some(mem);
+        Ok(self.closeness[idx]
+            .as_ref()
+            .ok_or("closeness not computed")?
+            .as_slice())
     }
 
     /// Computes the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization is used, possibly, their respective *HyperLogLog++* counter estimation).
@@ -329,7 +477,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
                     *mem.get_mut(idx) = *self.inverse_distances.get(idx);
                 }
             }
-            self.harmonic[0] = Some(mem);
         // normalized by number of reacheable nodes
         } else if normalize.unwrap() {
             for idx in 0..node_count {
@@ -340,7 +487,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
                         / (self.counters.get_mut(idx).estimate_cardinality() as f64 - 1.);
                 }
             }
-            self.harmonic[2] = Some(mem);
         // normalized by node count (|v| - 1)
         } else {
             let normalize_factor = node_count as f64 - 1.; // |V| - 1
@@ -351,34 +497,16 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
                     *mem.get_mut(idx) = *self.inverse_distances.get(idx) / normalize_factor;
                 }
             }
-            self.harmonic[1] = Some(mem);
         }
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
         // }
-        self.get_hamonic_centrality(normalize)
-    }
-
-    /// Gets (from a previously cached result) the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
-    pub fn get_lins_centrality(&self) -> Result<&[f64], Box<dyn std::error::Error>> {
-        let mem = self
-            .lin
-            .as_ref() // borrow Option, do not move it
-            .ok_or_else(|| -> Box<dyn std::error::Error> {
-                "error lin's centrality isn't yet in cache".into()
-            })?;
-        Ok(mem.as_slice())
-    }
-
-    /// Gets (from a previously cached result) or computes the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
-    pub fn get_or_compute_lins_centrality(
-        &'a mut self,
-    ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
-        if self.lin.is_none() {
-            self.compute_lins_centrality()
-        } else {
-            self.get_lins_centrality()
-        }
+        let idx = Self::index_by_normalization(normalize);
+        self.harmonic[idx] = Some(mem);
+        Ok(self.harmonic[idx]
+            .as_ref()
+            .ok_or("harmonic not computed")?
+            .as_slice())
     }
 
     /// Computes the approximation of each node's *Lin's Centrality* from their respective distance accumulator and their respective *HyperLogLog++* counter estimation.
@@ -404,7 +532,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         // if let Some(s) = mem.slice(0, node_count) {
         //     println!("{:?}\n centrality", s);
         // }
-        self.get_lins_centrality()
+        Ok(self.lin.as_ref().ok_or("lin's not computed")?.as_slice())
     }
 
     /// Removes all cached files pertaining to this algorithm's execution's results, as well as any
@@ -458,20 +586,20 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     #[inline(always)]
     pub fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
-        precision: Option<u8>,
         max_depth: Option<usize>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g, precision, max_depth)
+        Self::new_no_compute_impl(g, max_depth, threads)
     }
 
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
-        precision: Option<u8>,
         max_depth: Option<usize>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g, precision, max_depth)
+        Self::new_no_compute_impl(g, max_depth, threads)
     }
 
     #[cfg(feature = "bench")]
@@ -548,14 +676,10 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
 
     fn new_no_compute_impl(
         g: &'a GraphMemoryMap<N, E, Ix>,
-        precision: Option<u8>,
         max_depth: Option<usize>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let node_count = g.size();
-        // make sure presision is within bounds
-        let precision = precision.map_or(Self::DEAFULT_PRECISION, |p| {
-            p.clamp(Self::MIN_PRECISION, Self::MAX_PRECISION)
-        });
         // make sure depth is within bounds
         let max_t = max_depth.map_or(Self::DEAFULT_MAX_DEPTH, |p| {
             std::cmp::max(Self::MAX_MAX_DEPTH, p)
@@ -575,13 +699,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
             counters,
             distances,
             inverse_distances,
-            precision,
             max_t,
             closeness: [None, None, None],
             harmonic: [None, None, None],
             lin: None,
             #[cfg(feature = "bench")]
             iters: 0,
+            threads,
         })
     }
 
@@ -606,7 +730,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         swap: AbstractedProceduralMemoryMut<hyperloglog_rs::prelude::HyperLogLog<P, B>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = self.g.size();
-        let threads = self.g.thread_num();
+        let threads = self.threads;
         let node_load = node_count.div_ceil(threads);
 
         let global_changed = Arc::new(AtomicUsize::new(0));
@@ -802,7 +926,7 @@ mod test {
         let exact_mmaped = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
         let exact = exact_mmaped.as_slice();
 
-        let mut hyperball = HyperBallInner::<_, _, _, Precision8, 6>::new(&g, None, None)?;
+        let mut hyperball = HyperBallInner::<_, _, _, Precision8, 6>::new(&g)?;
         let approx = hyperball.compute_closeness_centrality(Some(false))?;
 
         // metrics
