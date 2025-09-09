@@ -92,7 +92,7 @@ fn run_cache(
         .ok_or_else(|| -> Box<dyn std::error::Error> {
             "error getting out file name str".into()
         })?;
-    let prefix = out.join(format!("{}_{}.{}", outfilename, stamp, "cg.out"));
+    let prefix = out.join(format!("{}_{}_{}.{}", target, outfilename, stamp, "cg.out"));
     drop(File::create(prefix.as_path())?);
 
     // 3) Collect meta for reproducibility

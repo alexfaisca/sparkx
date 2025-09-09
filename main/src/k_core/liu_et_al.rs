@@ -112,6 +112,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     /// Removes all cached files pertaining to this algorithm's execution's results.
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
+        this.g.cleanup_cache(CacheFile::KCoreLEA)?;
         let out_fn = this.g.build_cache_filename(CacheFile::KCoreLEA, None)?;
         std::fs::remove_file(out_fn)?;
         Ok(())

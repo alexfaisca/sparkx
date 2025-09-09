@@ -80,7 +80,7 @@ pub struct HyperBallInner<
     /// Lin's centrality's cached values.
     lin: Option<AbstractedProceduralMemoryMut<f64>>,
     threads: usize,
-    #[cfg(feature = "bench")]
+    #[cfg(any(test, feature = "bench"))]
     iters: usize,
 }
 
@@ -712,7 +712,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
             closeness: [None, None, None],
             harmonic: [None, None, None],
             lin: None,
-            #[cfg(feature = "bench")]
+            #[cfg(any(test, feature = "bench"))]
             iters: 0,
             threads,
         })

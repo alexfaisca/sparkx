@@ -492,6 +492,7 @@ fn cache_profile_0<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
         graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
     );
     println!();
+    _louvain.drop_cache()?;
 
     let time = Instant::now();
     let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
@@ -523,12 +524,15 @@ fn cache_profile_1<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     println!();
 
     let time = Instant::now();
-    let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
+    let mut _hierholzers = AlgoHierholzer::new(&graph_mmaped)?;
+    println!(
+        "found {} hierholzer's euler trails",
+        _hierholzers.trail_number()
+    );
+    println!("hierholzer's euler trail built {:?}", time.elapsed());
     println!();
+    _hierholzers.drop_cache()?;
 
-    _euler_trail.drop_cache()?;
     println!("droping");
     graph_mmaped.drop_cache()?;
     println!("dropped");
@@ -612,10 +616,14 @@ fn pages_profile_1<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     println!();
 
     let time = Instant::now();
-    let mut _euler_trail = AlgoHierholzer::new(&graph_mmaped)?;
-    println!("found {} euler trails", _euler_trail.trail_number());
-    println!("euler trail built {:?}", time.elapsed());
+    let mut _hierholzers = AlgoHierholzer::new(&graph_mmaped)?;
+    println!(
+        "found {} hierholzer's euler trails",
+        _hierholzers.trail_number()
+    );
+    println!("hierholzer's euler trail built {:?}", time.elapsed());
     println!();
+    _hierholzers.drop_cache()?;
 
     println!("droping");
     graph_mmaped.drop_cache()?;
@@ -770,6 +778,7 @@ fn pages_profile_6<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
         graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
     );
     println!();
+    _louvain.drop_cache()?;
 
     println!("droping");
     graph_mmaped.drop_cache()?;

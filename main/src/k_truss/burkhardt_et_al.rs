@@ -6,7 +6,6 @@ use crossbeam::thread;
 use num_cpus::get_physical;
 use portable_atomic::{AtomicU8, Ordering};
 use smallvec::SmallVec;
-use std::fs::OpenOptions;
 use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::{
