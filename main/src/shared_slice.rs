@@ -161,9 +161,15 @@ impl<T> AbstractedProceduralMemoryMut<T> {
             mmapped: true,
         })
     }
+
+    /// Guarantees file is long enough for the mutable array, but doesn't tuncate it if it's
+    /// longer than what is asked for.
     pub(crate) fn from_file(file: &File, len: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let file_len = file.metadata()?.len();
         let mmap_len = (len * size_of::<T>()).max(1) as u64;
-        file.set_len(mmap_len)?;
+        if file_len < mmap_len {
+            file.set_len(mmap_len)?;
+        }
         let (slice, mmap) = SharedSliceMut::<T>::from_file(file)?;
 
         Ok(AbstractedProceduralMemoryMut {
@@ -289,18 +295,13 @@ impl<T> SharedSlice<T> {
         }
 
         let mmap = unsafe { MmapOptions::new().len(file_len).map(file)? };
+        let len = if size_of::<T>() == 0 {
+            1
+        } else {
+            file_len / size_of::<T>()
+        };
 
-        Ok((
-            Self::new(
-                mmap.as_ptr() as *const T,
-                if size_of::<T>() == 0 {
-                    1
-                } else {
-                    file_len / size_of::<T>()
-                },
-            ),
-            mmap,
-        ))
+        Ok((Self::new(mmap.as_ptr() as *const T, len), mmap))
     }
 
     #[inline(always)]
@@ -367,12 +368,10 @@ impl<T> SharedSlice<T> {
         if mmapped && (size_of::<T>() == 0 && mmap.len() != 1 || mmap.len() < size_of::<T>() * len)
         {
             return Err("file length is too small for the amount of elements requested".into());
-        }
-        // Use an in-memory vector for degrees
-        // Initialize with 0s
-        if !mmapped && vec.len() < len {
+        } else if !mmapped && vec.len() < len {
             return Err("vec length is too small for the amount of elements requested".into());
         }
+
         let slice: SharedSlice<T> = {
             if mmapped {
                 SharedSlice::<T>::new(mmap.as_ptr() as *const T, len)
@@ -380,6 +379,7 @@ impl<T> SharedSlice<T> {
                 SharedSlice::<T>::new(vec.as_ptr(), len)
             }
         };
+
         Ok(AbstractedProceduralMemory {
             slice,
             _vec: vec,
@@ -413,6 +413,8 @@ impl<T> SharedSliceMut<T> {
         Ok(Self::new(vec.as_mut_ptr(), vec.len()))
     }
 
+    /// Requires file length to be a multiple of size_of::<T>() (if T is not a zero-sized type,
+    /// inwhich case file length has to be 1).
     pub(crate) fn from_file(file: &File) -> Result<(Self, MmapMut), Box<dyn std::error::Error>> {
         let mmap = unsafe { MmapOptions::new().map_mut(file)? };
         let mmap_len = mmap.len();
@@ -424,17 +426,13 @@ impl<T> SharedSliceMut<T> {
             return Err("file length for 0 length types should be 1".into());
         }
 
-        Ok((
-            Self::new(
-                mmap.as_ptr() as *mut T,
-                if size_of::<T>() == 0 {
-                    1
-                } else {
-                    mmap_len / size_of::<T>()
-                },
-            ),
-            mmap,
-        ))
+        let len = if size_of::<T>() == 0 {
+            1
+        } else {
+            mmap_len / size_of::<T>()
+        };
+
+        Ok((Self::new(mmap.as_ptr() as *mut T, len), mmap))
     }
 
     #[inline(always)]
@@ -573,14 +571,13 @@ impl<T> SharedSliceMut<T> {
             .read(true)
             .write(true)
             .open(mfn)?;
-        file.set_len(
-            (if mmapped { len } else { 1 }
-                * if size_of::<T>() == 0 {
-                    1
-                } else {
-                    size_of::<T>()
-                }) as u64,
-        )?;
+        let file_len = (if mmapped { len } else { 1 }
+            * if size_of::<T>() == 0 {
+                1
+            } else {
+                size_of::<T>()
+            }) as u64;
+        file.set_len(file_len)?;
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
