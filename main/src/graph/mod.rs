@@ -333,6 +333,7 @@ pub enum CacheFile {
     EulerTrail,
     KCoreBZ,
     KCoreLEA,
+    Triangles,
     KTrussBEA,
     KTrussPKT,
     ClusteringCoefficient,

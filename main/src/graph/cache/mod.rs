@@ -1104,6 +1104,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             CacheFile::EulerTrail => FileType::EulerTrail(H::H),
             CacheFile::KCoreBZ => FileType::KCoreBZ(H::H),
             CacheFile::KCoreLEA => FileType::KCoreLEA(H::H),
+            CacheFile::Triangles => FileType::Triangles(H::H),
             CacheFile::KTrussBEA => FileType::KTrussBEA(H::H),
             CacheFile::KTrussPKT => FileType::KTrussPKT(H::H),
             CacheFile::ClusteringCoefficient => FileType::ClusteringCoefficient(H::H),

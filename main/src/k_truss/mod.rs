@@ -1,6 +1,7 @@
 pub mod burkhardt_et_al;
 pub mod clustering_coefficient;
 pub mod pkt;
+pub mod triangles;
 
 #[cfg(test)]
 use _verify::verify_k_trusses;

@@ -250,6 +250,7 @@ pub enum FileType {
     EulerTrail(H),
     KCoreBZ(H),
     KCoreLEA(H),
+    Triangles(H),
     KTrussBEA(H),
     KTrussPKT(H),
     ClusteringCoefficient(H),
@@ -316,6 +317,7 @@ fn suffix_for_file_type(target_type: &FileType) -> &'static str {
     static SUFFIX_FOR_EULER_TRAIL: &str = "eulertrail";
     static SUFFIX_FOR_KCORE_BZ: &str = "kcoresbz";
     static SUFFIX_FOR_KCORE_LEA: &str = "kcoreslea";
+    static SUFFIX_FOR_TRIANGLES: &str = "triangles";
     static SUFFIX_FOR_KTRUSS_BEA: &str = "ktrusslea";
     static SUFFIX_FOR_KTRUSS_PKT: &str = "ktrusspkt";
     static SUFFIX_FOR_CLUSTERING_COEFFICIENT: &str = "clusteringcoefficient";
@@ -348,6 +350,7 @@ fn suffix_for_file_type(target_type: &FileType) -> &'static str {
         FileType::EulerTrail(_) => SUFFIX_FOR_EULER_TRAIL,
         FileType::KCoreBZ(_) => SUFFIX_FOR_KCORE_BZ,
         FileType::KCoreLEA(_) => SUFFIX_FOR_KCORE_LEA,
+        FileType::Triangles(_) => SUFFIX_FOR_TRIANGLES,
         FileType::KTrussBEA(_) => SUFFIX_FOR_KTRUSS_BEA,
         FileType::KTrussPKT(_) => SUFFIX_FOR_KTRUSS_PKT,
         FileType::ClusteringCoefficient(_) => SUFFIX_FOR_CLUSTERING_COEFFICIENT,
@@ -436,6 +439,7 @@ impl std::fmt::Display for FileType {
             FileType::EulerTrail(_) => "EulerTrail",
             FileType::KCoreBZ(_) => "KCoreBatageljZaversnik",
             FileType::KCoreLEA(_) => "KCoreLiuEtAl",
+            FileType::Triangles(_) => "Triangles",
             FileType::KTrussBEA(_) => "KTrussBurkhardtEtAl",
             FileType::KTrussPKT(_) => "KTrussPKT",
             FileType::ClusteringCoefficient(_) => "ClusteringCoefficient",

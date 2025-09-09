@@ -4,12 +4,14 @@ use crate::shared_slice::*;
 use crate::utils::OneOrMany;
 
 use crossbeam::thread;
-use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
+use portable_atomic::{AtomicUsize, Ordering};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
+
+use super::triangles::Triangles;
 
 type ProceduralMemoryPKT = (
     AbstractedProceduralMemoryMut<usize>,
@@ -17,7 +19,6 @@ type ProceduralMemoryPKT = (
     AbstractedProceduralMemoryMut<bool>,
     AbstractedProceduralMemoryMut<bool>,
     AbstractedProceduralMemoryMut<bool>,
-    AbstractedProceduralMemoryMut<AtomicU8>,
 );
 
 /// For the computation of a [`GraphMemoryMap`] instance's k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
@@ -184,25 +185,23 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     fn init_cache_mem_impl(&self) -> Result<ProceduralMemoryPKT, Box<dyn std::error::Error>> {
         let edge_count = self.g.width();
 
-        let c_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(1))?;
-        let n_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(2))?;
-        let p_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(3))?;
-        let ic_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(4))?;
-        let in_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(5))?;
-        let s_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, None)?;
+        let c_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(0))?;
+        let n_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(1))?;
+        let p_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(2))?;
+        let ic_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(3))?;
+        let in_fn = self.g.build_cache_filename(CacheFile::KTrussPKT, Some(4))?;
 
         let curr = SharedSliceMut::<usize>::abst_mem_mut(&c_fn, edge_count, true)?;
         let next = SharedSliceMut::<usize>::abst_mem_mut(&n_fn, edge_count, true)?;
         let processed = SharedSliceMut::<bool>::abst_mem_mut(&p_fn, edge_count, true)?;
         let in_curr = SharedSliceMut::<bool>::abst_mem_mut(&ic_fn, edge_count, true)?;
         let in_next = SharedSliceMut::<bool>::abst_mem_mut(&in_fn, edge_count, true)?;
-        let s = SharedSliceMut::<AtomicU8>::abst_mem_mut(&s_fn, edge_count, true)?;
 
         // pre-initialize the memmapped files if they don't exist
         let _edge_reciprocal = self.g.edge_reciprocal()?;
         let _edge_out = self.g.edge_over()?;
 
-        Ok((curr, next, processed, in_curr, in_next, s))
+        Ok((curr, next, processed, in_curr, in_next))
     }
 
     fn compute_with_proc_mem_impl(
@@ -219,112 +218,42 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
         let neighbours_ptr = SharedSlice::<usize>::new(self.g.neighbours_ptr(), edge_count);
 
         // Shared arrays
-        let (curr, next, processed, in_curr, in_next, s) = proc_mem;
+        let (curr, next, processed, in_curr, in_next) = proc_mem;
         let edge_reciprocal = self.g.edge_reciprocal()?;
-        let edge_out = self.g.edge_over()?;
 
         // Thread syncronization
         let synchronize = Arc::new(Barrier::new(threads));
 
-        // ParTriangle-AM4
         thread::scope(|scope| {
-            let node_load = node_count.div_ceil(threads);
             let edge_load = node_count.div_ceil(threads);
 
             for tid in 0..threads {
                 // eid is unnecessary as graph + index alwready do the job
-                let eo = edge_out.shared_slice();
-                let mut s = s.shared_slice();
-                let er = edge_reciprocal.shared_slice();
                 let mut curr = curr.shared_slice();
                 let mut next = next.shared_slice();
                 let mut in_curr = in_curr.shared_slice();
                 let mut in_next = in_next.shared_slice();
                 let mut processed = processed.shared_slice();
-                let synchronize = Arc::clone(&synchronize);
 
-                let init_begin = std::cmp::min(tid * edge_load, edge_count);
-                let init_end = std::cmp::min(init_begin + edge_load, edge_count);
-                let begin = std::cmp::min(tid * node_load, node_count); // is node and edge
-                let end = std::cmp::min(begin + node_load, node_count); // limit accurate?
+                let begin = std::cmp::min(tid * edge_load, edge_count);
+                let end = std::cmp::min(begin + edge_load, edge_count);
                 scope.spawn(move |_| {
-                    // initialize s, edge_out, x, curr, next, in_curr, in_next & processed
-                    for edge_offset in init_begin..init_end {
-                        *s.get_mut(edge_offset) = AtomicU8::new(0);
+                    // initialize edge_out, x, curr, next, in_curr, in_next & processed
+                    for edge_offset in begin..end {
                         *curr.get_mut(edge_offset) = 0;
                         *next.get_mut(edge_offset) = 0;
                         *in_curr.get_mut(edge_offset) = false;
                         *in_next.get_mut(edge_offset) = false;
                         *processed.get_mut(edge_offset) = false;
                     }
-
-                    synchronize.wait();
-
-                    let mut neighbours = HashMap::<usize, OneOrMany<usize>>::new();
-                    for u in begin..end {
-                        for j in *eo.get(u)..*index_ptr.get(u + 1) {
-                            let w = *neighbours_ptr.get(j);
-                            match neighbours.entry(w) {
-                                std::collections::hash_map::Entry::Vacant(e) => {
-                                    e.insert(OneOrMany::One(j));
-                                }
-                                std::collections::hash_map::Entry::Occupied(mut e) => {
-                                    match e.get_mut() {
-                                        OneOrMany::One(i) => {
-                                            let mut sv: SmallVec<[usize; 4]> = SmallVec::new();
-                                            sv.push(*i);
-                                            sv.push(j);
-                                            *e.get_mut() = OneOrMany::Many(sv);
-                                        }
-                                        OneOrMany::Many(sv) => sv.push(j),
-                                    }
-                                }
-                            }
-                        }
-                        for u_v in *index_ptr.get(u)..*eo.get(u) {
-                            let v = *neighbours_ptr.get(u_v);
-                            if u == v {
-                                continue;
-                            }
-                            for v_w in (*eo.get(v)..*index_ptr.get(v + 1)).rev() {
-                                let w = *neighbours_ptr.get(v_w);
-                                if w <= u {
-                                    break;
-                                }
-                                match neighbours.get(&w) {
-                                    Some(i) => match i {
-                                        OneOrMany::One(u_w) => {
-                                            let w_u = *er.get(*u_w);
-                                            s.get(u_v).fetch_add(1, Ordering::Relaxed);
-                                            s.get(v_w).fetch_add(1, Ordering::Relaxed);
-                                            s.get(*u_w).fetch_add(1, Ordering::Relaxed);
-                                            s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
-                                            s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
-                                            s.get(w_u).fetch_add(1, Ordering::Relaxed);
-                                        }
-                                        OneOrMany::Many(u_ws) => {
-                                            for &u_w in u_ws {
-                                                let w_u = *er.get(u_w);
-                                                s.get(u_v).fetch_add(1, Ordering::Relaxed);
-                                                s.get(v_w).fetch_add(1, Ordering::Relaxed);
-                                                s.get(u_w).fetch_add(1, Ordering::Relaxed);
-                                                s.get(*er.get(u_v)).fetch_add(1, Ordering::Relaxed);
-                                                s.get(*er.get(v_w)).fetch_add(1, Ordering::Relaxed);
-                                                s.get(w_u).fetch_add(1, Ordering::Relaxed);
-                                            }
-                                        }
-                                    },
-                                    None => continue,
-                                };
-                            }
-                        }
-                        neighbours.clear();
-                    }
                 });
             }
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
 
+        // ParTriangle-AM4 --- adjusted for multigraphs
+        let mut triangles = Triangles::new(self.g)?;
+        let s = triangles.triangles_shares_slice();
         let mut l: u8 = 1;
         let buff_size = 4096;
         let total_duds = Arc::new(AtomicUsize::new(0));
@@ -336,13 +265,14 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
             for tid in 0..threads {
                 let mut todo = edge_count;
 
-                let s = s.shared_slice();
+                let s = s.clone();
                 let mut curr = curr.clone();
                 let mut next = next.clone();
                 let er = edge_reciprocal.shared_slice();
                 let mut in_curr = in_curr.shared_slice();
                 let mut in_next = in_next.shared_slice();
                 let mut processed = processed.shared_slice();
+                let mut trussness = self.k_trusses.shared_slice();
 
                 let total_duds = Arc::clone(&total_duds);
                 let synchronize = Arc::clone(&synchronize);
@@ -589,7 +519,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
                         // by definition any non-trivial subgraph is at least a 2-truss: other
                         // values go up from there.
                         for e in begin..end {
-                            s.get(e).add(2, Ordering::Relaxed);
+                            *trussness.get_mut(e) = s.get(e).load(Ordering::Relaxed) + 2;
                         }
                         Ok(res.into_boxed_slice())
                     },
@@ -621,6 +551,8 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
             }
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })?;
+
+        triangles.drop_cache()?;
 
         // cleanup cache
         self.g.cleanup_cache(CacheFile::KTrussPKT)?;
