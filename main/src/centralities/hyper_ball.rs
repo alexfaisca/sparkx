@@ -99,7 +99,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut hyper_ball = Self::new_no_compute(g, None, g.thread_num().max(1))?;
+        let mut hyper_ball = Self::new_no_compute(g, None, g.thread_num())?;
 
         let proc_mem = hyper_ball.init_cache_mem()?;
         hyper_ball.compute_with_proc_mem(proc_mem)?;
@@ -688,6 +688,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         max_depth: Option<usize>,
         threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let threads = threads.max(1);
         let node_count = g.size();
         // make sure depth is within bounds
         let max_t = max_depth.map_or(Self::DEAFULT_MAX_DEPTH, |p| {

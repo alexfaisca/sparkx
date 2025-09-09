@@ -3,7 +3,6 @@ use crate::graph::*;
 use crate::shared_slice::*;
 
 use crossbeam::thread;
-use num_cpus::get_physical;
 use portable_atomic::{AtomicU8, Ordering};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -19,12 +18,13 @@ pub struct Triangles<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the number of triangles of each edge.
     triangles: AbstractedProceduralMemoryMut<AtomicU8>,
+    threads: usize,
 }
 
 #[allow(dead_code)]
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> Triangles<'a, N, E, Ix> {
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut triangles = Self::new_no_compute(g)?;
+        let mut triangles = Self::new_no_compute(g, g.thread_num())?;
         triangles.compute_with_proc_mem(triangles.init_cache_mem()?)?;
 
         Ok(triangles)
@@ -36,7 +36,11 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> Triangles<'a, N, E, Ix>
         let t_fn = g.build_cache_filename(CacheFile::Triangles, None)?;
         if Path::new(&t_fn).exists() {
             if let Ok(triangles) = AbstractedProceduralMemoryMut::from_file_name(&t_fn) {
-                return Ok(Self { g, triangles });
+                return Ok(Self {
+                    g,
+                    triangles,
+                    threads: g.thread_num().max(1),
+                });
             }
         }
         Self::new(g)
@@ -69,16 +73,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> Triangles<'a, N, E, Ix>
     #[inline(always)]
     pub fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(not(feature = "bench"))]
     #[inline(always)]
     pub(crate) fn new_no_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_no_compute_impl(g)
+        Self::new_no_compute_impl(g, threads)
     }
 
     #[cfg(feature = "bench")]
@@ -118,10 +124,16 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> Triangles<'a, N, E, Ix>
 
     fn new_no_compute_impl(
         g: &'a GraphMemoryMap<N, E, Ix>,
+        threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let threads = threads.max(1);
         let out_fn = g.build_cache_filename(CacheFile::Triangles, None)?;
         let triangles = SharedSliceMut::<AtomicU8>::abst_mem_mut(&out_fn, g.width(), true)?;
-        Ok(Self { g, triangles })
+        Ok(Self {
+            g,
+            triangles,
+            threads,
+        })
     }
 
     fn init_cache_mem_impl(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -142,7 +154,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> Triangles<'a, N, E, Ix>
 
         thread::scope(|scope| {
             // initializations always uses at least two threads per core
-            let threads = self.g.thread_num().max(get_physical() * 2);
+            let threads = self.threads;
             let node_load = node_count.div_ceil(threads);
 
             for tid in 0..threads {

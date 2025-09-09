@@ -43,7 +43,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut liu_et_al = Self::new_no_compute(g, g.thread_num().max(1))?;
+        let mut liu_et_al = Self::new_no_compute(g, g.thread_num())?;
         let proc_mem = liu_et_al.init_cache_mem()?;
 
         liu_et_al.compute_with_proc_mem(proc_mem)?;
@@ -180,6 +180,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
         g: &'a GraphMemoryMap<N, E, Ix>,
         threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let threads = threads.max(1);
         let out_fn = g.build_cache_filename(CacheFile::KCoreLEA, None)?;
         let k_cores = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.size(), true)?;
         Ok(Self {

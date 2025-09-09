@@ -43,7 +43,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut pkt = Self::new_no_compute(g, g.thread_num().max(1))?;
+        let mut pkt = Self::new_no_compute(g, g.thread_num())?;
         let proc_mem = pkt.init_cache_mem()?;
 
         pkt.compute_with_proc_mem(proc_mem)?;
@@ -173,6 +173,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
         g: &'a GraphMemoryMap<N, E, Ix>,
         threads: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let threads = threads.max(1);
         let out_fn = g.build_cache_filename(CacheFile::KTrussPKT, None)?;
         let k_trusses = SharedSliceMut::<u8>::abst_mem_mut(&out_fn, g.width(), true)?;
         Ok(Self {
