@@ -1,6 +1,7 @@
 pub(crate) mod cache;
 pub mod edge;
 mod export_induced_subgraph;
+mod impl_algos;
 mod impl_csc;
 mod impl_miscelanious;
 mod impl_partition;
