@@ -63,7 +63,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                 })?;
 
         // parse optional inputs && fallback to defaults for the Nones found
-        let id = id.map_or(nodes_path_str.to_string(), |id| id);
+        let id = id.unwrap_or(nodes_path_str.to_string());
         let batching = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
         let in_fst = in_fst.unwrap_or(|_id: usize| -> bool { false });
 

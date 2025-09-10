@@ -6,16 +6,12 @@ use tool::communities::gve_louvain::AlgoGVELouvain;
 #[allow(unused_imports)]
 use tool::communities::{approx_dirichlet_hkpr::*, hk_relax::*};
 use tool::graph;
-use tool::graph::label::NodeLabel;
 #[allow(unused_imports)]
 use tool::graph::{E, GraphMemoryMap, IndexType, N, label::VoidLabel};
 #[allow(unused_imports)]
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
 use tool::k_truss::{burkhardt_et_al::*, clustering_coefficient::*, pkt::*};
-use tool::shared_slice::SharedSliceMut;
-use tool::trails::bfs::BFSDists;
-use tool::trails::dfs::DFS;
 #[allow(unused_imports)]
 use tool::trails::hierholzer::*;
 
@@ -76,6 +72,10 @@ struct ProgramArgs {
 
     /// Executes a given cache profiling target flow.
     #[arg(short)]
+    error_target: Option<u64>,
+
+    /// Executes a given cache profiling target flow.
+    #[arg(short)]
     cache_target: Option<u64>,
 }
 
@@ -93,7 +93,9 @@ fn main() {
         panic!("error program can't operate on 64-bit systems");
     }
 
-    if let Some(cache_target) = args.cache_target {
+    if let Some(error_target) = args.error_target {
+        println!("proceeding into error_target {error_target}");
+    } else if let Some(cache_target) = args.cache_target {
         println!("going into mem_target {cache_target}");
         match cache_target {
             0 => {
@@ -191,9 +193,6 @@ fn main() {
     }
 }
 
-fn mmapped_suite<N: graph::N, E: graph::E, Ix: graph::IndexType>(_graph: GraphMemoryMap<N, E, Ix>) {
-}
-
 // Experimentar simples, depois rustworkx, depois métodos mais eficientes
 #[expect(dead_code)]
 fn sandbox_open<N: graph::N, E: graph::E, Ix: graph::IndexType>(
@@ -251,7 +250,7 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
         graph_mmaped.width(),
         time.elapsed()
     );
-    println!();
+    println!("metadata:\n{:?}", graph_mmaped.metadata()?);
 
     let time = Instant::now();
     let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
@@ -421,9 +420,9 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // println!("graph metadata is {:?}", g.metadata()?);
     // drop(g);
 
-    println!("droping");
-    graph_mmaped.drop_cache()?;
-    println!("dropped");
+    // println!("droping");
+    // graph_mmaped.drop_cache()?;
+    // println!("dropped");
 
     // let mut i = 0;
     // while i < graph_mmaped.size().map_or(0, |s| s) {

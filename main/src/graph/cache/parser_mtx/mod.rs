@@ -2,7 +2,7 @@ mod producers;
 
 use crate::{
     graph::cache::utils::{FileType, H, cache_file_name},
-    shared_slice::SharedSliceMut,
+    shared_slice::{AbstractedProceduralMemoryMut, SharedSliceMut},
 };
 
 use num_cpus::get_physical;
@@ -37,22 +37,22 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         batch: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
-        let threads = (get_physical() * 2).max(1);
 
-        let id = id.unwrap_or(
-            path.as_ref()
-                .to_str()
-                .ok_or_else(|| -> Box<dyn std::error::Error> {
-                    "error getting path as string".into()
-                })?
-                .to_string(),
-        );
+        // init cache
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| -> Box<dyn std::error::Error> {
+                format!("error getting path str from {:?}", path.as_ref()).into()
+            })?;
+        let id = id.unwrap_or(path_str.to_string());
+        let mut cache = Self::init_with_id(&id, batch)?;
+
+        let threads = (get_physical() * 2).max(1);
 
         let (node_count, _, _) = Self::parse_mtx_header(path.as_ref())?;
 
-        let n_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Edges(H::H), None)?;
-        let o_fn = Self::init_cache_file_from_id_or_random(&id, FileType::Index(H::H), None)?;
-        let h_fn = cache_file_name(&n_fn, &FileType::Helper(H::H), Some(0))?;
+        let h_fn = cache_file_name(&cache.offsets_filename(), &FileType::Helper(H::H), Some(0))?;
         let offset_size = match node_count.overflowing_add(1) {
             (_, true) => {
                 return Err(
@@ -61,7 +61,12 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             }
             (r, false) => r,
         };
-        let offsets = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&o_fn, offset_size, true)?;
+
+        cache.index_bytes = node_count;
+        let offsets = AbstractedProceduralMemoryMut::<AtomicUsize>::from_file(
+            &cache.offsets_file,
+            offset_size,
+        )?;
         let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&h_fn, node_count, true)?;
 
         // accumulate node degrees on index
@@ -99,9 +104,11 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             return Err(format!("Error graph has a max_degree of {max_degree} which, unforturnately, is bigger than {}, our current maximum supported size. If you feel a mistake has been made or really need this feature, please contact the developer team. We sincerely apologize.", u8::MAX).into());
         }
 
-        let mut neighbors = SharedSliceMut::<usize>::abst_mem_mut(&n_fn, sum, true)?;
-        let el_fn = Self::init_cache_file_from_id_or_random(&id, FileType::EdgeLabel(H::H), None)?;
-        let mut edgelabels = SharedSliceMut::<E>::abst_mem_mut(&el_fn, sum, true)?;
+        cache.graph_bytes = sum;
+        let mut neighbors =
+            AbstractedProceduralMemoryMut::<usize>::from_file(&cache.neighbors_file, sum)?;
+        let mut edgelabels =
+            AbstractedProceduralMemoryMut::<E>::from_file(&cache.edgelabel_file, sum)?;
 
         if E::is_labeled() {
             Self::parallel_edge_labels_parse_mtx_with(
@@ -176,12 +183,10 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             }
         }
 
-        neighbors.flush()?;
-        offsets.flush()?;
-
         std::fs::remove_file(&h_fn)?;
 
-        Self::open(&n_fn, batch)
+        cache.merge_fsts(&[])?;
+        Ok(cache)
     }
 }
 

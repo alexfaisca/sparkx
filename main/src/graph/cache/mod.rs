@@ -41,11 +41,11 @@ pub struct CacheMetadata {
     pub node_labeled: bool,
     pub edge_labeled: bool,
     pub has_fst: bool,
-    pub node_label_type: String,        // e.g., "u32" / "usize"
+    pub node_label_type: String,   // e.g., "u32" / "usize"
     pub node_label_size: usize,    // 0 if not labeled
-    pub edge_label_type: String,        // e.g., "u32" / "usize"
+    pub edge_label_type: String,   // e.g., "u32" / "usize"
     pub edge_label_size: usize,    // 0 if not labeled
-    pub created_unix_secs: u64,    // for reproducibility
+    pub created_unix_secs: u64,    // book keeping
     pub tool_version: Option<String>,
 }
 
