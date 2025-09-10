@@ -2,9 +2,13 @@
 set -euo pipefail
 shopt -s nullglob
 
-for ds in ./datasets/graphs/*.{lz4,mtx}; do
+for ds in ./datasets/graphs/*.mtx; do
 	[[ -f "$ds" ]] || continue
-	for t in {0..10}; do
+	for t in {0..3}; do
+		echo ">> $(basename "$ds")  -t $t"
+		cargo cache --tool=massif --dataset="$ds" -t "$t"
+	done
+	for t in {3..10}; do
 		echo ">> $(basename "$ds")  -t $t"
 		cargo cache --tool=massif-pages --dataset="$ds" -t "$t"
 	done
