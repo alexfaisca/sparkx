@@ -85,7 +85,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         }
 
         // make cache readonly (for now only serves to allow clone() on instances)
-        cache.make_readonly()?;
+        cache.make_readonly(nodes_path.as_ref())?;
 
         Ok(cache)
     }
@@ -472,6 +472,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         self.graph_bytes = sum;
         self.index_bytes = offsets_size;
 
-        self.finish()
+        Ok(())
     }
 }

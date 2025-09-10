@@ -171,6 +171,20 @@ pub fn pers_cache_file_name(
 }
 
 #[allow(dead_code)]
+pub fn toml_cache_file_name(
+    original_filename: &str,
+    target_type: &FileType,
+    sequence_number: Option<usize>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // For now only human readable file
+    assert!(*target_type == FileType::CacheMetadata(H::H));
+    let (id, parent_dir) = graph_id_and_dir_from_cache_file_name(original_filename, target_type)?;
+    let new_filename =
+        toml_file_name_from_id_and_sequence_for_type(target_type, &id, sequence_number);
+    Ok(parent_dir.join(new_filename).to_string_lossy().into_owned())
+}
+
+#[allow(dead_code)]
 pub fn cache_file_name(
     original_filename: &str,
     target_type: &FileType,
@@ -238,6 +252,7 @@ pub enum H {
 pub enum FileType {
     /// Only member visible to users
     General,
+    CacheMetadata(H),
     Edges(H),
     Index(H),
     NodeLabel(H),
@@ -279,6 +294,27 @@ pub fn cache_file_name_from_id(
         + file_name_from_id_and_sequence_for_type(target_type, id, sequence_number).as_str()
 }
 
+pub fn cache_metadata_file_name_from_id(
+    target_type: &FileType,
+    id: &str,
+    sequence_number: Option<usize>,
+) -> String {
+    CACHE_DIR.to_string()
+        + toml_file_name_from_id_and_sequence_for_type(target_type, id, sequence_number).as_str()
+}
+
+fn toml_file_name_from_id_and_sequence_for_type(
+    target: &FileType,
+    id: &str,
+    seq: Option<usize>,
+) -> String {
+    match seq {
+        None => format!("{}_{}.{}", suffix_for_file_type(target), id, "toml"),
+        // sequenced files are temporary
+        Some(i) => format!("{}_{}_{}.{}", suffix_for_file_type(target), i, id, "toml"),
+    }
+}
+
 fn pers_file_name_from_id_and_sequence_for_type(
     target: &FileType,
     id: &str,
@@ -305,6 +341,7 @@ fn file_name_from_id_and_sequence_for_type(
 
 fn suffix_for_file_type(target_type: &FileType) -> &'static str {
     static SUFFIX_FOR_GENERAL: &str = "miscelanious";
+    static SUFFIX_FOR_CACHE_METADATA: &str = "metadata";
     static SUFFIX_FOR_EDGES: &str = "edges";
     static SUFFIX_FOR_INDEX: &str = "index";
     static SUFFIX_FOR_NODE_LABEL: &str = "nodelabels";
@@ -338,6 +375,7 @@ fn suffix_for_file_type(target_type: &FileType) -> &'static str {
 
     match target_type {
         FileType::General => SUFFIX_FOR_GENERAL,
+        FileType::CacheMetadata(_) => SUFFIX_FOR_CACHE_METADATA,
         FileType::Edges(_) => SUFFIX_FOR_EDGES,
         FileType::Index(_) => SUFFIX_FOR_INDEX,
         FileType::NodeLabel(_) => SUFFIX_FOR_NODE_LABEL,
@@ -427,6 +465,7 @@ impl std::fmt::Display for FileType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             FileType::General => "Miscelanious",
+            FileType::CacheMetadata(_) => "Metadata",
             FileType::Edges(_) => "Edges",
             FileType::Index(_) => "Index",
             FileType::NodeLabel(_) => "NodeLabel",

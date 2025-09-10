@@ -17,6 +17,7 @@ pub mod test_utils;
 
 use crate::graph::cache::GraphCache;
 use crate::shared_slice::AbstractedProceduralMemory;
+use cache::CacheMetadata;
 pub use graph_derive::{GenericEdge, GenericEdgeType};
 
 use label::VoidLabel;
@@ -353,6 +354,7 @@ pub enum CacheFile {
 }
 
 enum GraphFile {
+    Metadata,
     Neighbors,
     Offsets,
     NodeLabels,
@@ -442,8 +444,8 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     }
 
     #[inline(always)]
-    pub fn open(
-        filename: &str,
+    pub fn open<P: AsRef<Path>>(
+        filename: P,
         batch: Option<usize>,
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -471,6 +473,16 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     #[inline(always)]
     pub fn graph_id(&self) -> Result<String, Box<dyn std::error::Error>> {
         self.graph_cache.cache_id()
+    }
+
+    pub fn metadata(&self) -> Result<CacheMetadata, Box<dyn std::error::Error>> {
+        self.graph_cache.metadata()
+    }
+
+    /// Returns the graph's cache entry metadata filename.
+    #[inline(always)]
+    pub fn cache_metadata_filename(&self) -> String {
+        self.graph_cache.metadata_filename()
     }
 
     /// Returns the graph's neighbors' file's filename.

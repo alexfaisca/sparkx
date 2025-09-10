@@ -63,10 +63,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         if let Some(p) = tmp_path {
             std::fs::remove_file(p)?;
         }
-
-        // make cache readonly (for now only serves to allow clone() on instances)
-        cache.make_readonly()?;
-
         Ok(cache)
     }
 
@@ -120,9 +116,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             std::fs::remove_file(p)?;
         }
 
-        // make cache readonly (for now only serves to allow clone() on instances)
-        cache.make_readonly()?;
-
         Ok(cache)
     }
 
@@ -164,8 +157,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             std::fs::remove_file(p)?;
         }
         // self.fst_from_ggcat_bytes(input.as_slice(), batching, in_fst)?;
-
-        self.finish()?;
 
         Ok(())
     }
@@ -346,7 +337,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         self.graph_bytes = sum;
         self.index_bytes = offsets_size;
 
-        self.finish()
+        Ok(())
     }
 
     /// Parses a ggcat output file input into a [`GraphCache`] instance with metalabels.
@@ -644,8 +635,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
 
         self.graph_bytes = sum;
         self.index_bytes = offsets_size;
-
-        self.finish()
+        Ok(())
     }
 
     fn parallel_parse_fst_ggcat_bytes_mmap(

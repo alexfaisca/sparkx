@@ -1,4 +1,5 @@
 pub(crate) mod utils;
+mod impl_metadata;
 #[cfg(feature = "nodes_edges")]
 mod parser_nodes_edges;
 #[cfg(feature = "mtx")]
@@ -8,7 +9,7 @@ mod parser_ggcat;
 
 use super::{CacheFile, GraphFile, E, N, IndexType};
 use utils::{
-    cache_file_name, cache_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, pers_cache_file_name, FileType, CACHE_DIR, H
+    cache_file_name, cache_file_name_from_id, cache_metadata_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, pers_cache_file_name, toml_cache_file_name, FileType, CACHE_DIR, H
 };
 
 #[cfg(any(test, feature = "bench"))]
@@ -28,6 +29,26 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Debug, Clone)]
+pub struct CacheMetadata {
+    pub format_version: u16,       // bump if layout/semantics change
+    pub dataset_name: String,      // e.g., "graph_0_5.lz4"
+    pub cache_id: String,          // your 64-hex id
+    pub nodes: usize,
+    pub edges: usize,
+    pub index_type: String,        // e.g., "u32" / "usize"
+    pub index_size: usize,         // size_of::<Ix>()
+    pub node_labeled: bool,
+    pub edge_labeled: bool,
+    pub has_fst: bool,
+    pub node_label_type: String,        // e.g., "u32" / "usize"
+    pub node_label_size: usize,    // 0 if not labeled
+    pub edge_label_type: String,        // e.g., "u32" / "usize"
+    pub edge_label_size: usize,    // 0 if not labeled
+    pub created_unix_secs: u64,    // for reproducibility
+    pub tool_version: Option<String>,
+}
+
 const_assert!(std::mem::size_of::<usize>() >= std::mem::size_of::<u64>());
 
 #[allow(dead_code, clippy::upper_case_acronyms, non_camel_case_types)]
@@ -46,6 +67,7 @@ pub struct GraphCache<N: super::N, E: super::E, Ix: IndexType> {
     pub nodelabel_file: Arc<File>,
     pub edgelabel_file: Arc<File>,
     pub metalabel_file: Arc<File>,
+    pub metadata_filename: String,
     pub neighbors_filename: String,
     pub offsets_filename: String,
     pub nodelabel_filename: String,
@@ -108,6 +130,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 
         Ok(
             match target_type {
+                FileType::CacheMetadata(_) => cache_metadata_file_name_from_id(&FileType::CacheMetadata(H::H), &id, seq),
                 FileType::Edges(_) => cache_file_name_from_id(&FileType::Edges(H::H), &id, seq),
                 FileType::Index(H::H) => cache_file_name_from_id(&FileType::Index(H::H), &id, seq),
                 FileType::NodeLabel(H::H) => {
@@ -275,6 +298,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             return Err("error invalid cache id: id was `None`".into());
         }
 
+        let metadata_filename = Self::init_cache_file_from_id_or_random(id, FileType::CacheMetadata(H::H), None)?;
         let neighbors_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::Edges(H::H), None)?;
         let offsets_filename =
@@ -285,6 +309,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             Self::init_cache_file_from_id_or_random(id, FileType::EdgeLabel(H::H), None)?;
         let metalabel_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::MetaLabel(H::H), Some(0))?;
+        println!("init for {metadata_filename}");
 
         let neighbors_file = Arc::new(
             OpenOptions::new()
@@ -337,6 +362,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             nodelabel_file,
             edgelabel_file,
             metalabel_file,
+            metadata_filename,
             neighbors_filename,
             offsets_filename,
             nodelabel_filename,
@@ -366,13 +392,18 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     /// [`build_fst_from_unsorted_file`]: ./struct.GraphCache.html#method.build_fst_from_unsorted_file
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`DEFAULT_BATCHING_SIZE`]: ./struct.GraphCache.html#associatedconstant.DEFAULT_BATCHING_SIZE
-    pub fn open(
-        filename: &str,
+    pub fn open<P: AsRef<Path>>(
+        filename: P,
         batch: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
+        let filename = filename.as_ref().to_str().ok_or_else(|| -> Box<dyn std::error::Error> {
+            format!("error couldn't get cache entry path string for {:?}", filename.as_ref()).into()
+        })?;
 
         let batch = Some(batch.map_or(Self::DEFAULT_BATCHING_SIZE, |b| b));
+        let metadata_filename =
+            Self::build_toml_graph_filename(filename, GraphFile::Metadata, None)?;
         let neighbors_filename =
             Self::build_graph_filename(filename, GraphFile::Neighbors, None)?;
         let offsets_filename =
@@ -383,6 +414,52 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             Self::build_graph_filename(filename, GraphFile::EdgeLabels, None)?;
         let metalabel_filename =
             Self::build_graph_filename(filename, GraphFile::MetaLabels, None)?;
+
+        println!("reading metadata from {metadata_filename} {neighbors_filename} {filename}");
+        let metadata = CacheMetadata::read_file(&metadata_filename)?;
+        println!("Metadata for cache entry is: {:?}", metadata);
+
+        // validate entry open request
+        if N::is_labeled() {
+            if !metadata.node_labeled {
+                return Err(
+                    format!(
+                        "error cached entry for {:?} was built without unlabeled nodes (type {}), node labels can't be provided, please re-parse dataset with labeled nodes enablede",
+                        filename,
+                        metadata.node_label_type
+                        ).into()
+                    );
+            } else if std::mem::size_of::<N>() != metadata.node_label_size {
+                return Err(format!(
+                        "error cached entry for {:?} was built without labeled nodes sized {}: node labels sized {} can't be provided, please re-parse dataset",
+                        filename,
+                        metadata.node_label_size,
+                        std::mem::size_of::<N>()
+                        ).into()
+                    );
+            }
+        }
+
+        if E::is_labeled() {
+            if !metadata.edge_labeled {
+                return Err(
+                    format!(
+                        "error cached entry for {:?} was built without unlabeled nodes (type {}), node labels can't be provided, please re-parse dataset with labeled nodes enablede",
+                        filename,
+                        metadata.edge_label_type
+                        ).into()
+                    );
+            } else if std::mem::size_of::<E>() != metadata.edge_label_size {
+                return Err(
+                    format!(
+                        "error cached entry for {:?} was built without labeled nodes sized {}: node labels sized {} can't be provided, please re-parse dataset",
+                        filename,
+                        metadata.edge_label_size,
+                        std::mem::size_of::<N>()
+                        ).into()
+                    );
+            }
+        }
 
         let neighbors_file = Arc::new(
             OpenOptions::new()
@@ -468,6 +545,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             nodelabel_file,
             edgelabel_file,
             metalabel_file,
+            metadata_filename,
             neighbors_filename,
             offsets_filename,
             nodelabel_filename,
@@ -513,9 +591,9 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::guarantee_caching_dir()?;
 
-        match Self::evaluate_input_file_type(p.as_ref())? {
+        let mut cache = match Self::evaluate_input_file_type(p.as_ref())? {
             #[cfg(feature = "mtx")]
-            InputFileType::MTX(_) => Ok(Self::from_mtx_file(p.as_ref(), id, batch)?),
+            InputFileType::MTX(_) => Self::from_mtx_file(p.as_ref(), id, batch),
             #[cfg(feature = "nodes_edges")]
             InputFileType::NODE_EDGE(ext) => 
             match ext {
@@ -524,14 +602,14 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 .ok_or_else(|| -> Box<dyn std::error::Error> {
                     "error getting edges path from nodes path".into()
                 })?;
-                    Ok(Self::from_node_edge_file(p.as_ref(), edges_path.as_ref(), id, batch, in_fst)?)
+                    Self::from_node_edge_file(p.as_ref(), edges_path.as_ref(), id, batch, in_fst)
                 },
                 Self::EXT_PLAINTEXT_EDGES => {
                     let nodes_path = edges_to_nodes(p.as_ref())
                 .ok_or_else(|| -> Box<dyn std::error::Error> {
                     "error getting nodes path from edges path".into()
                 })?;
-                    Ok(Self::from_node_edge_file(nodes_path.as_ref(), p.as_ref(), id, batch, in_fst)?)
+                    Self::from_node_edge_file(nodes_path.as_ref(), p.as_ref(), id, batch, in_fst)
                 },
                 _ => Err(format!(
                     "error ubknown extension for node/edge input file {:?}: must be of type .{} or .{}",
@@ -544,8 +622,8 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             #[cfg(feature = "ggcat")]
             InputFileType::GGCAT(ext) => 
             match ext {
-                Self::EXT_COMPRESSED_LZ4 => Ok(Self::from_ggcat_file(p.as_ref(), id)?),
-                Self::EXT_PLAINTEXT_TXT => Ok(Self::from_ggcat_file(p.as_ref(), id)?),
+                Self::EXT_COMPRESSED_LZ4 => Self::from_ggcat_file(p.as_ref(), id),
+                Self::EXT_PLAINTEXT_TXT => Self::from_ggcat_file(p.as_ref(), id),
                 _ => Err(format!(
                     "error ubknown extension for GGCAT output file {:?}: must be of type .{} or .{}",
                     ext,
@@ -554,7 +632,11 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 )
                 .into()),
             }
-        }
+        }?;
+
+        cache.finish(p.as_ref())?;
+        cache.make_readonly(p.as_ref())?;
+        Ok(cache)
     }
 
     /// Parses a [`GGCAT`](https://github.com/algbio/ggcat) output file input into a [`GraphCache`] instance.
@@ -688,7 +770,9 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         batch: Option<usize>,
         in_fst: Option<fn(usize) -> bool>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        Self::rebuild_fst_from_ggcat_file_impl(self, path, batch, in_fst)
+        Self::rebuild_fst_from_ggcat_file_impl(self, path.as_ref(), batch, in_fst)?;
+        self.finish(path.as_ref())?;
+        Ok(())
     }
 
     fn write_node(
@@ -995,13 +1079,41 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         Ok(())
     }
 
+    fn build_metadata_simple<P: AsRef<Path>>(
+        &self,
+        dataset: P,
+        cache_id: &str,
+        has_fst: bool,
+        tool_version: Option<String>,
+    ) -> Result<CacheMetadata, Box<dyn std::error::Error>> {
+        let edges = self.neighbors_file.metadata()?.len() as usize / size_of::<usize>();
+        let nodes = self.offsets_file.metadata()?.len() as usize / size_of::<usize>();
+        let dataset_str = dataset.as_ref().to_str().ok_or_else(|| -> Box<dyn std::error::Error> {
+            format!("error getting dataset str from {:?}", dataset.as_ref()).into()
+        })?;
+
+        Ok(CacheMetadata::now::<N, E, Ix>(
+            dataset_str,
+            cache_id,
+            nodes,
+            edges,
+            size_of::<Ix>(),
+            N::is_labeled(),
+            E::is_labeled(),
+            has_fst,
+            if N::is_labeled() { size_of::<N>() } else { 0 },
+            if E::is_labeled() { size_of::<E>() } else { 0 },
+            tool_version,
+        ))
+    }
+
     fn set_file_readonly(file: &File)  -> Result<(), Box<dyn std::error::Error>> {
         let mut permissions = file.metadata()?.permissions();
         permissions.set_readonly(true);
         Ok(file.set_permissions(permissions)?)
     }
 
-    fn finish(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn finish<P: AsRef<Path>>(&mut self, dataset: P) -> Result<(), Box<dyn std::error::Error>> {
         // make all files read-only and cleanup
         for file in [
             &mut self.offsets_file,
@@ -1015,6 +1127,22 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             file.flush()?;
         }
 
+    // Write metadata (text, no external deps)
+    let has_fst = self.metalabel_file.metadata()?.len() > 0;
+
+    let meta = self.build_metadata_simple(
+        dataset.as_ref(),                 // store these when creating the cache
+        &self.cache_id()?,
+        has_fst,
+        Some(env!("CARGO_PKG_VERSION").to_string()),
+    )?;
+
+    meta.write_file(self.metadata_filename())?;
+
+    // Make metadata read-only as well
+    let mut mf = OpenOptions::new().read(true).open(self.metadata_filename())?;
+    Self::set_file_readonly(&mf)?;
+    mf.flush()?;
         // remove any tmp files that may have been used to (re)build `GraphCache` instance
         self.cleanup_cache_by_target(FileType::MetaLabel(H::H))?;
         self.readonly = true;
@@ -1024,7 +1152,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     /// Make the [`GraphCache`] instance readonly. Allows the user to [`Clone`] the struct.
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
-    pub fn make_readonly(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn make_readonly<P: AsRef<Path>>(&mut self, p: P) -> Result<(), Box<dyn std::error::Error>> {
         if self.readonly {
             return Ok(());
         }
@@ -1050,7 +1178,20 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             self.build_fst_from_sorted_file()?;
         }
 
-        self.finish()
+        self.finish(p.as_ref())?;
+        self.make_readonly(p.as_ref())
+    }
+
+    /// Returns the neighbors' file's filename.
+    #[inline]
+    pub(super) fn metadata(&self) -> Result<CacheMetadata, Box<dyn std::error::Error>> {
+        CacheMetadata::read_file(&self.metadata_filename)
+    }
+
+    /// Returns the neighbors' file's filename.
+    #[inline]
+    pub fn metadata_filename(&self) -> String {
+        self.metadata_filename.clone()
     }
 
     /// Returns the neighbors' file's filename.
@@ -1125,6 +1266,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 
     fn convert_graph_file(file_type: GraphFile) -> FileType {
         match file_type {
+            GraphFile::Metadata => FileType::CacheMetadata(H::H),
             GraphFile::Neighbors => FileType::Edges(H::H),
             GraphFile::Offsets => FileType::Index(H::H),
             GraphFile::NodeLabels => FileType::NodeLabel(H::H),
@@ -1133,7 +1275,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         }
     }
 
-    /// Build a cached (either `.mmap` or `.tmp`) file of a given [`CacheFile`] type for the [`GraphCache`] instance.
+    /// Build a cached (`.mmap`) file of a given [`CacheFile`] type for the [`GraphCache`] instance.
     ///
     /// [`CacheFile`]: ./enum.CacheFile.html#
     /// [`GraphCache`]: ./struct.GraphCache.html#
@@ -1157,16 +1299,28 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
         cache_file_name(&self.neighbors_filename, &Self::convert_cache_file(target), seq)
     }
 
+    /// Build a cached (`.toml`) file of a given [`GraphFile`] type for the [`GraphCache`] instance.
+    ///
+    /// [`CacheFile`]: ./enum.CacheFile.html#
+    /// [`GraphCache`]: ./struct.GraphCache.html#
+    pub(super) fn build_toml_graph_filename(
+        fname: &str,
+        target: GraphFile,
+        seq: Option<usize>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        toml_cache_file_name(fname, &Self::convert_graph_file(target), seq)
+    }
+
     /// Build a cached (either `.mmap` or `.tmp`) file of a given [`GaraphFile`] type for the [`GraphCache`] instance.
     ///
     /// [`GraphFile`]: ./enum.CacheFile.html#
     /// [`GraphCache`]: ./struct.GraphCache.html#
     pub(super) fn build_graph_filename(
-        id: &str,
+        fname: &str,
         target: GraphFile,
         seq: Option<usize>,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        cache_file_name(id, &Self::convert_graph_file(target), seq)
+        cache_file_name(fname, &Self::convert_graph_file(target), seq)
     }
 
     /// Build a cached `.tmp` file of type [`FileType`]::Helper(_) for the [`GraphCache`] instance.
@@ -1208,6 +1362,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let this = ManuallyDrop::new(self);
+        std::fs::remove_file(this.metadata_filename())?;
         std::fs::remove_file(this.neighbors_filename())?;
         std::fs::remove_file(this.offsets_filename())?;
         std::fs::remove_file(this.nodelabels_filename())?;
@@ -1231,6 +1386,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> Clone for GraphCache<N, E, Ix> {
             nodelabel_file: self.nodelabel_file.clone(),
             edgelabel_file: self.edgelabel_file.clone(),
             metalabel_file: self.metalabel_file.clone(),
+            metadata_filename: self.metadata_filename.clone(),
             neighbors_filename: self.neighbors_filename.clone(),
             offsets_filename: self.offsets_filename.clone(),
             nodelabel_filename: self.nodelabel_filename.clone(),

@@ -412,6 +412,15 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // println!("clustering coefficient finished in {:?}", time.elapsed());
     // println!();
 
+    // let g = GraphMemoryMap::<N, E, Ix>::open(
+    //     "./.cache/metadata_5013817c269e634c07b3adc5178df93b89f991de411b2cf94e6a3d33b80f063f.toml",
+    //     None,
+    //     Some(32),
+    // )?;
+
+    // println!("graph metadata is {:?}", g.metadata()?);
+    // drop(g);
+
     println!("droping");
     graph_mmaped.drop_cache()?;
     println!("dropped");
