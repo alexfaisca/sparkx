@@ -1,4 +1,3 @@
-use memmap2::MmapOptions;
 #[allow(unused_imports)]
 use tool::centralities::hyper_ball::*;
 #[allow(unused_imports)]
@@ -12,6 +11,7 @@ use tool::graph::{E, GraphMemoryMap, IndexType, N, label::VoidLabel};
 use tool::k_core::{batagelj_zaversnik::*, liu_et_al::*};
 #[allow(unused_imports)]
 use tool::k_truss::{burkhardt_et_al::*, clustering_coefficient::*, pkt::*};
+use tool::shared_slice::SharedSliceMut;
 #[allow(unused_imports)]
 use tool::trails::hierholzer::*;
 
@@ -20,7 +20,6 @@ use clap::{ArgAction, Parser};
 use hyperloglog_rs::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::Display;
-use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
@@ -93,9 +92,18 @@ fn main() {
         panic!("error program can't operate on 64-bit systems");
     }
 
+    #[cfg(feature = "bench")]
     if let Some(error_target) = args.error_target {
         println!("proceeding into error_target {error_target}");
-    } else if let Some(cache_target) = args.cache_target {
+        hyperball_profile::<(), (), usize, _>(
+            args.file.clone(),
+            args.threads,
+            args.output_id.clone(),
+        )
+        .expect("hyperball profile success");
+        return;
+    }
+    if let Some(cache_target) = args.cache_target {
         println!("going into mem_target {cache_target}");
         match cache_target {
             0 => {
@@ -458,7 +466,7 @@ fn cache_profile_0<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -522,7 +530,7 @@ fn cache_profile_1<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -556,7 +564,7 @@ fn cache_profile_2<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -590,7 +598,7 @@ fn pages_profile_0<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -614,7 +622,7 @@ fn pages_profile_1<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -648,7 +656,7 @@ fn pages_profile_2<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -677,7 +685,7 @@ fn pages_profile_3<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -707,7 +715,7 @@ fn pages_profile_4<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -737,7 +745,7 @@ fn pages_profile_5<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -767,7 +775,7 @@ fn pages_profile_6<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -803,7 +811,7 @@ fn pages_profile_7<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -816,6 +824,104 @@ fn pages_profile_7<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path
     let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
     println!("hyperball {:?}", time.elapsed());
     hyperball.drop_cache()?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+#[cfg(feature = "bench")]
+fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+
+    use tool::{
+        shared_slice::AbstractedProceduralMemory, test_common::get_or_init_dataset_exact_closeness,
+        utils,
+    };
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+    println!();
+
+    let avg = [1, 2, 3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    let mut avg_fn = vec![];
+    let mut avg_arr = vec![];
+    for i in avg {
+        let h_fn = graph_mmaped.build_cache_filename(graph::CacheFile::General, Some(i))?;
+        avg_fn.push(h_fn.clone());
+        avg_arr.push(SharedSliceMut::<f64>::abst_mem_mut(
+            &h_fn,
+            graph_mmaped.size(),
+            true,
+        )?);
+    }
+
+    fn bucket_for(i: usize) -> usize {
+        match i {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3..=4 => 3,
+            5..=9 => 4,
+            10..=19 => 5,
+            20..=29 => 6,
+            30..=39 => 7,
+            40..=49 => 8,
+            50..=59 => 9,
+            60..=69 => 10,
+            70..=79 => 11,
+            80..=89 => 12,
+            _ => 13, // 90..=99
+        }
+    }
+
+    // for i in 0..100 {
+    let time = Instant::now();
+    let mut hyperball = HyperBallInner::<_, _, _, Precision13, 6>::new(&graph_mmaped)?;
+    println!("hyperball {:?}", time.elapsed());
+    {
+        let c = hyperball.compute_closeness_centrality(Some(true))?;
+        let b = bucket_for(0);
+        for u in 0..graph_mmaped.size() {
+            *avg_arr[b].get_mut(u) += c[u];
+        }
+    }
+
+    let e_fn = get_or_init_dataset_exact_closeness(path.as_ref(), &graph_mmaped)?;
+    let exact = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
+
+    let mut zeroes = 0;
+    (0..graph_mmaped.size()).for_each(|i| {
+        if *exact.get(i) == 0. {
+            zeroes += 1;
+        }
+    });
+
+    println!("found {zeroes} zeroes");
+
+    // for i in 0..avg_arr.len() {
+    // metrics
+    let e_mae = utils::mae(avg_arr[0].as_slice(), exact.as_slice());
+    let e_mape = utils::mape(avg_arr[0].as_slice(), exact.as_slice());
+    let rho = utils::spearman_rho(avg_arr[0].as_slice(), exact.as_slice());
+    println!("{e_mae} | {e_mape} | {rho}");
+    // }
+
+    for h_fn in avg_fn {
+        std::fs::remove_file(&h_fn)?;
+    }
 
     println!("droping");
     graph_mmaped.drop_cache()?;

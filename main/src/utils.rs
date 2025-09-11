@@ -54,6 +54,51 @@ pub(crate) fn f64_to_usize_safe(val: f64) -> Option<usize> {
     }
 }
 
+pub fn mae(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / (a.len() as f64)
+}
+pub fn mape(a: &[f64], b: &[f64]) -> f64 {
+    100.0
+        * a.iter()
+            .zip(b)
+            .map(|(x, &y)| {
+                if y == 0. {
+                    // eprintln!("x {x} y {y}");
+                    0.
+                } else {
+                    (x - y).abs() / y.abs()
+                }
+            })
+            .sum::<f64>()
+        / (a.len() as f64)
+}
+
+pub fn ranks(v: &[f64]) -> Vec<usize> {
+    // descending rank; stable
+    let mut idx: Vec<usize> = (0..v.len()).collect();
+    idx.sort_by(|&i, &j| v[j].partial_cmp(&v[i]).unwrap_or(std::cmp::Ordering::Equal));
+    let mut r = vec![0; v.len()];
+    for (rank, i) in idx.into_iter().enumerate() {
+        r[i] = rank;
+    }
+    r
+}
+
+pub fn spearman_rho(a: &[f64], b: &[f64]) -> f64 {
+    let ra = ranks(a);
+    let rb = ranks(b);
+    let n = a.len() as f64;
+    let ssd = ra
+        .iter()
+        .zip(rb.iter())
+        .map(|(x, y)| {
+            let d = (*x as f64) - (*y as f64);
+            d * d
+        })
+        .sum::<f64>();
+    1.0 - (6.0 * ssd) / (n * (n * n - 1.0).max(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{f64_is_nomal, f64_to_usize_safe};

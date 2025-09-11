@@ -26,8 +26,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactClosenessCentralit
 
         hyper_ball.compute_with_proc_mem(())?;
 
-        hyper_ball.g.cleanup_cache(CacheFile::HyperBall)?;
-
         Ok(hyper_ball)
     }
 
@@ -141,6 +139,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactClosenessCentralit
         &mut self,
         _proc_mem: (),
     ) -> Result<(), Box<dyn std::error::Error>> {
+        println!("aha");
         let node_count = self.g.size();
         let threads = self.g.thread_num();
         let node_load = node_count.div_ceil(threads);
@@ -172,6 +171,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactClosenessCentralit
                                 }
                             }
                         } else if index == 1 {
+                            println!("aha");
                             let norm = node_count.saturating_sub(1) as f64;
                             for u in begin..end {
                                 let bfs = BFSDists::new(graph, u).map_err(
@@ -186,6 +186,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ExactClosenessCentralit
                                 }
                             }
                         } else {
+                            println!("aha2");
                             for u in begin..end {
                                 let bfs = BFSDists::new(graph, u).map_err(
                                     |e| -> Box<dyn std::error::Error + Send + Sync> {

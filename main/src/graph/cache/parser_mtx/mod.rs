@@ -62,7 +62,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             (r, false) => r,
         };
 
-        cache.index_bytes = node_count;
+        cache.index_bytes = offset_size;
         let offsets = AbstractedProceduralMemoryMut::<AtomicUsize>::from_file(
             &cache.offsets_file,
             offset_size,

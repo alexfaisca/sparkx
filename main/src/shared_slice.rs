@@ -78,7 +78,7 @@ impl<T> Clone for SharedSliceMut<T> {
 
 #[allow(dead_code)]
 impl<T> AbstractedProceduralMemory<T> {
-    pub(crate) fn from_file_name(file_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file_name(file_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file = OpenOptions::new()
             .read(true)
             .truncate(false)
@@ -100,7 +100,7 @@ impl<T> AbstractedProceduralMemory<T> {
     }
 
     #[inline(always)]
-    pub(crate) fn get(&self, idx: usize) -> &T {
+    pub fn get(&self, idx: usize) -> &T {
         self.slice.get(idx)
     }
 
@@ -110,7 +110,7 @@ impl<T> AbstractedProceduralMemory<T> {
     }
 
     #[inline(always)]
-    pub(crate) fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         unsafe { std::slice::from_raw_parts(self.slice.ptr, self.slice.len) }
     }
 
@@ -186,7 +186,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     }
 
     #[inline(always)]
-    pub(crate) fn get(&self, idx: usize) -> &T {
+    pub fn get(&self, idx: usize) -> &T {
         self.slice.get(idx)
     }
 
@@ -206,7 +206,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
     }
 
     #[inline(always)]
-    pub(crate) fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         unsafe { std::slice::from_raw_parts(self.slice.ptr, self.slice.len) }
     }
 

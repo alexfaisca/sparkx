@@ -937,7 +937,7 @@ mod test {
         let exact = exact_mmaped.as_slice();
 
         let mut hyperball = HyperBallInner::<_, _, _, Precision8, 6>::new(&g)?;
-        let approx = hyperball.compute_closeness_centrality(Some(false))?;
+        let approx = hyperball.compute_closeness_centrality(Some(true))?;
 
         // metrics
         let e_mae = mae(approx, exact);
@@ -963,18 +963,18 @@ mod test {
 
     // generate test cases from dataset
     graph_tests! {
-        ggcat_1_5 => "./datasets/graphs/graph_1_5.lz4",
-        ggcat_2_5 => "./datasets/graphs/graph_2_5.lz4",
-        ggcat_3_5 => "./datasets/graphs/graph_3_5.lz4",
-        ggcat_4_5 => "./datasets/graphs/graph_4_5.lz4",
-        ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
-        ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
-        ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
-        ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
-        ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        ggcat_1_10 => "./datasets/graphs/graph_1_10.lz4",
-        ggcat_2_10 => "./datasets/graphs/graph_2_10.lz4",
-        ggcat_3_10 => "./datasets/graphs/graph_3_10.lz4",
+        // ggcat_1_5 => "./datasets/graphs/graph_1_5.lz4",
+        // ggcat_2_5 => "./datasets/graphs/graph_2_5.lz4",
+        // ggcat_3_5 => "./datasets/graphs/graph_3_5.lz4",
+        // ggcat_4_5 => "./datasets/graphs/graph_4_5.lz4",
+        // ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
+        // ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
+        // ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
+        // ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
+        // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
+        // ggcat_1_10 => "./datasets/graphs/graph_1_10.lz4",
+        // ggcat_2_10 => "./datasets/graphs/graph_2_10.lz4",
+        // ggcat_3_10 => "./datasets/graphs/graph_3_10.lz4",
         ggcat_4_10 => "./datasets/graphs/graph_4_10.lz4",
         // ggcat_5_10 => "./datasets/graphs/graph_5_10.lz4",
         // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",

@@ -38,6 +38,39 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> BFSDists<'a, N, E, Ix> 
 
         Ok(bfs)
     }
+    pub fn new_t(
+        g: &'a GraphMemoryMap<N, E, Ix>,
+        source: usize,
+        thread: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        if source >= g.size() {
+            return Err(format!(
+                "error node with id {source} doesn't exist: max id is |V| = {}",
+                g.size()
+            )
+            .into());
+        }
+        let out_fn = g.build_pers_cache_filename(CacheFile::BFS, Some(thread))?;
+        let mut bfs = Self {
+            g,
+            source,
+            distances: SharedSliceMut::<usize>::abst_mem_mut(&out_fn, g.size(), true)?,
+            reacheable: 0,
+            total_distances: 0.,
+        };
+        let node_count = bfs.g.size();
+
+        let q_fn = bfs.build_cache_filename(CacheFile::BFS, Some(3 * thread))?;
+        let v_fn = bfs.build_cache_filename(CacheFile::BFS, Some(3 * thread + 1))?;
+
+        let queue = SharedSliceMut::<usize>::abst_mem_mut(&q_fn, node_count, true)?;
+        let visited = SharedSliceMut::<bool>::abst_mem_mut(&v_fn, node_count, true)?;
+        bfs.compute_with_proc_mem((queue, visited))?;
+        std::fs::remove_file(q_fn)?;
+        std::fs::remove_file(v_fn)?;
+
+        Ok(bfs)
+    }
 
     /// Returns the sum of all nodes' distances to the source node as determined by the BFS.
     pub fn total_distances(&self) -> f64 {
@@ -193,7 +226,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> BFSDists<'a, N, E, Ix> 
         self.reacheable = reacheable;
         self.total_distances = sum;
         // cleanup cache
-        self.g.cleanup_cache(CacheFile::BFS)?;
+        // self.g.cleanup_cache(CacheFile::BFS)?;
 
         Ok(())
     }

@@ -216,6 +216,12 @@ done
 
 echo "Building synthetic datasets using \`gen_dgd_mtx.py\`"
 
+# ~16k protein edges (exact 15980)
+python gen_dbg_mtx.py --alphabet protein20 --k 2 --out ./datasets/graphs/synth_gen_dbg_protein20_k2_edges16k.mtx
+
+# ~130k DNA edges (exact 131068)
+python gen_dbg_mtx.py --alphabet dna --k 7 --out ./datasets/graphs/synth_gen_dbg_dna_k7_edges130k.mtx
+
 # ~8.4M DNA edges (exact 8,388,604)
 python gen_dbg_mtx.py --alphabet dna --k 10 --out ./${WORKDIR}/graphs/synth_dna_k10_edges8_4M.mtx
 
