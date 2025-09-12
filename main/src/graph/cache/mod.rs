@@ -333,7 +333,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             OpenOptions::new()
                 .read(true)
                 .write(true)
-                .truncate(false)
+                .truncate(true)
                 .create(true)
                 .open(&nodelabel_filename)?,
         );
@@ -342,7 +342,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             OpenOptions::new()
                 .read(true)
                 .write(true)
-                .truncate(false)
+                .truncate(true)
                 .create(true)
                 .open(&edgelabel_filename)?,
         );

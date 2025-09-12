@@ -261,7 +261,7 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // This assumes UTF-8 but avoids full conversion
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, None)?;
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -431,9 +431,9 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // println!("graph metadata is {:?}", g.metadata()?);
     // drop(g);
 
-    // println!("droping");
-    // graph_mmaped.drop_cache()?;
-    // println!("dropped");
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
 
     // let mut i = 0;
     // while i < graph_mmaped.size().map_or(0, |s| s) {
@@ -898,9 +898,9 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
     {
         let c = hyperball.compute_closeness_centrality(Some(true))?;
         let b = bucket_for(0);
-        for u in 0..graph_mmaped.size() {
+        (0..graph_mmaped.size()).for_each(|u| {
             *avg_arr[b].get_mut(u) += c[u];
-        }
+        });
     }
 
     let e_fn = get_or_init_dataset_exact_closeness(path.as_ref(), &graph_mmaped)?;
@@ -976,7 +976,7 @@ fn record_to_csv_line(rec: &HkprRecord<'_>) -> String {
 }
 
 /// Append header if file is empty; then append one line.
-fn append_record(csv_path: impl AsRef<Path>, rec: &HkprRecord<'_>) -> io::Result<()> {
+fn _append_record(csv_path: impl AsRef<Path>, rec: &HkprRecord<'_>) -> io::Result<()> {
     let path = csv_path.as_ref();
     if let Some(dir) = path.parent() {
         create_dir_all(dir)?;

@@ -60,7 +60,6 @@ criterion = "0.5.0"
 criterion-perf-events = "0.4.0"
 perf-event = "0.4.8"
 perfcnt = "0.8.0"
-dashmap = "6.1.0"
 
 [[bench]]
 name = "algo_batagelj_zaversnik" # matches benches/algo_hierholzer.rs

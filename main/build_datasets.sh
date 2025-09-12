@@ -9,7 +9,39 @@ OUTPUT_PREFIX="ggcat_graph"
 WORKDIR="datasets"
 THREADS="$(getconf _NPROCESSORS_ONLN || echo 8)"
 COLORED=0
-KEEP_GZ=0 # gunzip by default for best compatibility
+KEEP_GZ=0 # unzip by default
+
+missing=0
+
+need_cmd() {
+	if ! command -v "$1" >/dev/null 2>&1; then
+		echo "ERROR: '$1' is not installed or not on PATH." >&2
+		missing=1
+	fi
+}
+
+need_cmd python3
+need_cmd cargo
+need_cmd rustc
+
+if ((missing)); then
+	echo
+	echo "Please install the missing tools and re-run this script."
+	echo
+	echo "Ubuntu example:"
+	echo "  sudo apt update"
+	echo "  sudo apt install -y python3 python3-pip python3-venv rustc cargo"
+	echo
+	echo "Verify afterwards with:"
+	echo "  python3 --version"
+	echo "  rustc --version"
+	echo "  cargo --version"
+	exit 1
+fi
+
+echo "[OK] Using: $(python3 --version 2>&1)"
+echo "[OK] Using: $(cargo --version 2>&1)"
+echo "[OK] Using: $(rustc --version 2>&1)"
 
 usage() {
 	cat <<'EOF'
@@ -217,25 +249,25 @@ done
 echo "Building synthetic datasets using \`gen_dgd_mtx.py\`"
 
 # ~16k protein edges (exact 15980)
-python gen_dbg_mtx.py --alphabet protein20 --k 2 --out ./datasets/graphs/synth_gen_dbg_protein20_k2_edges16k.mtx
+python3 gen_dbg_mtx.py --alphabet protein20 --k 2 --out ./${WORKDIR}/graphs/synth_gen_dbg_protein20_k2_edges16k.mtx
 
 # ~130k DNA edges (exact 131068)
-python gen_dbg_mtx.py --alphabet dna --k 7 --out ./datasets/graphs/synth_gen_dbg_dna_k7_edges130k.mtx
+python3 gen_dbg_mtx.py --alphabet dna --k 7 --out ./${WORKDIR}/graphs/synth_gen_dbg_dna_k7_edges130k.mtx
 
 # ~8.4M DNA edges (exact 8,388,604)
-python gen_dbg_mtx.py --alphabet dna --k 10 --out ./${WORKDIR}/graphs/synth_dna_k10_edges8_4M.mtx
+python3 gen_dbg_mtx.py --alphabet dna --k 10 --out ./${WORKDIR}/graphs/synth_dna_k10_edges8_4M.mtx
 
 # ~33.5M DNA edges (exact 33,554,428)
-python gen_dbg_mtx.py --alphabet dna --k 11 --out ./${WORKDIR}/graphs/synth_dna_k11_edges33_5M.mtx
+python3 gen_dbg_mtx.py --alphabet dna --k 11 --out ./${WORKDIR}/graphs/synth_dna_k11_edges33_5M.mtx
 
 # ~128M protein edges (exact 127,999,980)
-python gen_dbg_mtx.py --alphabet protein20 --k 5 --out ./${WORKDIR}/graphs/synth_prot20_k5_edges128M.mtx
+python3 gen_dbg_mtx.py --alphabet protein20 --k 5 --out ./${WORKDIR}/graphs/synth_prot20_k5_edges128M.mtx
 
 # ~296M protein edges (exact 296,071,755)
-python gen_dbg_mtx.py --alphabet protein23 --k 5 --out ./${WORKDIR}/graphs/synth_prot23_k5_edges296M.mtx
+python3 gen_dbg_mtx.py --alphabet protein23 --k 5 --out ./${WORKDIR}/graphs/synth_prot23_k5_edges296M.mtx
 
 # ~6.8B protein edges (exact 6,809,650,871) **WARNING!!!: Gigabyte A1 took 1 hour to parse the resulting file into a graph.**
-python gen_dbg_mtx.py --alphabet protein23 --k 6 --out ./${WORKDIR}/graphs/synth_prot23_k6_edges6_8B.mtx
+python3 gen_dbg_mtx.py --alphabet protein23 --k 6 --out ./${WORKDIR}/graphs/synth_prot23_k6_edges6_8B.mtx
 
 echo
 echo "All graphs built under: $(pwd)/${WORKDIR}/graphs"
