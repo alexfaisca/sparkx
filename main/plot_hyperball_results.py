@@ -1,5 +1,12 @@
-import matplotlib.pyplot as plt
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError:
+    raise SystemExit("Matplotlib not found. Install with: python -m pip install numpy")
+
+try:
+    import matplotlib.pyplot as plt
+except ModuleNotFoundError:
+    raise SystemExit("Matplotlib not found. Install with: python -m pip install matplotlib")
 
 V    = [512, 1063, 400, 16384, 138015, 474615, 522498]       # |V|
 E    = [4096, 336, 15980, 131068, 749588, 3600020, 4170650]     # |E|

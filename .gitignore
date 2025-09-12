@@ -9,6 +9,7 @@ mus/
 main/datasets/
 */.artifacts/
 */plots/
+*/results/
 main/.artifacts/
 main/xtask/.artifacts/
 main/derive_macros/target/

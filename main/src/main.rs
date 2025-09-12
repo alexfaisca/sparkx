@@ -20,7 +20,8 @@ use clap::{ArgAction, Parser};
 use hyperloglog_rs::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::Display;
-use std::io::Write;
+use std::fs::{OpenOptions, create_dir_all, metadata};
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -94,13 +95,22 @@ fn main() {
 
     #[cfg(feature = "bench")]
     if let Some(error_target) = args.error_target {
-        println!("proceeding into error_target {error_target}");
-        hyperball_profile::<(), (), usize, _>(
-            args.file.clone(),
-            args.threads,
-            args.output_id.clone(),
-        )
-        .expect("hyperball profile success");
+        if error_target == 0 {
+            println!("proceeding into error_target {error_target}");
+            hyperball_profile::<(), (), usize, _>(
+                args.file.clone(),
+                args.threads,
+                args.output_id.clone(),
+            )
+            .expect("hyperball profile should succeed");
+        } else {
+            hk_relax_profile::<(), (), usize, _>(
+                args.file.clone(),
+                args.threads,
+                args.output_id.clone(),
+            )
+            .expect("hk-relax profile should succeed");
+        }
         return;
     }
     if let Some(cache_target) = args.cache_target {
@@ -396,14 +406,7 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // println!("harmonic centrality {:?}", time.elapsed());
     // println!();
     //
-    // let mut i = 0;
-    // while i < graph_mmaped.size() {
-    //     let time = Instant::now();
-    //     let hk_relax = HKRelax::new(&graph_mmaped, 45., 0.001, vec![i], None, None)?;
-    //     let _ = hk_relax.compute()?;
-    //     println!("HKRelax {:?}", time.elapsed());
-    //     i += 1234600;
-    // }
+
     //
     //
     // let time = Instant::now();
@@ -847,6 +850,7 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
         GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
+
     println!(
         "graph built (|V| = {:?}, |E| = {}) {:?}",
         graph_mmaped.size(),
@@ -855,7 +859,7 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
     );
     println!();
 
-    let avg = [1, 2, 3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    let avg = [1];
     let mut avg_fn = vec![];
     let mut avg_arr = vec![];
     for i in avg {
@@ -908,20 +912,238 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
             zeroes += 1;
         }
     });
-
     println!("found {zeroes} zeroes");
 
-    // for i in 0..avg_arr.len() {
-    // metrics
     let e_mae = utils::mae(avg_arr[0].as_slice(), exact.as_slice());
     let e_mape = utils::mape(avg_arr[0].as_slice(), exact.as_slice());
     let rho = utils::spearman_rho(avg_arr[0].as_slice(), exact.as_slice());
     println!("{e_mae} | {e_mape} | {rho}");
-    // }
 
-    for h_fn in avg_fn {
-        std::fs::remove_file(&h_fn)?;
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct HkprRecord<'a> {
+    dataset: &'a str,   // graph id/name
+    t: f64,             // diffusion parameter
+    eps: f64,           // error parameter
+    seed: u64,          // seed node id (or experiment seed)
+    conductance: f64,   // best sweep-cut conductance
+    cluster_size: u64,  // |S|
+    volume: u64,        // vol(S)
+    runtime_secs: u128, // wall time in seconds
+}
+
+/// Escape a field for CSV according to RFC 4180-ish rules.
+/// If it contains a comma, quote, or newline, wrap in quotes and double internal quotes.
+fn csv_escape(field: &str) -> String {
+    let needs_quotes =
+        field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r');
+    if !needs_quotes {
+        return field.to_string();
     }
+    let mut s = String::with_capacity(field.len() + 2);
+    s.push('"');
+    for ch in field.chars() {
+        if ch == '"' {
+            s.push('"'); // double the quote
+        }
+        s.push(ch);
+    }
+    s.push('"');
+    s
+}
+
+/// Convert a record to a CSV line (no trailing newline).
+fn record_to_csv_line(rec: &HkprRecord<'_>) -> String {
+    // Numeric fields don’t need escaping.
+    // For dataset we call csv_escape in case it has commas/spaces/etc.
+    format!(
+        "{},{},{},{},{},{},{},{}",
+        csv_escape(rec.dataset),
+        rec.t,
+        rec.eps,
+        rec.seed,
+        rec.conductance,
+        rec.cluster_size,
+        rec.volume,
+        rec.runtime_secs
+    )
+}
+
+/// Append header if file is empty; then append one line.
+fn append_record(csv_path: impl AsRef<Path>, rec: &HkprRecord<'_>) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    if let Some(dir) = path.parent() {
+        create_dir_all(dir)?;
+    }
+
+    // Detect empty file (or non-existent).
+    let is_empty = match metadata(path) {
+        Ok(m) => m.len() == 0,
+        Err(_) => true,
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+
+    if is_empty {
+        // Write header
+        writeln!(
+            file,
+            "dataset,t,eps,seed,conductance,cluster_size,volume,runtime_secs"
+        )?;
+    }
+
+    // Write the record line
+    writeln!(file, "{}", record_to_csv_line(rec))?;
+    Ok(())
+}
+
+/// Append many records efficiently (header once if needed).
+fn append_records(csv_path: impl AsRef<Path>, recs: &[HkprRecord<'_>]) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    if let Some(dir) = path.parent() {
+        create_dir_all(dir)?;
+    }
+    let is_empty = match metadata(path) {
+        Ok(m) => m.len() == 0,
+        Err(_) => true,
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+
+    if is_empty {
+        writeln!(
+            file,
+            "dataset,t,eps,seed,conductance,cluster_size,volume,runtime_secs"
+        )?;
+    }
+
+    for rec in recs {
+        writeln!(file, "{}", record_to_csv_line(rec))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "bench")]
+fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+
+    use rand::Rng;
+    use std::path::PathBuf;
+
+    let out_file: PathBuf = "results/hkpr_all.csv".into();
+    let dataset = path
+        .as_ref()
+        .file_name()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            format!("error couldn.t get filename for {:?}", path.as_ref()).into()
+        })?
+        .to_str()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            format!("error couldn.t get filename strfor {:?}", path.as_ref()).into()
+        })?;
+    let runs_per_params = 1000;
+
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+
+    let mut conds = vec![];
+    let mut results = vec![];
+    for (t, eps) in [
+        (1., 0.01),
+        (5., 0.01),
+        (10., 0.01),
+        (15., 0.01),
+        (20., 0.01),
+        (25., 0.01),
+        (30., 0.01),
+        (35., 0.01),
+        (40., 0.01),
+        (1., 0.001),
+        (5., 0.001),
+        (10., 0.001),
+        (15., 0.001),
+        (20., 0.001),
+        (25., 0.001),
+        (30., 0.001),
+        (35., 0.001),
+        (40., 0.001),
+        (1., 0.0001),
+        (5., 0.0001),
+        (10., 0.0001),
+        (15., 0.0001),
+        (20., 0.0001),
+        (25., 0.0001),
+        (30., 0.0001),
+        (35., 0.0001),
+        (40., 0.0001),
+        (1., 0.00001),
+        (5., 0.00001),
+        (10., 0.00001),
+        (15., 0.00001),
+        (20., 0.00001),
+        (25., 0.00001),
+        (30., 0.00001),
+        (35., 0.00001),
+        (40., 0.00001),
+        (1., 0.000001),
+        (5., 0.000001),
+        (10., 0.000001),
+        (15., 0.000001),
+        (20., 0.000001),
+        (25., 0.000001),
+        (30., 0.000001),
+        (35., 0.000001),
+        (40., 0.000001),
+    ] {
+        println!("{t} :: {eps}");
+        let mut i = 0;
+        loop {
+            if i == runs_per_params {
+                break;
+            }
+            let s = rand::rng().random_range(0..graph_mmaped.size());
+
+            let hk_relax = HKRelax::new(&graph_mmaped, t, eps, vec![s], None, None)?;
+            let time = Instant::now();
+            let c = hk_relax.compute()?;
+            let elapsed = time.elapsed();
+            if c.size < 10 || c.width < 10 {
+                continue;
+            }
+            results.push(HkprRecord {
+                dataset,
+                t,
+                eps,
+                seed: s as u64,
+                conductance: c.conductance,
+                cluster_size: c.size as u64,
+                volume: c.width as u64,
+                runtime_secs: elapsed.as_micros(),
+            });
+            println!("{i} ---> {}", c.conductance);
+            conds.push(c.conductance);
+            i += 1;
+        }
+    }
+
+    append_records(&out_file, &results)?;
 
     println!("droping");
     graph_mmaped.drop_cache()?;

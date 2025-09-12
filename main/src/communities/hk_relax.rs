@@ -197,7 +197,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> HKRelax<'a, N, E, Ix> {
 
         let n = Self::compute_n(t, eps)?;
         let psis = Self::compute_psis(n, t)?;
-        println!("n computed to be {}", n);
+        // println!("n computed to be {}", n);
 
         Ok(HKRelax {
             g,
@@ -334,10 +334,10 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> HKRelax<'a, N, E, Ix> {
             .sweep_cut(h.as_mut(), self.target_size, self.target_volume)
         {
             Ok(c) => {
-                println!(
-                    "best community hkrelax {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
-                    c.size, c.width, c.conductance
-                );
+                // println!(
+                //     "best community hkrelax {{\n\tsize: {}\n\tvolume/width: {}\n\tconductance: {}\n}}",
+                //     c.size, c.width, c.conductance
+                // );
                 Ok(c)
             }
             Err(e) => Err(format!("error sweep cut: {e}").into()),
