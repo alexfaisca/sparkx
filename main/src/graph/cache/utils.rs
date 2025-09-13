@@ -3,6 +3,7 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::{
     fmt::Write,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -501,21 +502,77 @@ impl std::fmt::Display for FileType {
     }
 }
 
+/// Ensure `path` exists and is writable. If it's read-only, make it writable.
+///
+/// Returns:
+/// - Ok(true)  -> file exists and is writable now (already or after change)
+/// - Ok(false) -> file does not exist
+/// - Err(e)    -> other I/O error (permissions, ACLs, etc.)
+pub(super) fn ensure_file_writable(
+    path: impl AsRef<Path>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let path = path.as_ref();
+
+    // Does it exist?
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+
+    // If it's a directory, treat as error (adjust if you want to allow dirs)
+    if meta.is_dir() {
+        return Err("path refers to a directory, not a file".into());
+    }
+
+    #[cfg(not(unix))]
+    {
+        let mut perms = meta.permissions();
+        if !perms.readonly() {
+            return Ok(true);
+        }
+        // Clear the read-only attribute on Windows/other.
+        perms.set_readonly(false);
+        std::fs::set_permissions(path, perms)?;
+        return Ok(true);
+    }
+
+    #[cfg(unix)]
+    {
+        let perms = meta.permissions();
+        let mode = perms.mode();
+        let user_w = 0o200;
+        if (mode & user_w) != 0 {
+            return Ok(true); // already user-writable
+        }
+        let new_mode = mode | user_w;
+        let mut new_perms = perms;
+        new_perms.set_mode(new_mode);
+        std::fs::set_permissions(path, new_perms)?;
+        Ok(true)
+    }
+}
+
 mod test {
     #[allow(unused_imports)]
     use super::*;
     use std::fs::{self, File};
+    #[allow(unused_imports)]
+    use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     // ---- helpers -------------------------------------------------------------
 
     /// Ensure CACHE_DIR exists before filesystem tests.
+    #[allow(dead_code)]
     fn ensure_cache_dir() -> PathBuf {
         let p = Path::new(CACHE_DIR);
         fs::create_dir_all(p).unwrap();
         p.to_path_buf()
     }
 
+    #[allow(dead_code)]
     fn touch<P: AsRef<Path>>(p: P) {
         File::create(p).expect("failed to create file");
     }
@@ -780,5 +837,79 @@ mod test {
         );
         assert!(got.starts_with(CACHE_DIR));
         assert!(got.ends_with(&expected_tail), "got = {}", got);
+    }
+
+    /// Make a unique path under the OS temp dir without external deps.
+    #[allow(dead_code)]
+    fn unique_temp_path(name_hint: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid = std::process::id();
+        p.push(format!("{}_{}_{}", name_hint, pid, nanos));
+        p
+    }
+
+    #[test]
+    fn returns_false_for_missing_file() {
+        let p = unique_temp_path("missing_file");
+        assert!(!p.exists());
+        let r = ensure_file_writable(&p).unwrap();
+        assert!(!r, "should return Ok(false) for non-existent path");
+    }
+
+    #[test]
+    fn ok_true_for_already_writable_file() {
+        let p = unique_temp_path("writable_file.txt");
+        {
+            let mut f = fs::File::create(&p).unwrap();
+            writeln!(f, "hello").unwrap();
+        }
+        // File starts writable; function should be a no-op that returns true.
+        let r = ensure_file_writable(&p).unwrap();
+        assert!(r, "existing writable file should return Ok(true)");
+
+        // Clean up
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn makes_readonly_file_writable() {
+        let p = unique_temp_path("readonly_file.txt");
+        {
+            let mut f = fs::File::create(&p).unwrap();
+            writeln!(f, "data").unwrap();
+        }
+
+        // Make it read-only
+        let mut perms = fs::metadata(&p).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // remove all write bits (user/group/other)
+            perms.set_mode(perms.mode() & !0o222);
+        }
+        #[cfg(not(unix))]
+        {
+            perms.set_readonly(true);
+        }
+        fs::set_permissions(&p, perms).unwrap();
+
+        // Verify that writing now fails
+        let can_write_now = fs::OpenOptions::new().write(true).open(&p).is_ok();
+        assert!(!can_write_now, "precondition: file should be read-only");
+
+        // Call the function: it should flip to writable and return Ok(true)
+        let r = ensure_file_writable(&p).unwrap();
+        assert!(r, "should return Ok(true) after making file writable");
+
+        // Now writing should succeed
+        let mut wf = fs::OpenOptions::new().write(true).open(&p).unwrap();
+        writeln!(wf, "more").unwrap();
+
+        // Clean up
+        fs::remove_file(&p).ok();
     }
 }

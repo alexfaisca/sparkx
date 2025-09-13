@@ -1,5 +1,6 @@
 pub(crate) mod utils;
 mod impl_metadata;
+mod impl_sort;
 #[cfg(feature = "nodes_edges")]
 mod parser_nodes_edges;
 #[cfg(feature = "mtx")]
@@ -9,7 +10,7 @@ mod parser_ggcat;
 
 use super::{CacheFile, GraphFile, E, N, IndexType};
 use utils::{
-    cache_file_name, cache_file_name_from_id, cache_metadata_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, pers_cache_file_name, toml_cache_file_name, FileType, CACHE_DIR, H
+    ensure_file_writable, cache_file_name, cache_file_name_from_id, cache_metadata_file_name_from_id, cleanup_cache, edges_to_nodes, graph_id_from_cache_file_name, id_for_subgraph_export, id_from_filename, nodes_to_edges, pers_cache_file_name, toml_cache_file_name, FileType, CACHE_DIR, H
 };
 
 #[cfg(any(test, feature = "bench"))]
@@ -309,7 +310,12 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
             Self::init_cache_file_from_id_or_random(id, FileType::EdgeLabel(H::H), None)?;
         let metalabel_filename =
             Self::init_cache_file_from_id_or_random(id, FileType::MetaLabel(H::H), Some(0))?;
-        println!("init for {metadata_filename}");
+
+        ensure_file_writable(&neighbors_filename)?;
+        ensure_file_writable(&offsets_filename)?;
+        ensure_file_writable(&nodelabel_filename)?;
+        ensure_file_writable(&edgelabel_filename)?;
+        ensure_file_writable(&metalabel_filename)?;
 
         let neighbors_file = Arc::new(
             OpenOptions::new()
@@ -319,7 +325,6 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 .create(true)
                 .open(&neighbors_filename)?,
         );
-
         let offsets_file = Arc::new(
             OpenOptions::new()
                 .read(true)
@@ -328,7 +333,6 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 .create(true)
                 .open(&offsets_filename)?,
         );
-
         let nodelabel_file = Arc::new(
             OpenOptions::new()
                 .read(true)
@@ -337,7 +341,6 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 .create(true)
                 .open(&nodelabel_filename)?,
         );
-
         let edgelabel_file = Arc::new(
             OpenOptions::new()
                 .read(true)
@@ -346,7 +349,6 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
                 .create(true)
                 .open(&edgelabel_filename)?,
         );
-
         let metalabel_file = Arc::new(
             OpenOptions::new()
                 .read(true)
@@ -417,7 +419,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
 
         println!("reading metadata from {metadata_filename} {neighbors_filename} {filename}");
         let metadata = CacheMetadata::read_file(&metadata_filename)?;
-        println!("Metadata for cache entry is: {:?}", metadata);
+        println!("Metadata for cache entry is: {}", metadata);
 
         // validate entry open request
         if N::is_labeled() {
@@ -1028,6 +1030,7 @@ impl<N: super::N, E: super::E, Ix: IndexType> GraphCache<N, E, Ix> {
     fn merge_fsts(&mut self, batch_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
         // open output FST file for writing
         let out_fn = cache_file_name(&self.metalabel_filename, &FileType::MetaLabel(H::H), None)?;
+        ensure_file_writable(&out_fn)?;
         let out = Arc::new(
             OpenOptions::new()
                 .create(true)

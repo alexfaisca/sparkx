@@ -9,7 +9,7 @@ use num_cpus::get_physical;
 use portable_atomic::{AtomicUsize, Ordering};
 use std::path::Path;
 
-use super::{GraphCache, utils::apply_permutation_in_place};
+use super::GraphCache;
 
 impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
     /// Parses a [`MatrixMarket`](https://math.nist.gov/MatrixMarket/formats.html) file input into a [`GraphCache`] instance.
@@ -86,29 +86,29 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         let mut sum = 0;
         let mut max_degree = 0;
         // this works because after aloc memmaped files are zeroed (so index[nr] = 0)
+        let mut offsets_s = unsafe {
+            offsets.shared_slice().cast::<usize>().ok_or_else(
+                || -> Box<dyn std::error::Error> { "error getting non atomic slice".into() },
+            )?
+        };
+
         for u in 0..offset_size {
-            let deg_u = offsets.get(u).load(Ordering::Relaxed);
+            let deg_u = *offsets_s.get(u);
             if deg_u > max_degree {
                 max_degree = deg_u;
             }
-            offsets.get(u).store(sum, Ordering::Relaxed);
+            *offsets_s.get_mut(u) = sum;
             sum += deg_u;
         }
-        // println!(
-        //     "|V| == {}, |E| == {}",
-        //     node_count,
-        //     index.get(node_count).load(Ordering::Relaxed)
-        // );
 
         if max_degree >= u8::MAX as usize {
             return Err(format!("Error graph has a max_degree of {max_degree} which, unforturnately, is bigger than {}, our current maximum supported size. If you feel a mistake has been made or really need this feature, please contact the developer team. We sincerely apologize.", u8::MAX).into());
         }
 
         cache.graph_bytes = sum;
-        let mut neighbors =
+        let neighbors =
             AbstractedProceduralMemoryMut::<usize>::from_file(&cache.neighbors_file, sum)?;
-        let mut edgelabels =
-            AbstractedProceduralMemoryMut::<E>::from_file(&cache.edgelabel_file, sum)?;
+        let edgelabels = AbstractedProceduralMemoryMut::<E>::from_file(&cache.edgelabel_file, sum)?;
 
         if E::is_labeled() {
             Self::parallel_edge_labels_parse_mtx_with(
@@ -116,71 +116,40 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                 {
                     let mut neighbors = neighbors.shared_slice();
                     let mut edgelabels = edgelabels.shared_slice();
-                    let offsets = offsets.shared_slice();
                     let counters = counters.shared_slice();
                     move |u, v, w| {
-                        *neighbors.get_mut(
-                            offsets.get(u).load(Ordering::Relaxed)
-                                + counters.get(u).load(Ordering::Relaxed),
-                        ) = v;
+                        *neighbors
+                            .get_mut(*offsets_s.get(u) + counters.get(u).load(Ordering::Relaxed)) =
+                            v;
                         *edgelabels.get_mut(
-                            offsets.get(u).load(Ordering::Relaxed)
-                                + counters.get(u).fetch_add(1, Ordering::Relaxed),
+                            *offsets_s.get(u) + counters.get(u).fetch_add(1, Ordering::Relaxed),
                         ) = E::new(w);
                     }
                 },
                 threads,
             )?;
-            let mut idx = Vec::with_capacity(u16::MAX as usize);
-            for node in 0..node_count {
-                let begin = offsets.get(node).load(Ordering::Relaxed);
-                let end = offsets.get(node + 1).load(Ordering::Relaxed);
-                (0..end - begin).for_each(|v| {
-                    idx.push(v);
-                });
-                let node_edges = neighbors.mut_slice(begin, end).ok_or_else(
-                    || -> Box<dyn std::error::Error> {
-                        format!("error getting node {node}'s edges as a mut slice for ordering")
-                            .into()
-                    },
-                )?;
-                let edge_labels = edgelabels.mut_slice(begin, end).ok_or_else(
-                    || -> Box<dyn std::error::Error> {
-                        format!("error getting node {node}'s edges' edge labels as a mut slice for ordering")
-                            .into()
-                    },
-                )?;
-                idx.sort_by_key(|&i| node_edges[i]);
-                apply_permutation_in_place(idx.as_mut_slice(), node_edges, edge_labels);
-            }
+            Self::sort_edges_with_labels(
+                offsets.shared_slice(),
+                neighbors.shared_slice(),
+                edgelabels.shared_slice(),
+                threads,
+            )?;
             edgelabels.flush()?;
         } else {
             Self::parallel_no_labels_parse_mtx_with(
                 path.as_ref(),
                 {
                     let mut neighbors = neighbors.shared_slice();
-                    let offsets = offsets.shared_slice();
                     let counters = counters.shared_slice();
                     move |u, v| {
                         *neighbors.get_mut(
-                            offsets.get(u).load(Ordering::Relaxed)
-                                + counters.get(u).fetch_add(1, Ordering::Relaxed),
+                            *offsets_s.get(u) + counters.get(u).fetch_add(1, Ordering::Relaxed),
                         ) = v;
                     }
                 },
                 threads,
             )?;
-            for node in 0..node_count {
-                let begin = offsets.get(node).load(Ordering::Relaxed);
-                let end = offsets.get(node + 1).load(Ordering::Relaxed);
-                let node_edges = neighbors.mut_slice(begin, end).ok_or_else(
-                    || -> Box<dyn std::error::Error> {
-                        format!("error getting node {node}'s edges as a mut slice for ordering")
-                            .into()
-                    },
-                )?;
-                node_edges.sort();
-            }
+            Self::sort_edges(offsets_s, neighbors.shared_slice(), threads)?;
         }
 
         std::fs::remove_file(&h_fn)?;

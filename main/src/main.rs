@@ -268,7 +268,7 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
         graph_mmaped.width(),
         time.elapsed()
     );
-    println!("metadata:\n{:?}", graph_mmaped.metadata()?);
+    println!("metadata:\n{}", graph_mmaped.metadata()?);
 
     let time = Instant::now();
     let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
@@ -304,10 +304,10 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     );
     println!();
 
-    let time = Instant::now();
-    let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
-    println!("hyperball {:?}", time.elapsed());
-    hyperball.drop_cache()?;
+    // let time = Instant::now();
+    // let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
+    // println!("hyperball {:?}", time.elapsed());
+    // hyperball.drop_cache()?;
 
     // _louvain.coalesce_isolated_nodes()?;
     // println!("found {} communities", _louvain.community_count());

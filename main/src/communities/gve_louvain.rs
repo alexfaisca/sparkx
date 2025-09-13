@@ -47,6 +47,8 @@ pub struct AlgoGVELouvain<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Partition modularity.
     modularity: f64,
     threads: usize,
+    #[cfg(feature = "bench")]
+    iters: Vec<usize>,
 }
 #[allow(dead_code)]
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E, Ix> {
@@ -127,6 +129,8 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                         community_count: max,
                         modularity,
                         threads: g.thread_num().max(1),
+                        #[cfg(feature = "bench")]
+                        iters: vec![],
                     });
                 }
             }
@@ -161,6 +165,11 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
     /// Returns a slice where each element corresponds (by index) to each node's community label.
     pub fn communities(&self) -> &[usize] {
         self.community.as_slice()
+    }
+
+    #[cfg(feature = "bench")]
+    pub fn get_iters(&self) -> &[usize] {
+        self.iters.as_slice()
     }
 
     /// Removes all cached files pertaining to this algorithm's execution's results.
@@ -251,6 +260,8 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
             community_count: 0,
             modularity: 0.,
             threads,
+            #[cfg(feature = "bench")]
+            iters: Vec::new(),
         })
     }
 

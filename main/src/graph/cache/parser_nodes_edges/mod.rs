@@ -337,13 +337,18 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             cache_file_name(&self.offsets_filename, &FileType::Helper(H::H), Some(0))?;
         let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&counters_fn, node_count, true)?;
 
+        let mut offsets_s = unsafe {
+            offsets.shared_slice().cast::<usize>().ok_or_else(
+                || -> Box<dyn std::error::Error> { "error getting non atomic slice".into() },
+            )?
+        };
         // write edges
         thread::scope(|s| -> Result<(), Box<dyn std::error::Error>> {
             let mut handles = Vec::with_capacity(threads);
             (0..threads).for_each(|tid| {
                 let thread_bounds = edges_bounds[tid];
                 let input = &input_edges[thread_bounds.0..thread_bounds.1];
-                let offsets = offsets.shared_slice();
+                let offsets = offsets_s;
                 let counters = counters.shared_slice();
                 let mut neighbors = neighbors.shared_slice();
 
@@ -381,7 +386,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                                     //         + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
                                     // ) = Edge::new(dest_id as u64, dir);
                                     *neighbors.get_mut(
-                                        offsets.get(orig_id).load(Ordering::Relaxed)
+                                        *offsets.get(orig_id)
                                             + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
                                     ) = dest_id;
                                     break;
@@ -393,9 +398,8 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                         }
                         // now write edges of first node taking into account the missing ones
                         if let Some(id) = first_node {
-                            let _begin = offsets.get(id + 1).load(Ordering::Relaxed) - queue.len();
-                            for (offset, (dest, _dir)) in
-                                (_begin..offsets.get(id + 1).load(Ordering::Relaxed)).zip(queue)
+                            let _begin = *offsets.get(id + 1) - queue.len();
+                            for (offset, (dest, _dir)) in (_begin..*offsets.get(id + 1)).zip(queue)
                             {
                                 // *edges.get_mut(offset) = Edge::new(dest as u64, dir);
                                 *neighbors.get_mut(offset) = dest;
@@ -429,7 +433,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                             //     )?,
                             // );
                             *neighbors.get_mut(
-                                offsets.get(orig_id).load(Ordering::Relaxed)
+                                *offsets.get(orig_id)
                                     + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
                             ) = dest_id;
 
@@ -456,6 +460,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
         })
         .map_err(|e| -> Box<dyn std::error::Error> { format!("{:?}", e).into() })??;
 
+        Self::sort_edges(offsets_s, neighbors.shared_slice(), threads)?;
         neighbors.flush_async()?;
         drop(offsets);
         drop(neighbors);

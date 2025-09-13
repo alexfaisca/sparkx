@@ -2,6 +2,7 @@ use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},
+    io::Write,
     mem::{ManuallyDrop, size_of},
     sync::{
         Arc,
@@ -171,6 +172,7 @@ impl<T> AbstractedProceduralMemoryMut<T> {
             file.set_len(mmap_len)?;
         }
         let (slice, mmap) = SharedSliceMut::<T>::from_file(file)?;
+        mmap.flush()?;
 
         Ok(AbstractedProceduralMemoryMut {
             slice,

@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::CacheMetadata;
+use super::{CacheMetadata, ensure_file_writable};
 use crate::utils::type_of;
 
 #[allow(dead_code)]
@@ -138,6 +138,7 @@ impl CacheMetadata {
     }
 
     pub fn write_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        ensure_file_writable(path.as_ref())?;
         let mut f = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -155,5 +156,42 @@ impl CacheMetadata {
             .open(path)?
             .read_to_string(&mut s)?;
         Self::from_toml(&s)
+    }
+}
+
+impl std::fmt::Display for CacheMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn yn(b: bool) -> &'static str {
+            if b { "yes" } else { "no" }
+        }
+        let tool_ver = self.tool_version.as_deref().unwrap_or("—");
+
+        writeln!(f, "CacheMetadata {{")?;
+        writeln!(f, "  format_version     : {}", self.format_version)?;
+        writeln!(f, "  dataset_name       : {}", self.dataset_name)?;
+        writeln!(f, "  cache_id           : {}", self.cache_id)?;
+        writeln!(f, "  nodes              : {}", self.nodes)?;
+        writeln!(f, "  edges              : {}", self.edges)?;
+        writeln!(
+            f,
+            "  index_type         : {} ({} bytes)",
+            self.index_type, self.index_size
+        )?;
+        writeln!(f, "  node_labeled       : {}", yn(self.node_labeled))?;
+        writeln!(f, "  edge_labeled       : {}", yn(self.edge_labeled))?;
+        writeln!(f, "  has_fst            : {}", yn(self.has_fst))?;
+        writeln!(
+            f,
+            "  node_label_type    : {} ({} bytes)",
+            self.node_label_type, self.node_label_size
+        )?;
+        writeln!(
+            f,
+            "  edge_label_type    : {} ({} bytes)",
+            self.edge_label_type, self.edge_label_size
+        )?;
+        writeln!(f, "  created_unix_secs  : {}", self.created_unix_secs)?;
+        writeln!(f, "  tool_version       : {}", tool_ver)?;
+        write!(f, "}}")
     }
 }

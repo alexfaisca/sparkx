@@ -535,6 +535,11 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         Ok(self.lin.as_ref().ok_or("lin's not computed")?.as_slice())
     }
 
+    #[cfg(feature = "bench")]
+    pub fn get_iters(&self) -> usize {
+        self.iters
+    }
+
     /// Removes all cached files pertaining to this algorithm's execution's results, as well as any
     /// files containing centrailty values computed through them.
     pub fn drop_cache(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -855,134 +860,5 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         // println!();
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-mod test {
-    use hyperloglog_rs::prelude::*;
-
-    use super::*;
-    use crate::test_common::{get_or_init_dataset_cache_entry, get_or_init_dataset_exact_value};
-    use paste::paste;
-    use std::path::Path;
-
-    fn mae(a: &[f64], b: &[f64]) -> f64 {
-        a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / (a.len() as f64)
-    }
-    fn mape(a: &[f64], b: &[f64]) -> f64 {
-        100.0
-            * a.iter()
-                .zip(b)
-                .map(|(x, &y)| {
-                    if y == 0. {
-                        // eprintln!("x {x} y {y}");
-                        0.
-                    } else {
-                        (x - y).abs() / y.abs()
-                    }
-                })
-                .sum::<f64>()
-            / (a.len() as f64)
-    }
-
-    fn ranks(v: &[f64]) -> Vec<usize> {
-        // descending rank; stable
-        let mut idx: Vec<usize> = (0..v.len()).collect();
-        idx.sort_by(|&i, &j| v[j].partial_cmp(&v[i]).unwrap_or(std::cmp::Ordering::Equal));
-        let mut r = vec![0; v.len()];
-        for (rank, i) in idx.into_iter().enumerate() {
-            r[i] = rank;
-        }
-        r
-    }
-
-    fn spearman_rho(a: &[f64], b: &[f64]) -> f64 {
-        let ra = ranks(a);
-        let rb = ranks(b);
-        let n = a.len() as f64;
-        let ssd = ra
-            .iter()
-            .zip(rb.iter())
-            .map(|(x, y)| {
-                let d = (*x as f64) - (*y as f64);
-                d * d
-            })
-            .sum::<f64>();
-        1.0 - (6.0 * ssd) / (n * (n * n - 1.0).max(1.0))
-    }
-
-    macro_rules! graph_tests {
-        ($($name:ident => $path:expr ,)*) => {
-            $(
-                paste! {
-                    #[test]
-                    fn [<hyperball_closeness_centrality_ $name>]() -> Result<(), Box<dyn std::error::Error>> {
-                        generic_test($path)
-                    }
-                }
-            )*
-        }
-    }
-
-    fn generic_test<P: AsRef<Path>>(p: P) -> Result<(), Box<dyn std::error::Error>> {
-        let g = GraphMemoryMap::init_from_cache(
-            get_or_init_dataset_cache_entry(p.as_ref())?,
-            Some(16),
-        )?;
-
-        let e_fn = get_or_init_dataset_exact_value(p.as_ref(), &g, ExactClosenessCentrality(H::H))?;
-        let exact_mmaped = AbstractedProceduralMemory::<f64>::from_file_name(&e_fn)?;
-        let exact = exact_mmaped.as_slice();
-
-        let mut hyperball = HyperBallInner::<_, _, _, Precision8, 6>::new(&g)?;
-        let approx = hyperball.compute_closeness_centrality(Some(true))?;
-
-        // metrics
-        let e_mae = mae(approx, exact);
-        let e_mape = mape(approx, exact);
-        let rho = spearman_rho(approx, exact);
-
-        eprintln!(
-            "dataset={:?}  MAE={e_mae:.4e}  MAPE={e_mape:.2}%  Spearman={rho:.4}",
-            p.as_ref()
-        );
-
-        // guardrails to fail regressions --- show more flexibility on smaller graphs as
-        // approximation gets better the bigger the graph is.
-        if g.size() < 1_000 {
-            assert!(rho > 0.87, "Spearman too low on {:?}", p.as_ref());
-        } else if g.size() < 10_000 {
-            assert!(rho > 0.91, "Spearman too low on {:?}", p.as_ref());
-        } else {
-            assert!(rho > 0.94, "Spearman too low on {:?}", p.as_ref());
-        }
-        Ok(())
-    }
-
-    // generate test cases from dataset
-    graph_tests! {
-        // ggcat_1_5 => "./datasets/graphs/graph_1_5.lz4",
-        // ggcat_2_5 => "./datasets/graphs/graph_2_5.lz4",
-        // ggcat_3_5 => "./datasets/graphs/graph_3_5.lz4",
-        // ggcat_4_5 => "./datasets/graphs/graph_4_5.lz4",
-        // ggcat_5_5 => "../ggcat/graphs/random_graph_5_5.lz4",
-        // ggcat_6_5 => "../ggcat/graphs/random_graph_6_5.lz4",
-        // ggcat_7_5 => "../ggcat/graphs/random_graph_7_5.lz4",
-        // ggcat_8_5 => "../ggcat/graphs/random_graph_8_5.lz4",
-        // ggcat_9_5 => "../ggcat/graphs/random_graph_9_5.lz4",
-        // ggcat_1_10 => "./datasets/graphs/graph_1_10.lz4",
-        // ggcat_2_10 => "./datasets/graphs/graph_2_10.lz4",
-        // ggcat_3_10 => "./datasets/graphs/graph_3_10.lz4",
-        ggcat_4_10 => "./datasets/graphs/graph_4_10.lz4",
-        // ggcat_5_10 => "./datasets/graphs/graph_5_10.lz4",
-        // ggcat_6_10 => "../ggcat/graphs/random_graph_6_10.lz4",
-        // ggcat_7_10 => "../ggcat/graphs/random_graph_7_10.lz4",
-        // ggcat_8_10 => "../ggcat/graphs/random_graph_8_10.lz4",
-        // ggcat_9_10 => "../ggcat/graphs/random_graph_9_10.lz4",
-        // ggcat_8_15 => "../ggcat/graphs/random_graph_8_15.lz4",
-        // ggcat_9_15 => "../ggcat/graphs/random_graph_9_15.lz4",
-        // … add the rest
     }
 }
