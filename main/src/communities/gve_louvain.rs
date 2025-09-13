@@ -680,13 +680,20 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
         let new_comm_load = new_comm_count.div_ceil(threads);
 
         let synchronize = Arc::new(Barrier::new(threads));
+        let counter = unsafe {
+            next_index
+                .cast::<AtomicUsize>()
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    "error getting atomic edge counters".into()
+                })?
+        };
 
         // exclusive scan
         let mut sum = 0;
         for u in 0..new_comm_count {
             let degree = *next_index.get(u * 2);
             *next_index.get_mut(u * 2) = sum;
-            k.get(u).store(sum, Ordering::SeqCst);
+            *next_index.get_mut(u * 2 + 1) = sum;
             sum += degree;
         }
 
@@ -701,6 +708,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                 // hashmap to store edges for each community
                 let mut nm: HashMap<usize, usize> = HashMap::new();
 
+                let counter = counter.clone();
                 let k = k.clone();
                 let sigma = sigma.clone();
                 let processed = processed.clone();
@@ -720,17 +728,17 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                             // guard against isolated nodes to not go over community index boundary
                             if degree > 0 {
                                 // add edge (C'[u], u)
-                                let idx = k.get(*coms.get(u)).fetch_add(1, Ordering::SeqCst);
+                                let idx = counter.get(*coms.get(u) * 2 + 1).fetch_add(1, Ordering::Relaxed);
                                 *helper.get_mut(idx) = u;
                             }
                         }
 
                         // wait for every thread to finish adding com - node edges
-                        synchronize.wait();
-
-                        for c in new_begin..new_end {
-                            *next_index.get_mut(c * 2 + 1) = k.get(c).load(Ordering::Relaxed);
-                        }
+                        // synchronize.wait();
+                        //
+                        // for c in new_begin..new_end {
+                        //     *next_index.get_mut(c * 2 + 1) = k.get(c).load(Ordering::Relaxed);
+                        // }
 
                         // wait for every thread to finish com - node CSR indexing
                         synchronize.wait();
@@ -744,7 +752,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
 
                             // for every node in the community scan edges to accumulate supergraph
                             // edge weights
-                            for e_idx in *next_index.get(c * 2)..k.get(c).load(Ordering::Relaxed) {
+                            for e_idx in *next_index.get(c * 2)..*next_index.get(c * 2 + 1) {
                                 Self::scan_communities(comm_count, &mut nm, edges, index, coms, *helper.get(e_idx), true);
                             }
 
