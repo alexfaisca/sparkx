@@ -3,7 +3,6 @@ use crate::shared_slice::SharedSliceMut;
 use super::{utils::apply_permutation_in_place, GraphCache};
 
 use crossbeam::thread;
-use portable_atomic::{AtomicUsize, Ordering};
 
 #[allow(dead_code)]
 impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
@@ -16,7 +15,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                 let node_load = node_count.div_ceil(threads);
                 let begin = std::cmp::min(node_load * tid, node_count);
                 let end = std::cmp::min(begin + node_load, node_count);
-                let offsets = offsets.clone();
                 let mut neighbors = neighbors;
     
                 let handle = s.spawn(
@@ -53,7 +51,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
     }
 
     #[inline(always)]
-    pub(super) fn sort_edges_with_labels(offsets: SharedSliceMut<AtomicUsize>, neighbors: SharedSliceMut<usize>, edge_labels: SharedSliceMut<E>, threads: usize) -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn sort_edges_with_labels(offsets: SharedSliceMut<usize>, neighbors: SharedSliceMut<usize>, edge_labels: SharedSliceMut<E>, threads: usize) -> Result<(), Box<dyn std::error::Error>> {
         let node_count = offsets.len().saturating_sub(1);
         thread::scope(|s| -> Result<(), Box<dyn std::error::Error>> {
             let mut handles = Vec::new();
@@ -61,7 +59,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                 let node_load = node_count.div_ceil(threads);
                 let begin = std::cmp::min(node_load * tid, node_count);
                 let end = std::cmp::min(begin + node_load, node_count);
-                let offsets = offsets.clone();
                 let mut neighbors = neighbors;
                 let mut edge_labels = edge_labels;
     
@@ -69,8 +66,8 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                     move |_| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         let mut idx = Vec::with_capacity(u16::MAX as usize);
                         for node in begin..end {
-                            let begin = offsets.get(node).load(Ordering::Relaxed);
-                            let end = offsets.get(node + 1).load(Ordering::Relaxed);
+                            let begin = *offsets.get(node);
+                            let end = *offsets.get(node + 1);
                             (0..end - begin).for_each(|v| {
                                 idx.push(v);
                             });

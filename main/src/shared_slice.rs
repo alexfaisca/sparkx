@@ -2,7 +2,6 @@ use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::{
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::Write,
     mem::{ManuallyDrop, size_of},
     sync::{
         Arc,

@@ -337,7 +337,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
             cache_file_name(&self.offsets_filename, &FileType::Helper(H::H), Some(0))?;
         let counters = SharedSliceMut::<AtomicUsize>::abst_mem_mut(&counters_fn, node_count, true)?;
 
-        let mut offsets_s = unsafe {
+        let offsets_s = unsafe {
             offsets.shared_slice().cast::<usize>().ok_or_else(
                 || -> Box<dyn std::error::Error> { "error getting non atomic slice".into() },
             )?
@@ -360,7 +360,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                         // when a node's parsing is split between threads
                         let mut first_node = None;
                         let mut queue = Vec::with_capacity(256);
-                        while let Some(line) = input_lines.next() {
+                        for line in &mut input_lines {
                             if line.is_empty() {
                                 continue;
                             }
@@ -421,17 +421,6 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                             let dest_id: usize = node.next().unwrap().parse()?;
                             let _dir = node.next().unwrap();
 
-                            // *edges.get_mut(
-                            //     offsets.get(orig_id).load(Ordering::Relaxed)
-                            //         + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),
-                            // ) = Edge::new(
-                            //     dest_id as u64,
-                            //     Self::parse_node_edge_direction(dir).map_err(
-                            //         |e| -> Box<dyn std::error::Error + Send + Sync> {
-                            //             format!("error in thread {tid}: {e}").into()
-                            //         },
-                            //     )?,
-                            // );
                             *neighbors.get_mut(
                                 *offsets.get(orig_id)
                                     + counters.get(orig_id).fetch_add(1, Ordering::Relaxed),

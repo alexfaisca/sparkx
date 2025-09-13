@@ -1,5 +1,5 @@
 use crate::{
-    centralities::exact::{ExactClosenessCentrality, ExactHarmonicCentrality, ExactLinCentrality},
+    centralities::exact::{ExactHarmonicCentrality, ExactLinCentrality},
     graph::{
         self, GraphMemoryMap,
         cache::{
@@ -22,7 +22,8 @@ use std::{
     sync::OnceLock,
 };
 
-type TestCache = DashMap<String, OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>>;
+type CacheRecord = OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>;
+type TestCache = DashMap<String, CacheRecord>;
 type ExactValueCache = DashMap<String, OnceLock<String>>;
 
 static TEST_CACHE: OnceLock<TestCache> = OnceLock::new();
@@ -94,12 +95,12 @@ pub(crate) fn get_or_init_dataset_cache_entry(
     let cache_id = graph_id_from_dataset_file_name(graph_path)?;
 
     // Get or create the per-key OnceLock
-    let test_entry = mem_cache()
-        .entry(cache_id)
-        .or_try_insert_with(|| -> Result<OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>, Box<dyn std::error::Error>> {
+    let test_entry = mem_cache().entry(cache_id).or_try_insert_with(
+        || -> Result<CacheRecord, Box<dyn std::error::Error>> {
             let lock = OnceLock::new();
             Ok(lock)
-        })?;
+        },
+    )?;
     let cache = test_entry.get_or_try_init(
         || -> Result<GraphCache<VoidLabel, VoidLabel, usize>, Box<dyn std::error::Error>> {
             let cache_filename = cache_file_for(graph_path)?;
@@ -233,9 +234,13 @@ pub(crate) fn get_or_init_dataset_exact_value<N: graph::N, E: graph::E, Ix: grap
                             }
                             // check for errors
                             for (tid, r) in handles.into_iter().enumerate() {
-                                r.join().map_err(|e| -> Box<dyn std::error::Error> {
-                                    format!("error in thread {tid}: {:?}", e).into()
-                                })?;
+                                r.join()
+                                    .map_err(|e| -> Box<dyn std::error::Error> {
+                                        format!("error in thread {tid}: {:?}", e).into()
+                                    })?
+                                    .map_err(|e| -> Box<dyn std::error::Error> {
+                                        format!("error: {:?}", e).into()
+                                    })?;
                             }
                             Ok(())
                         })

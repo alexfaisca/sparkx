@@ -129,7 +129,7 @@ impl<N: super::N, E: super::E, Ix: super::IndexType> GraphCache<N, E, Ix> {
                 threads,
             )?;
             Self::sort_edges_with_labels(
-                offsets.shared_slice(),
+                offsets_s,
                 neighbors.shared_slice(),
                 edgelabels.shared_slice(),
                 threads,
