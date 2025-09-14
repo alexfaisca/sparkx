@@ -520,6 +520,44 @@ impl<T> SharedSliceMut<T> {
         }
     }
 
+    // SAFETY: Only if 0 is a valid bit-pattern for T (true for integers/floats).
+    fn zero_out(&mut self, start: usize, end: usize) {
+        assert!(start <= end && end <= self.len);
+        unsafe {
+            std::ptr::write_bytes(self.ptr.add(start), 0, end - start);
+        }
+    }
+
+    // SAFETY: Only if 0 is a valid bit-pattern for T (true for integers/floats).
+    pub(crate) fn zero_out_bytes(&mut self) -> Self {
+        unsafe {
+            std::ptr::write_bytes(self.ptr, 0, self.len);
+        }
+        self.clone()
+    }
+
+    /// SAFETY: Only if 0 is a valid bit-pattern for T (true for integers/floats).
+    pub(crate) fn par_zero_out_bytes(&mut self) -> Self {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let chunks = cores.min(8); // prevent oversharding
+        let len = self.len();
+        let chunk = len.div_ceil(chunks);
+
+        std::thread::scope(|s| {
+            for i in 0..chunks {
+                let mut m = self.clone();
+                let start = std::cmp::min(i * chunk, len);
+                let end = std::cmp::min(start + chunk, len);
+                s.spawn(move || {
+                    m.zero_out(start, end);
+                });
+            }
+        });
+        self.clone()
+    }
+
     #[inline(always)]
     pub(crate) fn write_shared_slice(
         &mut self,
