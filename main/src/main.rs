@@ -1051,7 +1051,7 @@ fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pat
         .ok_or_else(|| -> Box<dyn std::error::Error> {
             format!("error couldn.t get filename strfor {:?}", path.as_ref()).into()
         })?;
-    let runs_per_params = 1000;
+    let runs_per_params = 50000;
 
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =

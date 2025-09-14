@@ -1,6 +1,11 @@
 [build]
 rustflags = ["-C", "target-cpu=native"]
 
+[profile.release]
+lto = "thin"
+# codegen-units = 1
+# panic = "abort"
+
 [alias]
 t = "test -- --test-threads=1"
 b = "bench --features bench"
