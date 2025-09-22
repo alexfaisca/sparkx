@@ -1,7 +1,4 @@
-use crate::graph;
-#[cfg(test)]
-use crate::graph::cache::utils::{FileType::ExactClosenessCentrality, H};
-use crate::graph::*;
+use crate::graph::{self, *};
 use crate::shared_slice::*;
 
 use crossbeam::thread;
@@ -74,9 +71,9 @@ pub struct HyperBallInner<
     /// Maximum number of iteration --- default is 128, max is 1024 (details on how these values are ludicrously big are found in the abovementioned paper).
     max_t: usize,
     /// Closeness centralities' cached values --- under various degrees of normalization.
-    closeness: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
+    closeness: [Option<AbstractedProceduralMemoryMut<f64>>; 2],
     /// Harmonic centralities' cached values --- under various degrees of normalization.
-    harmonic: [Option<AbstractedProceduralMemoryMut<f64>>; 3],
+    harmonic: [Option<AbstractedProceduralMemoryMut<f64>>; 2],
     /// Lin's centrality's cached values.
     lin: Option<AbstractedProceduralMemoryMut<f64>>,
     threads: usize,
@@ -151,18 +148,16 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
                             inverse_distances,
                             max_t: Self::DEAFULT_MAX_DEPTH,
                             threads: g.thread_num().max(1),
-                            closeness: [None, None, None],
-                            harmonic: [None, None, None],
+                            closeness: [None, None],
+                            harmonic: [None, None],
                             lin: None,
                             #[cfg(any(test, feature = "bench"))]
                             iters: 0,
                         };
-                        let _ = hb.search_cache_closeness_centrality(None);
-                        let _ = hb.search_cache_harmonic_centrality(None);
-                        let _ = hb.search_cache_closeness_centrality(Some(false));
-                        let _ = hb.search_cache_harmonic_centrality(Some(false));
-                        let _ = hb.search_cache_closeness_centrality(Some(true));
-                        let _ = hb.search_cache_harmonic_centrality(Some(true));
+                        let _ = hb.search_cache_closeness_centrality(false);
+                        let _ = hb.search_cache_harmonic_centrality(false);
+                        let _ = hb.search_cache_closeness_centrality(true);
+                        let _ = hb.search_cache_harmonic_centrality(true);
                         let _ = hb.search_cache_lins_centrality();
                         return Ok(hb);
                     }
@@ -190,26 +185,27 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         self.build_pers_cache_filename(cache_file_type, seq)
     }
 
-    fn index_by_normalization(normalization: Option<bool>) -> usize {
+    fn index_by_normalization(normalization: bool) -> usize {
         match normalization {
-            None => 0,
-            Some(false) => 1,
-            Some(true) => 2,
+            false => 0,
+            true => 1,
         }
     }
 
-    fn centrality_normalization(centrality: Centrality, normalization: Option<bool>) -> Centrality {
+    fn centrality_normalization(centrality: Centrality, normalization: bool) -> Centrality {
         let index = Self::index_by_normalization(normalization);
         match centrality {
             Centrality::Lin => Centrality::Lin,
             Centrality::Harmonic => match index {
-                1 => Centrality::NHarmonic,
-                2 => Centrality::NCHarmonic,
+                0 => Centrality::NHarmonic,
+                1 => Centrality::NCHarmonic,
+                // dummy
                 _ => Centrality::Harmonic,
             },
             Centrality::Closeness => match index {
-                1 => Centrality::NCloseness,
-                2 => Centrality::NCCloseness,
+                0 => Centrality::NCloseness,
+                1 => Centrality::NCCloseness,
+                // dummy
                 _ => Centrality::Closeness,
             },
             a => a,
@@ -228,18 +224,39 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         }
     }
 
+    /// Gets (from a previously cached result) the approximation of a given node's total distance to other nodes from their respective distance accumulator.
+    pub fn get_geodesic_distance(&self, node_id: usize) -> f64 {
+        assert!(node_id < self.g.size());
+        *self.distances.get(node_id)
+    }
+
+    /// Gets (from a previously cached result) the approximation of a given node's total inverse distance to other nodes from their respective inverse distance accumulator.
+    pub fn get_harmonic_geodesic_distance(&self, node_id: usize) -> f64 {
+        assert!(node_id < self.g.size());
+        *self.inverse_distances.get(node_id)
+    }
+
+    /// Gets (from a previously cached result) the approximation of each node's total distance to other nodes from their respective distance accumulator.
+    pub fn geodesic_distances(&'a self) -> &'a [f64] {
+        self.distances.as_slice()
+    }
+
+    /// Gets (from a previously cached result) the approximation of each node's total inverse distance to other nodes from their respective inverse distance accumulator.
+    pub fn harmonic_geodesic_distances(&'a self) -> &'a [f64] {
+        self.inverse_distances.as_slice()
+    }
+
     /// Gets (from a previously cached result) the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
     ///
     /// # Arguments
     ///
-    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    /// * `normalization` --- flag determining the type of normalization that was used for the computation.
+    ///     - ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_closeness_centrality(
         &'a self,
-        normalization: Option<bool>,
+        normalization: bool,
     ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
         let idx = Self::index_by_normalization(normalization);
         if let Some(mem) = self.closeness[idx].as_ref() {
@@ -251,7 +268,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     /// Searches cache for the approximation of each node's *Closeness Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
     pub fn search_cache_closeness_centrality(
         &mut self,
-        normalization: Option<bool>,
+        normalization: bool,
     ) -> Result<&[f64], Box<dyn std::error::Error>> {
         if let Ok(mem) = self.get_from_cent_file(Self::centrality_normalization(
             Centrality::Closeness,
@@ -270,14 +287,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// # Arguments
     ///
-    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    /// * `normalization` --- flag determining the type of normalization that was used for the computation.
+    ///     - ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_or_compute_closeness_centrality(
         &'a mut self,
-        normalization: Option<bool>,
+        normalization: bool,
     ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
         let idx = Self::index_by_normalization(normalization);
         if self.harmonic[idx].is_none() {
@@ -291,14 +307,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// # Arguments
     ///
-    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    /// * `normalization` --- flag determining the type of normalization that was used for the computation.
+    ///     - ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_hamonic_centrality(
         &'a self,
-        normalization: Option<bool>,
+        normalization: bool,
     ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
         let idx = Self::index_by_normalization(normalization);
         if let Some(mem) = self.harmonic[idx].as_ref() {
@@ -310,7 +325,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     /// Searches cache for the approximation of each node's *Harmonic Centrality* from their respective distance accumulator (and if normalization was used, possibly, their respective *HyperLogLog++* counter estimation).
     pub fn search_cache_harmonic_centrality(
         &mut self,
-        normalization: Option<bool>,
+        normalization: bool,
     ) -> Result<&[f64], Box<dyn std::error::Error>> {
         if let Ok(mem) = self.get_from_cent_file(Self::centrality_normalization(
             Centrality::Harmonic,
@@ -329,14 +344,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// # Arguments
     ///
-    /// * `normalization` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    /// * `normalization` --- flag determining the type of normalization that was used for the computation.
+    ///     - ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn get_or_compute_harmonic_centrality(
         &'a mut self,
-        normalization: Option<bool>,
+        normalization: bool,
     ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
         let idx = Self::index_by_normalization(normalization);
         if self.harmonic[idx].is_none() {
@@ -357,7 +371,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     /// Searches cache for the approximation of each node's *Lin's Centrality* from their respective distance accumulator.
     pub fn search_cache_lins_centrality(&mut self) -> Result<&[f64], Box<dyn std::error::Error>> {
         if let Ok(mem) =
-            self.get_from_cent_file(Self::centrality_normalization(Centrality::Lin, None))
+            self.get_from_cent_file(Self::centrality_normalization(Centrality::Lin, false))
         {
             self.lin = Some(mem);
             if let Some(mem) = self.lin.as_ref() {
@@ -380,38 +394,24 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// # Arguments
     ///
-    /// * `normalize` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    /// * `normalize` --- flag determining the type of normalization that was used for the computation.
+    ///     - ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn compute_closeness_centrality(
         &'a mut self,
-        normalize: Option<bool>,
+        normalize: bool,
     ) -> Result<&'a [f64], Box<dyn std::error::Error>> {
         let node_count = self.g.size(); // |V|
 
-        let c_fn =
-            self.centrality_cache_file_name(normalize.map_or(Centrality::Closeness, |local| {
-                if local {
-                    Centrality::NCCloseness
-                } else {
-                    Centrality::NCloseness
-                }
-            }))?;
+        let c_fn = self.centrality_cache_file_name(Self::centrality_normalization(
+            Centrality::Closeness,
+            normalize,
+        ))?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
 
-        // unnormalized
-        if normalize.is_none() {
-            for idx in 0..node_count {
-                if !self.distances.get(idx).is_normal() {
-                    *mem.get_mut(idx) = 0.;
-                } else {
-                    *mem.get_mut(idx) = *self.distances.get(idx);
-                }
-            }
         // normalized by number of reacheable nodes
-        } else if normalize.unwrap() {
+        if normalize {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
                     *mem.get_mut(idx) = 0.;
@@ -447,38 +447,24 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// # Arguments
     ///
-    /// * `normalize` --- tri-state flag determining the type of normalization that was used for the computation.
-    ///     - [`None`] --- no normalization.
-    ///     - [`Some`] ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
-    ///     - [`Some`] ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
+    /// * `normalize` --- flag determining the type of normalization that was used for the computation.
+    ///     - ([`false`]) --- centrality normalized by each node's estimate of reacheable nodes, effectively, normalization by containing connected component size.
+    ///     - ([`true`]) --- centrality normalized by total number of nodes, `|V|`.
     ///
     pub fn compute_harmonic_centrality(
         &mut self,
-        normalize: Option<bool>,
+        normalize: bool,
     ) -> Result<&[f64], Box<dyn std::error::Error>> {
         let node_count = self.g.size(); // |V|
 
-        let c_fn =
-            self.centrality_cache_file_name(normalize.map_or(Centrality::Harmonic, |local| {
-                if local {
-                    Centrality::NCHarmonic
-                } else {
-                    Centrality::NHarmonic
-                }
-            }))?;
+        let c_fn = self.centrality_cache_file_name(Self::centrality_normalization(
+            Centrality::Harmonic,
+            normalize,
+        ))?;
         let mut mem = SharedSliceMut::<f64>::abst_mem_mut(&c_fn, node_count, true)?;
 
-        // unnormalized
-        if normalize.is_none() {
-            for idx in 0..node_count {
-                if !self.distances.get(idx).is_normal() {
-                    *mem.get_mut(idx) = 0.;
-                } else {
-                    *mem.get_mut(idx) = *self.inverse_distances.get(idx);
-                }
-            }
         // normalized by number of reacheable nodes
-        } else if normalize.unwrap() {
+        if normalize {
             for idx in 0..node_count {
                 if !self.distances.get(idx).is_normal() {
                     *mem.get_mut(idx) = 0.;
@@ -552,22 +538,14 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
         std::fs::remove_file(i_fn)?;
 
         // remove any closeness centralities' cached values
-        for (i, t) in [
-            (0, Centrality::Closeness),
-            (1, Centrality::NCloseness),
-            (2, Centrality::NCloseness),
-        ] {
+        for (i, t) in [(0, Centrality::NCloseness), (1, Centrality::NCloseness)] {
             if this.closeness[i].is_some() {
                 std::fs::remove_file(this.centrality_cache_file_name(t)?)?;
             }
         }
 
         // remove any harmonic centralities' cached values
-        for (i, t) in [
-            (0, Centrality::Harmonic),
-            (1, Centrality::NHarmonic),
-            (2, Centrality::NCHarmonic),
-        ] {
+        for (i, t) in [(0, Centrality::NHarmonic), (1, Centrality::NCHarmonic)] {
             if this.closeness[i].is_some() {
                 std::fs::remove_file(this.centrality_cache_file_name(t)?)?;
             }
@@ -715,8 +693,8 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
             distances,
             inverse_distances,
             max_t,
-            closeness: [None, None, None],
-            harmonic: [None, None, None],
+            closeness: [None, None],
+            harmonic: [None, None],
             lin: None,
             #[cfg(any(test, feature = "bench"))]
             iters: 0,

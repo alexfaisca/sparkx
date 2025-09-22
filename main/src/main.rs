@@ -23,7 +23,7 @@ use std::fmt::Display;
 use std::fs::{OpenOptions, create_dir_all, metadata};
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Checout matchtigs
 // https://github.com/algbio/matchtigs
@@ -103,13 +103,16 @@ fn main() {
                 args.output_id.clone(),
             )
             .expect("hyperball profile should succeed");
-        } else {
+        } else if error_target == 1 {
             hk_relax_profile::<(), (), usize, _>(
                 args.file.clone(),
                 args.threads,
                 args.output_id.clone(),
             )
             .expect("hk-relax profile should succeed");
+        } else {
+            run_general_benches(args.file.clone(), args.threads)
+                .expect("general profile should succeed");
         }
         return;
     }
@@ -293,21 +296,21 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // println!();
     // _liu_et_al.drop_cache()?;
 
-    let time = Instant::now();
-    let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
-    println!("found {} communities", _louvain.community_count());
-    println!("partition modularity {} ", _louvain.partition_modularity());
-    println!("louvain finished in {:?}", time.elapsed());
-    println!(
-        "partition modularity according to graph_mmaped method {}",
-        graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
-    );
-    println!();
-
     // let time = Instant::now();
-    // let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
-    // println!("hyperball {:?}", time.elapsed());
-    // hyperball.drop_cache()?;
+    // let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
+    // println!("found {} communities", _louvain.community_count());
+    // println!("partition modularity {} ", _louvain.partition_modularity());
+    // println!("louvain finished in {:?}", time.elapsed());
+    // println!(
+    //     "partition modularity according to graph_mmaped method {}",
+    //     graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
+    // );
+    // println!();
+
+    let time = Instant::now();
+    let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
+    println!("hyperball {:?}", time.elapsed());
+    hyperball.drop_cache()?;
 
     // _louvain.coalesce_isolated_nodes()?;
     // println!("found {} communities", _louvain.community_count());
@@ -896,7 +899,7 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
     let mut hyperball = HyperBallInner::<_, _, _, Precision13, 6>::new(&graph_mmaped)?;
     println!("hyperball {:?}", time.elapsed());
     {
-        let c = hyperball.compute_closeness_centrality(Some(true))?;
+        let c = hyperball.compute_closeness_centrality(true)?;
         let b = bucket_for(0);
         (0..graph_mmaped.size()).for_each(|u| {
             *avg_arr[b].get_mut(u) += c[u];
@@ -928,14 +931,60 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
 
 #[derive(Debug)]
 struct HkprRecord<'a> {
-    dataset: &'a str,   // graph id/name
-    t: f64,             // diffusion parameter
-    eps: f64,           // error parameter
-    seed: u64,          // seed node id (or experiment seed)
-    conductance: f64,   // best sweep-cut conductance
-    cluster_size: u64,  // |S|
-    volume: u64,        // vol(S)
-    runtime_secs: u128, // wall time in seconds
+    dataset: &'a str,
+    t: f64,
+    eps: f64,
+    seed: u64,
+    conductance: f64,
+    cluster_size: u64,
+    volume: u64,
+    runtime_secs: u128,
+}
+
+#[derive(Debug)]
+pub struct KCoreRecord<'a> {
+    pub dataset: &'a str,
+    pub algo: &'a str,
+    pub runtime_micros: u128,
+    pub threads: usize,
+}
+
+#[derive(Debug)]
+pub struct KTrussRecord<'a> {
+    pub dataset: &'a str,
+    pub algo: &'a str,
+    pub runtime_micros: u128,
+    pub threads: usize,
+}
+
+#[derive(Debug)]
+pub struct LouvainSummaryRecord<'a> {
+    pub run_id: u128,
+    pub dataset: &'a str,
+    pub modularity: f64,
+    pub runtime_micros: u128,
+    // Optional extras:
+    pub levels: usize,
+    pub passes_total: Option<u32>,
+    pub threads: usize,
+}
+
+#[derive(Debug)]
+pub struct LouvainPassRecord {
+    pub run_id: u128,
+    pub pass_idx: u32,
+    pub iters_for_pass: usize,
+    pub coms_in_pass: usize,
+    pub runtime_micros: u128,
+}
+
+#[derive(Debug)]
+pub struct HyperBallRecord<'a> {
+    pub dataset: &'a str,
+    pub precision_p: u32,
+    pub iterations: usize,
+    pub runtime_micros: u128,
+    pub threads: usize,
 }
 
 /// Escape a field for CSV according to RFC 4180-ish rules.
@@ -1029,6 +1078,146 @@ fn append_records(csv_path: impl AsRef<Path>, recs: &[HkprRecord<'_>]) -> io::Re
     Ok(())
 }
 
+fn ensure_header_and_open(path: &Path, header: &str) -> io::Result<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        create_dir_all(dir)?;
+    }
+    let is_empty = match metadata(path) {
+        Ok(m) => m.len() == 0,
+        Err(_) => true,
+    };
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    if is_empty {
+        writeln!(file, "{header}")?;
+    }
+    Ok(file)
+}
+
+pub fn append_kcore(rec: &KCoreRecord<'_>, csv_path: impl AsRef<Path>) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    let header = "dataset,algo,runtime_micros,threads";
+    let mut f = ensure_header_and_open(path, header)?;
+    writeln!(
+        f,
+        "{}, {}, {}, {}",
+        csv_escape(rec.dataset),
+        csv_escape(rec.algo),
+        rec.runtime_micros,
+        rec.threads,
+    )?;
+    Ok(())
+}
+
+pub fn append_ktruss(rec: &KTrussRecord<'_>, csv_path: impl AsRef<Path>) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    let header = "dataset,algo,runtime_micros,threads";
+    let mut f = ensure_header_and_open(path, header)?;
+    writeln!(
+        f,
+        "{}, {}, {}, {}",
+        csv_escape(rec.dataset),
+        csv_escape(rec.algo),
+        rec.runtime_micros,
+        rec.threads,
+    )?;
+    Ok(())
+}
+
+pub fn append_louvain_summary(
+    rec: &LouvainSummaryRecord<'_>,
+    csv_path: impl AsRef<Path>,
+) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    let header = "run_id,dataset,modularity,runtime_micros,levels,passes_total,threads";
+    let mut f = ensure_header_and_open(path, header)?;
+    writeln!(
+        f,
+        "{},{},{},{},{},{},{}",
+        rec.run_id,
+        csv_escape(rec.dataset),
+        rec.modularity,
+        rec.runtime_micros,
+        rec.levels,
+        rec.passes_total.map(|x| x.to_string()).unwrap_or_default(),
+        rec.threads,
+    )?;
+    Ok(())
+}
+
+pub fn append_louvain_pass(rec: &LouvainPassRecord, csv_path: impl AsRef<Path>) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    let header = "run_id,pass_idx,iters_for_pass,coms_in_pass,runtime_micros";
+    let mut f = ensure_header_and_open(path, header)?;
+    writeln!(
+        f,
+        "{},{},{},{},{}",
+        rec.run_id, rec.pass_idx, rec.iters_for_pass, rec.coms_in_pass, rec.runtime_micros
+    )?;
+    Ok(())
+}
+
+pub fn append_louvain_passes_bulk(
+    recs: &[LouvainPassRecord],
+    csv_path: impl AsRef<Path>,
+) -> io::Result<()> {
+    if recs.is_empty() {
+        return Ok(());
+    }
+    let path = csv_path.as_ref();
+    let header = "run_id,pass_idx,iters_for_pass,coms_in_pass,runtime_micros";
+    let mut f = ensure_header_and_open(path, header)?;
+    for r in recs {
+        writeln!(
+            f,
+            "{},{},{},{},{}",
+            r.run_id, r.pass_idx, r.iters_for_pass, r.coms_in_pass, r.runtime_micros
+        )?;
+    }
+    Ok(())
+}
+
+pub fn append_hyperball(rec: &HyperBallRecord<'_>, csv_path: impl AsRef<Path>) -> io::Result<()> {
+    let path = csv_path.as_ref();
+    let header = "dataset,precision_p,iterations,runtime_micros,threads";
+    let mut f = ensure_header_and_open(path, header)?;
+    writeln!(
+        f,
+        "{},{},{},{},{}",
+        csv_escape(rec.dataset),
+        rec.precision_p,
+        rec.iterations,
+        rec.runtime_micros,
+        rec.threads,
+    )?;
+    Ok(())
+}
+
+pub mod defaults {
+    pub const KCORE: &str = "results/kcore.csv";
+    pub const KTRUSS: &str = "results/ktruss.csv";
+    pub const LOUV_SUM: &str = "results/louvain.csv";
+    pub const LOUV_PASS: &str = "results/louvain_passes.csv";
+    pub const HYPERBALL: &str = "results/hyperball.csv";
+}
+
+fn next_run_id() -> u128 {
+    static mut CTR: u64 = 0;
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u128;
+    let pid = std::process::id() as u128;
+    let c = unsafe {
+        CTR = CTR.wrapping_add(1);
+        CTR as u128
+    };
+    (secs << 32) ^ (pid << 16) ^ c
+}
+
+pub fn louvain_new_run_id() -> u128 {
+    next_run_id()
+}
+
 #[cfg(feature = "bench")]
 fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
     path: P,
@@ -1051,7 +1240,7 @@ fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pat
         .ok_or_else(|| -> Box<dyn std::error::Error> {
             format!("error couldn.t get filename strfor {:?}", path.as_ref()).into()
         })?;
-    let runs_per_params = 50000;
+    let runs_per_params = 10000;
 
     let time = Instant::now();
     let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
@@ -1150,6 +1339,212 @@ fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pat
     println!("dropped");
 
     Ok(())
+}
+
+#[cfg(feature = "bench")]
+pub fn run_general_benches<P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    static RUNS: usize = 15;
+    let dataset = filename_only(&path)?;
+    let time = Instant::now();
+    let mut graph: GraphMemoryMap<(), (), usize> =
+        GraphMemoryMap::<(), (), usize>::from_file(path.as_ref(), None, threads)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph.size(),
+        graph.width(),
+        time.elapsed()
+    );
+    let threads = threads.unwrap_or(1).max(1) as usize;
+
+    // 1) K-core — Batagelj–Zaversnik (50 runs)
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        AlgoBatageljZaversnik::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_kcore(
+            &KCoreRecord {
+                dataset,
+                algo: "batagelj-zaversnik",
+                runtime_micros: us,
+                threads,
+            },
+            defaults::KCORE,
+        )?;
+    }
+
+    // 2) K-core — Liu et al. (50 runs)
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        AlgoLiuEtAl::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_kcore(
+            &KCoreRecord {
+                dataset,
+                algo: "liu",
+                runtime_micros: us,
+                threads,
+            },
+            defaults::KCORE,
+        )?;
+    }
+
+    // 3) K-truss — Burkhardt (50 runs)
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        AlgoBurkhardtEtAl::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_ktruss(
+            &KTrussRecord {
+                dataset,
+                algo: "burkhardt",
+                runtime_micros: us,
+                threads,
+            },
+            defaults::KTRUSS,
+        )?;
+    }
+
+    // 4) K-truss — PKT (50 runs)
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        AlgoPKT::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_ktruss(
+            &KTrussRecord {
+                dataset,
+                algo: "pkt",
+                runtime_micros: us,
+                threads,
+            },
+            defaults::KTRUSS,
+        )?;
+    }
+
+    // 5) Louvain (50 runs) — summary + per-pass rows (linked by run_id)
+    for _ in 0..RUNS {
+        let run_id = louvain_new_run_id();
+        let mut pass_rows: Vec<LouvainPassRecord> = Vec::new();
+        let total_start = Instant::now();
+        let mut pass_idx: u32 = 0;
+
+        let l = AlgoGVELouvain::new(&graph)?;
+        let total_us = total_start.elapsed().as_micros();
+        for &(iters, coms, elapsed) in l.get_iters().iter() {
+            pass_rows.push(LouvainPassRecord {
+                run_id,
+                pass_idx,
+                iters_for_pass: iters,
+                coms_in_pass: coms,
+                runtime_micros: elapsed,
+            });
+            pass_idx += 1;
+        }
+
+        append_louvain_summary(
+            &LouvainSummaryRecord {
+                run_id,
+                dataset,
+                modularity: l.partition_modularity(),
+                runtime_micros: total_us,
+                levels: l.get_iters().len(),
+                passes_total: Some(pass_idx),
+                threads,
+            },
+            defaults::LOUV_SUM,
+        )?;
+        append_louvain_passes_bulk(&pass_rows, defaults::LOUV_PASS)?;
+    }
+
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        let h = HyperBall4::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_hyperball(
+            &HyperBallRecord {
+                dataset,
+                precision_p: 4,
+                iterations: h.get_iters(),
+                runtime_micros: us,
+                threads,
+            },
+            defaults::HYPERBALL,
+        )?;
+    }
+
+    println!("going for hyp 6");
+
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        let h = HyperBall6::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_hyperball(
+            &HyperBallRecord {
+                dataset,
+                precision_p: 6,
+                iterations: h.get_iters(),
+                runtime_micros: us,
+                threads,
+            },
+            defaults::HYPERBALL,
+        )?;
+    }
+    println!("going for hyp 8");
+
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        let h = HyperBall8::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_hyperball(
+            &HyperBallRecord {
+                dataset,
+                precision_p: 8,
+                iterations: h.get_iters(),
+                runtime_micros: us,
+                threads,
+            },
+            defaults::HYPERBALL,
+        )?;
+    }
+    println!("going for hyp 10");
+
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        let h = HyperBall10::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_hyperball(
+            &HyperBallRecord {
+                dataset,
+                precision_p: 10,
+                iterations: h.get_iters(),
+                runtime_micros: us,
+                threads,
+            },
+            defaults::HYPERBALL,
+        )?;
+        println!("+1");
+    }
+
+    println!("droping");
+    graph.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+// Small helper to get a &str dataset label from a path
+fn filename_only<P: AsRef<Path>>(p: P) -> Result<&'static str, Box<dyn std::error::Error>> {
+    // SAFETY: We return a leaked &'static str to avoid lifetime plumbing.
+    // If you prefer no leak, thread the String around instead.
+    let name = p
+        .as_ref()
+        .file_name()
+        .ok_or("missing filename")?
+        .to_str()
+        .ok_or("filename not UTF-8")?;
+    Ok(Box::leak(name.to_string().into_boxed_str()))
 }
 
 #[derive(Debug)]
