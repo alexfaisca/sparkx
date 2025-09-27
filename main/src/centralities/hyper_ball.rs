@@ -45,11 +45,12 @@ enum Centrality {
     Lin,
 }
 
-/// For the *HyperBall Algorithm* described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S. on [`GraphMemoryMap`] instances.
+/// For the *HyperBall Algorithm* described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144)
+/// by Boldi P. and Vigna S. on [`GraphMemoryMap`] instances.
 ///
 /// * Note: De Bruijn graphs are symmetric graphs, so running the HyperBall algorithm on the graph is the same as running it on its transpose. Hence, we can run HyperBall ona De Bruinjn graph to obtain the necessary components to determine the closeness, harmonic and Lin's centralities for every node of the graph.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct HyperBallInner<
@@ -94,7 +95,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// * `g` --- the [`GraphMemoryMap`] instance for which the *HyperBall Algorithm* is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut hyper_ball = Self::new_no_compute(g, None, g.thread_num())?;
 
@@ -112,8 +113,9 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
     ///
     /// * `g` --- the [`GraphMemoryMap`] instance for which the *HyperBall Algorithm* is to be performed in.
     /// * `max_depth` --- the maximum number of iterations of the *HyperBall Algorithm* to tolerate before convergence is achieved (defaults to 128, max is 1024).
+    /// * `threads` --- the number of threads to be used in the computation.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new_with_conf(
         g: &'a GraphMemoryMap<N, E, Ix>,
         max_depth: Option<usize>,
@@ -128,7 +130,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType, P: WordType<B>, const B
 
         Ok(hyper_ball)
     }
-
+    /// Searches for a previously cached result, and if not found performs the *HyperBall Algorithm* as described in ["In-Core Computation of Geometric Centralities with HyperBall: A Hundred Billion Nodes and Beyond"](https://doi.org/10.48550/arXiv.1308.2144) by Boldi P. and Vigna S.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the *HyperBall Algorithm* is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {

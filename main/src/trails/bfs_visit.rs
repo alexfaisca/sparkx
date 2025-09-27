@@ -92,7 +92,7 @@ impl<A: BfsVisitor, B: BfsVisitor> BfsVisitor for BundleVisitor<A, B> {
 
 /// For the computation of BFS with visitor pattern on a [`GraphMemoryMap`] instance.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 pub struct BFSVisit<'a, G: Graph> {
     /// Graph in which the BFS is to be performed.
@@ -107,22 +107,9 @@ pub struct BFSVisit<'a, G: Graph> {
 
 #[allow(dead_code)]
 impl<'a, G: Graph> BFSVisit<'a, G> {
-    /// Performs graph traversal using *Hierholzer's Algorithm*, computing the euler trails of a [`GraphMemoryMap`] instance.
+    /// Performs BFS with visitor pattern on a [`GraphMemoryMap`] instance.
     ///
-    /// The resulting Euler trail(s) is(are) stored in memory (in a memmapped file) nodewise[^1].
-    ///
-    /// * Note *1*: by definition, isolated nodes won't be present in the euler trail unless they have *self-loops*[^2].
-    /// * Note *2*: in the case of a non-eulerian graph, trails are stored sequentially in memory, with their respective starting indexes stored in the aboce mentioned `trail_index` array.
-    /// * Note *3*: the last edge of each euler trail, connecting the trail into an euler cycle is intentionally left out of the resulting euler trail(s).
-    ///
-    /// [^1]: for each two consecutive node entries, u and v, the(an) edge (u,v) between them is traversed.
-    /// [^2]: edges of the type (u, u), for a given node u.
-    ///
-    /// # Arguments
-    ///
-    /// * `g` --- the [`GraphMemoryMap`] instance for which *Hierholzer's Algorithm* is to be performed in.
-    ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(
         g: &'a G,
         source: usize,

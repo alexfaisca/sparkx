@@ -22,7 +22,7 @@ type ProceduralMemoryBurkhardtEtAl = (
 
 /// For the computation of a [`GraphMemoryMap`] instance's k-truss decomposition as described in ["Bounds and algorithms for graph trusses"](https://doi.org/10.48550/arXiv.1806.05523) by Burkhardt P. et al.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoBurkhardtEtAl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
@@ -38,9 +38,9 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N
     ///
     /// # Arguments
     ///
-    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance in which k-truss decomposition is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut burkhardt_et_al = Self::new_no_compute(g)?;
         let proc_mem = burkhardt_et_al.init_cache_mem()?;
@@ -50,6 +50,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N
         Ok(burkhardt_et_al)
     }
 
+    /// Searches for a previously cached result, and if not found performs k-truss decomposition as described in ["Bounds and algorithms for graph trusses"](https://doi.org/10.48550/arXiv.1806.05523) by Burkhardt P. et al.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the  [`GraphMemoryMap`] instance in which k-truss decomposition is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -68,7 +75,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N
     ///
     /// * `e_idx` --- the index of the edge whose trussness is to be returned.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn trussness(&self, e_idx: usize) -> u8 {
         assert!(e_idx < self.g.width());
         *self.k_trusses.get(e_idx)
@@ -76,7 +83,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBurkhardtEtAl<'a, N
 
     /// Returns a slice containing the trussness of each edge of the [`GraphMemoryMap`] instance.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn k_trusses(&self) -> &[u8] {
         self.k_trusses.as_slice()
     }

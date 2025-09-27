@@ -104,7 +104,7 @@ impl<A: DfsVisitor, B: DfsVisitor> DfsVisitor for BundleVisitors<A, B> {
 
 /// For the computation of DFS with visitor pattern on a [`GraphMemoryMap`] instance.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 pub struct DFSVisit<'a, G: Graph> {
     /// Graph in which the DFS is to be performed.

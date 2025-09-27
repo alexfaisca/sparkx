@@ -12,14 +12,6 @@ use std::{
 
 #[allow(dead_code)]
 impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphMemoryMap<N, E, Ix> {
-    /// Computes the modularity over a given partition over the [`GraphMemoryMap`] instance's nodes.
-    ///
-    /// # Arguments
-    ///
-    /// * `communities` --- a slice containing each node's community, the [`GraphMemoryMap`] instance's partition.
-    /// * `comms_cardinality` --- cardinality of distinct communities in the given partition.
-    ///
-    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     pub(super) fn modularity_impl(
         &self,
         communities: &[usize],

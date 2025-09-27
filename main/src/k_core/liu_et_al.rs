@@ -18,7 +18,7 @@ type ProceduralMemoryLiuEtAL = (
 
 /// For the computation of a [`GraphMemoryMap`] instance's k-core decomposition as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoLiuEtAl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
@@ -39,9 +39,9 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     ///
     /// # Arguments
     ///
-    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance in which k-core decomposition is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut liu_et_al = Self::new_no_compute(g, g.thread_num())?;
         let proc_mem = liu_et_al.init_cache_mem()?;
@@ -50,7 +50,17 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
 
         Ok(liu_et_al)
     }
-
+    /// Searches for a previously cached result, and if not found performs k-core decomposition as described in ["Parallel 𝑘-Core Decomposition: Theory and Practice"](https://doi.org/10.48550/arXiv.2502.08042) by Liu Y. et al.
+    ///
+    /// * Note: we did not implement the *Node Sampling*[^1] scheme optimization (used for high degree nodes), as our objective is the decomposition of very large sparse graphs.
+    ///
+    /// [^1]: details on how to implement this potimization and how it works can be found in the *4.1.2 Details about the Sampling Scheme.* section of the aforementioned paper in pp. 6-7.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance in which k-core decomposition is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -75,9 +85,10 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     ///
     /// # Arguments
     ///
-    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance in which k-core decomposition is to be performed in.
+    /// * `threads` --- the number of threads to be used in the computation.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new_with_conf(
         g: &'a GraphMemoryMap<N, E, Ix>,
         threads: usize,
@@ -96,7 +107,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
     ///
     /// * `e_idx` --- the index of the edge whose coreness is to be returned.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn coreness(&self, e_idx: usize) -> u8 {
         assert!(e_idx < self.g.width());
         *self.k_cores.get(e_idx)
@@ -104,7 +115,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoLiuEtAl<'a, N, E, I
 
     /// Returns a slice containing the coreness of each edge of the [`GraphMemoryMap`] instance.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn k_cores(&self) -> &[u8] {
         self.k_cores.as_slice()
     }

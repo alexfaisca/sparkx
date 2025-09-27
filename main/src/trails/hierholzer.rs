@@ -16,7 +16,7 @@ type AllEulerTrailsConcatenatedWithBounds<'a> = (&'a [usize], Box<[(usize, usize
 
 /// For the computation of the euler trail(s) of a [`GraphMemoryMap`] instance using *Hierholzer's Algorithm*.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 pub struct AlgoHierholzer<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which the euler trail(s) is(are) computed.
@@ -44,7 +44,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     ///
     /// * `g` --- the [`GraphMemoryMap`] instance for which *Hierholzer's Algorithm* is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut euler = Self::new_no_compute(g)?;
         let proc_mem = euler.init_cache_mem()?;
@@ -54,6 +54,22 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
         Ok(euler)
     }
 
+    /// Searches for a previously cached result, and if not found performs graph traversal using *Hierholzer's Algorithm*, computing the euler trails of a [`GraphMemoryMap`] instance.
+    ///
+    /// The resulting Euler trail(s) is(are) stored in memory (in a memmapped file) nodewise[^1].
+    ///
+    /// * Note *1*: by definition, isolated nodes won't be present in the euler trail unless they have *self-loops*[^2].
+    /// * Note *2*: in the case of a non-eulerian graph, trails are stored sequentially in memory, with their respective starting indexes stored in the aboce mentioned `trail_index` array.
+    /// * Note *3*: the last edge of each euler trail, connecting the trail into an euler cycle is intentionally left out of the resulting euler trail(s).
+    ///
+    /// [^1]: for each two consecutive node entries, u and v, the(an) edge (u,v) between them is traversed.
+    /// [^2]: edges of the type (u, u), for a given node u.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance for which *Hierholzer's Algorithm* is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -86,7 +102,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     /// [^1]: Given the topologic properties of de Bruijn graphs, the number of strongly connected
     /// components always equals the number of weakly connected components.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn count_connected_components(&self) -> usize {
         self.trail_number()
     }
@@ -101,7 +117,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     ///
     /// This method will return [`Some`] if `idx` is smaller than the number of euler trails found upon performing *Hierholzer's* graph traversal algorithm and [`None`] otherwise, i.e. iff `idx < trail_index.len()`.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_trail(&self, idx: usize) -> Option<&[usize]> {
         if idx < self.euler_indices.len() {
             // get trail start index
@@ -125,7 +141,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoHierholzer<'a, N, E
     ///
     /// [^1]: bounds are given as a tuple (start_idx: [`usize`], end_idx: [`usize`]).
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_all_trails(&'a self) -> AllEulerTrailsConcatenatedWithBounds<'a> {
         let mut bounds: Vec<(usize, usize)> = Vec::with_capacity(self.euler_indices.len());
         self.euler_indices

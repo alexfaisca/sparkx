@@ -9,7 +9,6 @@ use crate::{
                 id_from_filename, pers_cache_file_name,
             },
         },
-        label::VoidLabel,
     },
 };
 
@@ -19,7 +18,8 @@ use std::{
     sync::OnceLock,
 };
 
-type TestCache = DashMap<String, OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>>;
+type CacheRecords = OnceLock<GraphCache<(), (), usize>>;
+type TestCache = DashMap<String, CacheRecords>;
 type ExactValueCache = DashMap<String, OnceLock<String>>;
 
 static TEST_CACHE: OnceLock<TestCache> = OnceLock::new();
@@ -87,23 +87,23 @@ fn graph_id_from_dataset_file_name(
 #[allow(dead_code)]
 pub(crate) fn get_or_init_dataset_cache_entry(
     graph_path: &Path,
-) -> Result<GraphCache<VoidLabel, VoidLabel, usize>, Box<dyn std::error::Error>> {
+) -> Result<GraphCache<(), (), usize>, Box<dyn std::error::Error>> {
     let cache_id = graph_id_from_dataset_file_name(graph_path)?;
 
     // Get or create the per-key OnceLock
-    let test_entry = mem_cache()
-        .entry(cache_id)
-        .or_try_insert_with(|| -> Result<OnceLock<GraphCache<VoidLabel, VoidLabel, usize>>, Box<dyn std::error::Error>> {
+    let test_entry = mem_cache().entry(cache_id).or_try_insert_with(
+        || -> Result<CacheRecords, Box<dyn std::error::Error>> {
             let lock = OnceLock::new();
             Ok(lock)
-        })?;
+        },
+    )?;
     let cache = test_entry.get_or_try_init(
-        || -> Result<GraphCache<VoidLabel, VoidLabel, usize>, Box<dyn std::error::Error>> {
+        || -> Result<GraphCache<(), (), usize>, Box<dyn std::error::Error>> {
             let cache_filename = cache_file_for(graph_path)?;
             eprintln!("check if file with fn {cache_filename} exists");
             if Path::new(&cache_filename).exists() {
                 eprintln!("yes, found it {:?}", graph_path);
-                GraphCache::<VoidLabel, VoidLabel, usize>::open(&cache_filename, None).map_err(
+                GraphCache::<(), (), usize>::open(&cache_filename, None).map_err(
                     |e| -> Box<dyn std::error::Error> {
                         format!(
                             "error getting `GraphCache` instance for path {:?}: {:?}",
@@ -124,7 +124,7 @@ pub(crate) fn get_or_init_dataset_cache_entry(
                         "error invalid file path --- empty path".into()
                     })?;
 
-                GraphCache::<VoidLabel, VoidLabel, usize>::from_file(
+                GraphCache::<(), (), usize>::from_file(
                     graph_path,
                     Some(file_name.to_string()),
                     None,

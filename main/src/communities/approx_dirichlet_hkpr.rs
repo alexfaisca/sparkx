@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 /// For the computation of the *ApproxDirHKPR Algorithm* as described in ["Solving Local Linear Systems with Boundary Conditions Using Heat Kernel Pagerank"](https://doi.org/10.48550/arXiv.1503.03157) by Chung F. and Simpson O. on [`GraphMemoryMap`] instances.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[derive(Clone)]
 pub struct ApproxDirHKPR<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph for which the community is computed.
@@ -56,7 +56,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ApproxDirHKPR<'a, N, E,
     ///
     /// `Ok(())` if successful, or `Err(_)` if not.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     fn evaluate_params(
         g: &GraphMemoryMap<N, E, Ix>,
         seed_node: usize,
@@ -105,7 +105,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ApproxDirHKPR<'a, N, E,
     /// * `target_volume` --- partition's target edge number.
     /// * `target_conductance` --- partition's target conductance.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(
         g: &'a GraphMemoryMap<N, E, Ix>,
         eps: f64,

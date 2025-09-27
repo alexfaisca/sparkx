@@ -15,7 +15,7 @@ type ProceduralMemoryClusteringCoefficient = ();
 
 /// For the computation of a [`GraphMemoryMap`] instance's local clustering coefficient, transitivity and average local clustering coefficient.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct ClusteringCoefficient<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
@@ -38,7 +38,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> ClusteringCoefficient<'
     ///
     /// * `g` --- the  [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let out_fn = g.build_cache_filename(CacheFile::ClusteringCoefficient, None)?;
         let local = SharedSliceMut::<f64>::abst_mem_mut(&out_fn, g.size(), true)?;

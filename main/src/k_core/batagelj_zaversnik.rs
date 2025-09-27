@@ -15,7 +15,7 @@ type ProceduralMemoryBZ = (
 
 /// For the computation of a [`GraphMemoryMap`] instance's k-core decomposition as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoBatageljZaversnik<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
@@ -35,9 +35,9 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
     ///
     /// # Arguments
     ///
-    /// * `g` --- the [`GraphMemoryMap`] instance for which k-core decomposition is to be performed in.
+    /// * `g` --- the [`GraphMemoryMap`] instance in which k-core decomposition is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut bz = Self::new_no_compute(g)?;
         let proc_mem = bz.init_cache_mem()?;
@@ -46,7 +46,17 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
 
         Ok(bz)
     }
-
+    /// Searches for a previously cached result, and if not found performs k-core decomposition as described in ["An O(m) Algorithm for Cores Decomposition of Networks"](https://doi.org/10.48550/arXiv.cs/0310049) by Batagelj V. and Zaversnik M.
+    ///
+    /// The resulting k-core subgraphs are stored in memory (in a memmapped file) nodewise[^1].
+    ///
+    /// [^1]: for each node of the graph it's coreness is stored in an array.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance in which k-core decomposition is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -65,7 +75,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
     ///
     /// * `e_idx` --- the index of the edge whose coreness is to be returned.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn coreness(&self, e_idx: usize) -> u8 {
         assert!(e_idx < self.g.width());
         *self.k_cores.get(e_idx)
@@ -73,7 +83,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoBatageljZaversnik<'
 
     /// Returns a slice containing the coreness of each edge of the [`GraphMemoryMap`] instance.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn k_cores(&self) -> &[u8] {
         self.k_cores.as_slice()
     }

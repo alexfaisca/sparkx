@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 
 /// For the computation of the *HK-Relax Algorithm* as described in ["Heat Kernel Based Community Detection"](https://doi.org/10.48550/arXiv.1403.3148) by Kloster K. and Gleich D. on [`GraphMemoryMap`] instances.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[derive(Clone)]
 pub struct HKRelax<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// The graph for which the community is computed.
@@ -38,7 +38,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> HKRelax<'a, N, E, Ix> {
     /// * `eps` --- ε (eps) error parameter.
     /// * `seed` --- seed nodes.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     fn evaluate_params(
         g: &GraphMemoryMap<N, E, Ix>,
         t: f64,
@@ -180,7 +180,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> HKRelax<'a, N, E, Ix> {
     /// * `target_size` --- partition's target node number.
     /// * `target_volume` --- partition's target edge number.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(
         g: &'a GraphMemoryMap<N, E, Ix>,
         t: f64,

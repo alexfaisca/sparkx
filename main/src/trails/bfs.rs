@@ -9,9 +9,10 @@ type ProceduralMemoryBFSDists = (
     AbstractedProceduralMemoryMut<bool>,
 );
 
-/// For the computation of BFS in a [`GraphMemoryMap`] instance.
+/// For the computation of a simple BFS in a [`GraphMemoryMap`] instance, recording the distance at
+/// which each node is found and the total number of reacheable nodes.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 pub struct BFSDists<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     /// Graph in which the BFS is to be performed.

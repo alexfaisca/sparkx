@@ -1,5 +1,4 @@
 pub(crate) mod cache;
-pub mod edge;
 mod export_induced_subgraph;
 mod impl_algos;
 mod impl_csc;
@@ -327,7 +326,6 @@ pub trait GenericEdge<T: GenericEdgeType>:
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)]
 pub enum CacheFile {
-    /// FIXME: Only member that should be visible to users
     General,
     BFS,
     DFS,
@@ -392,7 +390,7 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     ///
     /// [`GraphCache`]: ./struct.GraphCache.html#
     /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    pub fn init_from_cache(
+    pub(crate) fn init_from_cache(
         graph_cache: GraphCache<N, E, Ix>,
         thread_count: Option<u8>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -421,6 +419,15 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         Err("error graph cache must be readonly to be memmapped".into())
     }
 
+    /// Creates a [`GraphMemoryMap`] instance from a given file.
+    ///
+    /// # Arguments
+    ///
+    /// * `p` --- path to the file from which the graph is to be parsed.
+    /// * `id` --- optionally, the user may provide an id for the graph.
+    /// * `thread_count`--- user suggested number of threads to be used when computing algorithms on the graph.
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     #[inline(always)]
     pub fn from_file<P: AsRef<Path>>(
         p: P,
@@ -431,6 +438,15 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         Self::init_from_cache(graph_cache, thread_count)
     }
 
+    /// Initializes a [`GraphMemoryMap`] instance from a given file, and builds an fst.
+    ///
+    /// # Arguments
+    ///
+    /// * `p` --- path to the file from which the graph is to be parsed.
+    /// * `id` --- optionally, the user may provide an id for the graph.
+    /// * `thread_count`--- user suggested number of threads to be used when computing algorithms on the graph.
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     #[inline(always)]
     pub fn from_file_with_fst<P: AsRef<Path>>(
         p: P,
@@ -443,6 +459,14 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
         Self::init_from_cache(graph_cache, thread_count)
     }
 
+    /// Opens a [`GraphMemoryMap`] instance from a cached entry.
+    ///
+    /// # Arguments
+    ///
+    /// * `filename` --- path of one of the graph's cached entry's files (may be any of the graph's files).
+    /// * `thread_count`--- user suggested number of threads to be used when computing algorithms on the graph.
+    ///
+    /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
     #[inline(always)]
     pub fn open<P: AsRef<Path>>(
         filename: P,
@@ -568,46 +592,6 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
             node_id,
         ))
     }
-
-    // /// Returns an [`EdgeIter`] iterator over all of the graph's edges.
-    // ///
-    // /// [`EdgeIter`]: ./struct.EdgeIter.html#
-    // pub fn edges(&self) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-    //     Ok(EdgeIter::<EdgeType, Edge>::new(
-    //         self.graph.as_ptr() as *const Edge,
-    //         self.index.as_ptr() as *const usize,
-    //         0,
-    //         self.size(),
-    //     ))
-    // }
-
-    // /// Returns an [`EdgeIter`] iterator over the graph's edges in a given range.
-    // ///
-    // /// # Arguments
-    // ///
-    // /// * `begin_node` --- id of the node whose offset begin marks the beginning of the iterator's range.
-    // /// * `end_node` ---  id of the node whose offset end marks the end of the iterator's range.
-    // ///
-    // /// [`EdgeIter`]: ./struct.EdgeIter.html#
-    // pub fn edges_in_range(
-    //     &self,
-    //     begin_node: usize,
-    //     end_node: usize,
-    // ) -> Result<EdgeIter<EdgeType, Edge>, Box<dyn std::error::Error>> {
-    //     if begin_node > end_node {
-    //         return Err("error invalid range, beginning after end".into());
-    //     }
-    //     if begin_node > self.size() || end_node > self.size() {
-    //         return Err("error invalid range".into());
-    //     }
-    //
-    //     Ok(EdgeIter::<EdgeType, Edge>::new(
-    //         self.graph.as_ptr() as *const Edge,
-    //         self.index.as_ptr() as *const usize,
-    //         begin_node,
-    //         end_node,
-    //     ))
-    // }
 
     /// Performs a sweep cut over a given diffusion vector[^1] by partition conductance.
     ///
@@ -778,22 +762,6 @@ impl<N: crate::graph::N, E: crate::graph::E, Ix: crate::graph::IndexType> GraphM
     pub fn cleanup_cache(&self, target: CacheFile) -> Result<(), Box<dyn std::error::Error>> {
         self.graph_cache.cleanup_cache(target)
     }
-
-    // /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format keeping all edge and node labelings[^1].
-    // ///
-    // /// [^1]: if none of the edge or node labeling is wanted consider using [`export_petgraph_stripped`].
-    // ///
-    // /// [`GraphMemoryMap`]: ./struct.GraphMemoryMap.html#
-    // /// [`export_petgraph_stripped`]: ./struct.GraphMemoryMap.html#method.export_petgraph_stripped
-    // #[cfg(feature = "petgraph")]
-    // pub fn export_petgraph(
-    //     &self,
-    // ) -> Result<
-    //     petgraph::graph::DiGraph<petgraph::graph::NodeIndex<usize>, EdgeType>,
-    //     Box<dyn std::error::Error>,
-    // > {
-    //     self.export_petgraph_impl()
-    // }
 
     /// Export the [`GraphMemoryMap`] instance to petgraph's [`DiGraph`](https://docs.rs/petgraph/latest/petgraph/graph/type.DiGraph.html) format stripping any edge or node labelings whatsoever.
     ///

@@ -62,7 +62,7 @@ enum InputFileType {
     NODE_EDGE(&'static str),
 }
 
-pub struct GraphCache<N: super::N, E: super::E, Ix: IndexType> {
+pub(crate) struct GraphCache<N: super::N, E: super::E, Ix: IndexType> {
     pub neighbors_file: Arc<File>,
     pub offsets_file: Arc<File>,
     pub nodelabel_file: Arc<File>,

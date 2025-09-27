@@ -10,6 +10,7 @@ use std::mem::ManuallyDrop;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Barrier;
+#[cfg(feature = "bench")]
 use std::time::Instant;
 
 type Weight = f64;
@@ -109,6 +110,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
     /// # Arguments
     ///
     /// * `g` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
+    /// * `threads` --- the number of threads to be used in the computation.
     ///
     /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn new_with_conf(
@@ -123,6 +125,18 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
         Ok(gve_louvain)
     }
 
+    /// Searches for a previously cached result, and if not found performs the Louvain() function as described in ["GVE-Louvain: Fast Louvain Algorithm for Community Detection in Shared Memory Setting"](https://doi.org/10.48550/arXiv.2312.04876) p. 5.
+    ///
+    /// The resulting graph partition and its corresponding modularity are stored in memory (in
+    /// the partition's case in a memmapped file).
+    ///
+    /// * Note: isolated nodes remain in their own isolated community, in the final partition.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the [`GraphMemoryMap`] instance for which the louvain partition is to be computed.
+    ///
+    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {

@@ -18,6 +18,7 @@ pub struct Triangles<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
     g: &'a GraphMemoryMap<N, E, Ix>,
     /// Memmapped slice containing the number of triangles of each edge.
     triangles: AbstractedProceduralMemoryMut<AtomicU8>,
+    /// Threads to be used
     threads: usize,
 }
 

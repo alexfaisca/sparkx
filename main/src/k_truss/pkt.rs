@@ -23,7 +23,7 @@ type ProceduralMemoryPKT = (
 
 /// For the computation of a [`GraphMemoryMap`] instance's k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
 ///
-/// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+/// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct AlgoPKT<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
@@ -35,13 +35,13 @@ pub struct AlgoPKT<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> {
 }
 #[allow(dead_code)]
 impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
-    /// Performs the *PKT Alrgorithm*'s 'k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
+    /// Performs the *PKT Alrgorithm*'s k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
     ///
     /// # Arguments
     ///
-    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance in which k-truss decomposition is to be performed in.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new(g: &'a GraphMemoryMap<N, E, Ix>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut pkt = Self::new_no_compute(g, g.thread_num())?;
         let proc_mem = pkt.init_cache_mem()?;
@@ -51,6 +51,13 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
         Ok(pkt)
     }
 
+    /// Searches for a previously cached result, and if not found performs the *PKT Alrgorithm*'s k-truss decomposition as described in ["Shared-memory Graph Truss Decomposition"](https://doi.org/10.48550/arXiv.1707.02000) by Kamir H. and Madduri K.
+    ///
+    /// # Arguments
+    ///
+    /// * `g` --- the  [`GraphMemoryMap`] instance in which k-truss decomposition is to be performed in.
+    ///
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn get_or_compute(
         g: &'a GraphMemoryMap<N, E, Ix>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -60,7 +67,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
                 return Ok(Self {
                     g,
                     k_trusses,
-                    threads: g.thread_num().max(1),
+                    threads: g.thread_num(),
                 });
             }
         }
@@ -71,9 +78,10 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     ///
     /// # Arguments
     ///
-    /// * `g` --- the  [`GraphMemoryMap`] instance for which k-truss decomposition is to be performed in.
+    /// * `g` --- the  [`GraphMemoryMap`] instance in which k-truss decomposition is to be performed in.
+    /// * `threads` --- the number of threads to be used in the computation.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn new_with_conf(
         g: &'a GraphMemoryMap<N, E, Ix>,
         threads: usize,
@@ -92,7 +100,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
     ///
     /// * `e_idx` --- the index of the edge whose trussness is to be returned.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn trussness(&self, e_idx: usize) -> u8 {
         assert!(e_idx < self.g.width());
         *self.k_trusses.get(e_idx)
@@ -100,7 +108,7 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoPKT<'a, N, E, Ix> {
 
     /// Returns a slice containing the trussness of each edge of the [`GraphMemoryMap`] instance.
     ///
-    /// [`GraphMemoryMap`]: ../../generic_memory_map/struct.GraphMemoryMap.html#
+    /// [`GraphMemoryMap`]: ../../graph/struct.GraphMemoryMap.html#
     pub fn k_trusses(&self) -> &[u8] {
         self.k_trusses.as_slice()
     }
