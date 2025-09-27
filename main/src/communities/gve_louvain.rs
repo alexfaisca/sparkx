@@ -879,7 +879,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
 
         // outer loop: louvain passes
         for l_pass in 0..Self::MAX_PASSES {
-            println!("pass {l_pass}");
             if prev_comm_count <= 1 {
                 break;
             }
@@ -891,7 +890,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
             // li <- louvain_move(G', C', K', Σ′)
             // if 𝑙𝑖 ≤ 1 then break --- adjusted to 𝑙𝑖 ≤ 0 as we don't increment before loop ends
             // as is teh case with the algorithm author
-            println!("move");
             let count_iter = Self::louvain_move(
                 l_pass,
                 prev_comm_count,
@@ -922,7 +920,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                 break;
             }
 
-            println!("renumber");
             for u in 0..prev_comm_count {
                 let degree = *index.get(u * 2 + 1) - *index.get(u * 2);
                 let c = *coms.get(u);
@@ -938,7 +935,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                 }
             }
 
-            println!("dendrogram {} {}", communities.len(), coms.len());
             // 𝐶 ← Lookup dendrogram using 𝐶 to 𝐶
             for orig in 0..node_count {
                 let c = *communities.get(orig);
@@ -952,7 +948,6 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                         );
                 }
             }
-            println!("end dendrogram");
 
             // if |Γ|/|Γ𝑜𝑙𝑑 | > 𝜏_𝑎𝑔𝑔 then break
             if new_comm_count as f64 / prev_comm_count as f64 > Self::AGGREGATION_TOLERANCE {
@@ -960,12 +955,9 @@ impl<'a, N: graph::N, E: graph::E, Ix: graph::IndexType> AlgoGVELouvain<'a, N, E
                 break;
             }
 
-            println!("before");
-
             #[cfg(feature = "bench")]
             let before = Instant::now();
 
-            println!("aggregate");
             // build the aggregated graph (super-vertex graph) in the 'next_index' and 'next_edges' buffers
             Self::louvain_aggregate(
                 l_pass,

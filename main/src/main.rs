@@ -1375,7 +1375,7 @@ pub fn run_general_benches<P: AsRef<Path>>(
         )?;
     }
 
-    // 2) K-core — Liu et al. (50 runs)
+    // 2) K-core — Liu et al. (51 runs)
     for _ in 0..RUNS {
         let t = Instant::now();
         AlgoLiuEtAl::new(&graph)?;
@@ -1458,74 +1458,76 @@ pub fn run_general_benches<P: AsRef<Path>>(
         append_louvain_passes_bulk(&pass_rows, defaults::LOUV_PASS)?;
     }
 
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        let h = HyperBall4::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_hyperball(
-            &HyperBallRecord {
-                dataset,
-                precision_p: 4,
-                iterations: h.get_iters(),
-                runtime_micros: us,
-                threads,
-            },
-            defaults::HYPERBALL,
-        )?;
-    }
-
-    println!("going for hyp 6");
-
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        let h = HyperBall6::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_hyperball(
-            &HyperBallRecord {
-                dataset,
-                precision_p: 6,
-                iterations: h.get_iters(),
-                runtime_micros: us,
-                threads,
-            },
-            defaults::HYPERBALL,
-        )?;
-    }
-    println!("going for hyp 8");
-
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        let h = HyperBall8::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_hyperball(
-            &HyperBallRecord {
-                dataset,
-                precision_p: 8,
-                iterations: h.get_iters(),
-                runtime_micros: us,
-                threads,
-            },
-            defaults::HYPERBALL,
-        )?;
-    }
-    println!("going for hyp 10");
-
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        let h = HyperBall10::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_hyperball(
-            &HyperBallRecord {
-                dataset,
-                precision_p: 10,
-                iterations: h.get_iters(),
-                runtime_micros: us,
-                threads,
-            },
-            defaults::HYPERBALL,
-        )?;
-        println!("+1");
-    }
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall4::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 4,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    // }
+    //
+    // println!("going for hyp 6");
+    //
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall6::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     println!("+1");
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 6,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    // }
+    // println!("going for hyp 8");
+    //
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall8::new(&graph).unwrap();
+    //     println!("+1");
+    //     let us = t.elapsed().as_micros();
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 8,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    // }
+    // println!("going for hyp 10");
+    //
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall10::new(&graph).unwrap();
+    //     let us = t.elapsed().as_micros();
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 10,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    //     println!("+1");
+    // }
 
     println!("droping");
     graph.drop_cache()?;
