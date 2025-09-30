@@ -202,6 +202,8 @@ cargo run --features bench --release -- -t16 -v -mf ./datasets/graphs/graph.mtx 
 ### Thread Count
 
 To bench wall-time with different thread counts the `-t16` can be altered to change the number of threads to be used in parallel algorithms:
+
+
     1. If `-t0` or `-t1` are supplied, the program runs single-threaded.
     2. If `-tx`, where `x > 1`, is supplied, the program runs with `x` threads.
 
