@@ -1,11 +1,11 @@
 High-performance **Rust** library for large-scale static **graph analytics** built on a memory-mapped core. It includes fast implementations of:
 
-- **k-core decomposition** (Batagelj–Zaversnik; Liu et al. parallel)
-- **k-truss decomposition** (Burkhardt et al.; PKT)
+- **k-core decomposition** (Batagelj–Zaversnik sequential; Liu et al. parallel)
+- **k-truss decomposition** (Burkhardt et al. sequential; PKT parallel)
 - **Louvain** (GVE-Louvain variant)
-- **HyperBall** (HLL/HLL++ distance/centrality estimation)
-- **Heat Kernel PageRank** (HK-relax, single-source)
-- Classic traversals/utilities (BFS/DFS, Hierholzer’s Euler trails, clustering coefficient, etc.)
+- **HyperBall** (HLL++ distance/centrality estimation)
+- **Heat Kernel PageRank** (HK-relax --- SSPR/MSPR)
+- Classic traversals/utilities (BFS/DFS, Hierholzer’s Euler trails, clustering coefficient, transitivity, triangle counting, etc.)
 
 Comes with CSV **benchmark writers** and **plotting scripts** to visualize runtime scaling versus graph size.
 
