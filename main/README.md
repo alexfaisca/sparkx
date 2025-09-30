@@ -190,11 +190,20 @@ For our wall-time benchmarks we made use of runtime target profiles enabled with
 cargo run --features bench --release -- -t16 -v -mf ./datasets/graphs/graph.mtx -e target_profile
 ```
 
+
+### `target_profile` Options
+
 | Value | Profile Name                          | Main Algorithms or Actions Included                                                                 |
 |-------|--------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | **0** | hyperball_profile | **HyperBall** validation --- the exact closeness centrality of every node of the graph is calculated and the Mean Absolute Error, Mean Absolute Percentual Error and Spearman's Rho of HyperBall's closeness centrality approximation are measured and logged. |
 | **1** | hk_relax_profile | **HK-Relax** validation --- the algorithm is run 10'000 times with variable `t` and `ε` parameters for random seed nodes in single--source mode, and the resulting communities are then filtered, parametrized and logged. |
 | **2** | general_profile | Runs all other algorithms multiple times, and parametrizes and logs each run. |
+
+### Thread Count
+
+To bench wall-time with different thread counts the `-t16` can be altered to change the number of threads to be used in parallel algorithms, if:
+    *`-t0` or `-t1` are supplied, the program runs single-threaded.
+    *`-tx` is supplied, the program runs with `x` threads.
 
 # Plotting results
 Doc still in construction...
