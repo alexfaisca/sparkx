@@ -111,7 +111,7 @@ fn main() {
             )
             .expect("hk-relax profile should succeed");
         } else {
-            run_general_benches(args.file.clone(), args.threads)
+            general_profile(args.file.clone(), args.threads)
                 .expect("general profile should succeed");
         }
         return;
@@ -929,6 +929,328 @@ fn hyperball_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Pa
     Ok(())
 }
 
+#[cfg(feature = "bench")]
+fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+    id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // This assumes UTF-8 but avoids full conversion
+
+    use rand::Rng;
+    use std::path::PathBuf;
+
+    let out_file: PathBuf = "results/hkpr_all.csv".into();
+    let dataset = path
+        .as_ref()
+        .file_name()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            format!("error couldn.t get filename for {:?}", path.as_ref()).into()
+        })?
+        .to_str()
+        .ok_or_else(|| -> Box<dyn std::error::Error> {
+            format!("error couldn.t get filename strfor {:?}", path.as_ref()).into()
+        })?;
+    let runs_per_params = 10000;
+
+    let time = Instant::now();
+    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
+        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph_mmaped.size(),
+        graph_mmaped.width(),
+        time.elapsed()
+    );
+
+    let mut conds = vec![];
+    let mut results = vec![];
+    for (t, eps) in [
+        (1., 0.01),
+        (5., 0.01),
+        (10., 0.01),
+        (15., 0.01),
+        (20., 0.01),
+        (25., 0.01),
+        (30., 0.01),
+        (35., 0.01),
+        (40., 0.01),
+        (1., 0.001),
+        (5., 0.001),
+        (10., 0.001),
+        (15., 0.001),
+        (20., 0.001),
+        (25., 0.001),
+        (30., 0.001),
+        (35., 0.001),
+        (40., 0.001),
+        (1., 0.0001),
+        (5., 0.0001),
+        (10., 0.0001),
+        (15., 0.0001),
+        (20., 0.0001),
+        (25., 0.0001),
+        (30., 0.0001),
+        (35., 0.0001),
+        (40., 0.0001),
+        (1., 0.00001),
+        (5., 0.00001),
+        (10., 0.00001),
+        (15., 0.00001),
+        (20., 0.00001),
+        (25., 0.00001),
+        (30., 0.00001),
+        (35., 0.00001),
+        (40., 0.00001),
+        (1., 0.000001),
+        (5., 0.000001),
+        (10., 0.000001),
+        (15., 0.000001),
+        (20., 0.000001),
+        (25., 0.000001),
+        (30., 0.000001),
+        (35., 0.000001),
+        (40., 0.000001),
+    ] {
+        println!("{t} :: {eps}");
+        let mut i = 0;
+        loop {
+            if i == runs_per_params {
+                break;
+            }
+            let s = rand::rng().random_range(0..graph_mmaped.size());
+
+            let hk_relax = HKRelax::new(&graph_mmaped, t, eps, vec![s], None, None)?;
+            let time = Instant::now();
+            let c = hk_relax.compute()?;
+            let elapsed = time.elapsed();
+            if c.size < 10 || c.width < 10 {
+                continue;
+            }
+            results.push(HkprRecord {
+                dataset,
+                t,
+                eps,
+                seed: s as u64,
+                conductance: c.conductance,
+                cluster_size: c.size as u64,
+                volume: c.width as u64,
+                runtime_secs: elapsed.as_micros(),
+            });
+            println!("{i} ---> {}", c.conductance);
+            conds.push(c.conductance);
+            i += 1;
+        }
+    }
+
+    append_records(&out_file, &results)?;
+
+    println!("droping");
+    graph_mmaped.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+#[cfg(feature = "bench")]
+pub fn general_profile<P: AsRef<Path>>(
+    path: P,
+    threads: Option<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    static RUNS: usize = 15;
+    let dataset = filename_only(&path)?;
+    let time = Instant::now();
+    let mut graph: GraphMemoryMap<(), (), usize> =
+        GraphMemoryMap::<(), (), usize>::from_file(path.as_ref(), None, threads)?;
+    println!(
+        "graph built (|V| = {:?}, |E| = {}) {:?}",
+        graph.size(),
+        graph.width(),
+        time.elapsed()
+    );
+    let threads = threads.unwrap_or(1).max(1) as usize;
+
+    // 1) K-core — Batagelj–Zaversnik (50 runs)
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        AlgoBatageljZaversnik::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_kcore(
+            &KCoreRecord {
+                dataset,
+                algo: "batagelj-zaversnik",
+                runtime_micros: us,
+                threads,
+            },
+            defaults::KCORE,
+        )?;
+    }
+
+    // // 2) K-core — Liu et al. (51 runs)
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     AlgoLiuEtAl::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     append_kcore(
+    //         &KCoreRecord {
+    //             dataset,
+    //             algo: "liu",
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::KCORE,
+    //     )?;
+    // }
+
+    // 3) K-truss — Burkhardt (50 runs)
+    for _ in 0..RUNS {
+        let t = Instant::now();
+        AlgoBurkhardtEtAl::new(&graph)?;
+        let us = t.elapsed().as_micros();
+        append_ktruss(
+            &KTrussRecord {
+                dataset,
+                algo: "burkhardt",
+                runtime_micros: us,
+                threads,
+            },
+            defaults::KTRUSS,
+        )?;
+    }
+
+    // // 4) K-truss — PKT (50 runs)
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     AlgoPKT::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     append_ktruss(
+    //         &KTrussRecord {
+    //             dataset,
+    //             algo: "pkt",
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::KTRUSS,
+    //     )?;
+    // }
+
+    // // 5) Louvain (50 runs) — summary + per-pass rows (linked by run_id)
+    // for _ in 0..RUNS {
+    //     let run_id = louvain_new_run_id();
+    //     let mut pass_rows: Vec<LouvainPassRecord> = Vec::new();
+    //     let total_start = Instant::now();
+    //     let mut pass_idx: u32 = 0;
+    //
+    //     let l = AlgoGVELouvain::new(&graph)?;
+    //     let total_us = total_start.elapsed().as_micros();
+    //     for &(iters, coms, elapsed) in l.get_iters().iter() {
+    //         pass_rows.push(LouvainPassRecord {
+    //             run_id,
+    //             pass_idx,
+    //             iters_for_pass: iters,
+    //             coms_in_pass: coms,
+    //             runtime_micros: elapsed,
+    //         });
+    //         pass_idx += 1;
+    //     }
+    //
+    //     append_louvain_summary(
+    //         &LouvainSummaryRecord {
+    //             run_id,
+    //             dataset,
+    //             modularity: l.partition_modularity(),
+    //             runtime_micros: total_us,
+    //             levels: l.get_iters().len(),
+    //             passes_total: Some(pass_idx),
+    //             threads,
+    //         },
+    //         defaults::LOUV_SUM,
+    //     )?;
+    //     append_louvain_passes_bulk(&pass_rows, defaults::LOUV_PASS)?;
+    // }
+
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall4::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 4,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    // }
+    //
+    // println!("going for hyp 6");
+    //
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall6::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     println!("+1");
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 6,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    // }
+    // println!("going for hyp 8");
+    //
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall8::new(&graph).unwrap();
+    //     println!("+1");
+    //     let us = t.elapsed().as_micros();
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 8,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    // }
+    // println!("going for hyp 10");
+    //
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     let h = HyperBall10::new(&graph).unwrap();
+    //     let us = t.elapsed().as_micros();
+    //     append_hyperball(
+    //         &HyperBallRecord {
+    //             dataset,
+    //             precision_p: 10,
+    //             iterations: h.get_iters(),
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::HYPERBALL,
+    //     )?;
+    //     println!("+1");
+    // }
+
+    println!("droping");
+    graph.drop_cache()?;
+    println!("dropped");
+
+    Ok(())
+}
+
+/*
+ * Helper Structs & Functions
+ * */
+
 #[derive(Debug)]
 struct HkprRecord<'a> {
     dataset: &'a str,
@@ -1216,324 +1538,6 @@ fn next_run_id() -> u128 {
 
 pub fn louvain_new_run_id() -> u128 {
     next_run_id()
-}
-
-#[cfg(feature = "bench")]
-fn hk_relax_profile<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>(
-    path: P,
-    threads: Option<u8>,
-    id: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // This assumes UTF-8 but avoids full conversion
-
-    use rand::Rng;
-    use std::path::PathBuf;
-
-    let out_file: PathBuf = "results/hkpr_all.csv".into();
-    let dataset = path
-        .as_ref()
-        .file_name()
-        .ok_or_else(|| -> Box<dyn std::error::Error> {
-            format!("error couldn.t get filename for {:?}", path.as_ref()).into()
-        })?
-        .to_str()
-        .ok_or_else(|| -> Box<dyn std::error::Error> {
-            format!("error couldn.t get filename strfor {:?}", path.as_ref()).into()
-        })?;
-    let runs_per_params = 10000;
-
-    let time = Instant::now();
-    let mut graph_mmaped: GraphMemoryMap<N, E, Ix> =
-        GraphMemoryMap::<N, E, Ix>::from_file(path.as_ref(), id, threads)?;
-    println!(
-        "graph built (|V| = {:?}, |E| = {}) {:?}",
-        graph_mmaped.size(),
-        graph_mmaped.width(),
-        time.elapsed()
-    );
-
-    let mut conds = vec![];
-    let mut results = vec![];
-    for (t, eps) in [
-        (1., 0.01),
-        (5., 0.01),
-        (10., 0.01),
-        (15., 0.01),
-        (20., 0.01),
-        (25., 0.01),
-        (30., 0.01),
-        (35., 0.01),
-        (40., 0.01),
-        (1., 0.001),
-        (5., 0.001),
-        (10., 0.001),
-        (15., 0.001),
-        (20., 0.001),
-        (25., 0.001),
-        (30., 0.001),
-        (35., 0.001),
-        (40., 0.001),
-        (1., 0.0001),
-        (5., 0.0001),
-        (10., 0.0001),
-        (15., 0.0001),
-        (20., 0.0001),
-        (25., 0.0001),
-        (30., 0.0001),
-        (35., 0.0001),
-        (40., 0.0001),
-        (1., 0.00001),
-        (5., 0.00001),
-        (10., 0.00001),
-        (15., 0.00001),
-        (20., 0.00001),
-        (25., 0.00001),
-        (30., 0.00001),
-        (35., 0.00001),
-        (40., 0.00001),
-        (1., 0.000001),
-        (5., 0.000001),
-        (10., 0.000001),
-        (15., 0.000001),
-        (20., 0.000001),
-        (25., 0.000001),
-        (30., 0.000001),
-        (35., 0.000001),
-        (40., 0.000001),
-    ] {
-        println!("{t} :: {eps}");
-        let mut i = 0;
-        loop {
-            if i == runs_per_params {
-                break;
-            }
-            let s = rand::rng().random_range(0..graph_mmaped.size());
-
-            let hk_relax = HKRelax::new(&graph_mmaped, t, eps, vec![s], None, None)?;
-            let time = Instant::now();
-            let c = hk_relax.compute()?;
-            let elapsed = time.elapsed();
-            if c.size < 10 || c.width < 10 {
-                continue;
-            }
-            results.push(HkprRecord {
-                dataset,
-                t,
-                eps,
-                seed: s as u64,
-                conductance: c.conductance,
-                cluster_size: c.size as u64,
-                volume: c.width as u64,
-                runtime_secs: elapsed.as_micros(),
-            });
-            println!("{i} ---> {}", c.conductance);
-            conds.push(c.conductance);
-            i += 1;
-        }
-    }
-
-    append_records(&out_file, &results)?;
-
-    println!("droping");
-    graph_mmaped.drop_cache()?;
-    println!("dropped");
-
-    Ok(())
-}
-
-#[cfg(feature = "bench")]
-pub fn run_general_benches<P: AsRef<Path>>(
-    path: P,
-    threads: Option<u8>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    static RUNS: usize = 15;
-    let dataset = filename_only(&path)?;
-    let time = Instant::now();
-    let mut graph: GraphMemoryMap<(), (), usize> =
-        GraphMemoryMap::<(), (), usize>::from_file(path.as_ref(), None, threads)?;
-    println!(
-        "graph built (|V| = {:?}, |E| = {}) {:?}",
-        graph.size(),
-        graph.width(),
-        time.elapsed()
-    );
-    let threads = threads.unwrap_or(1).max(1) as usize;
-
-    // 1) K-core — Batagelj–Zaversnik (50 runs)
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        AlgoBatageljZaversnik::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_kcore(
-            &KCoreRecord {
-                dataset,
-                algo: "batagelj-zaversnik",
-                runtime_micros: us,
-                threads,
-            },
-            defaults::KCORE,
-        )?;
-    }
-
-    // // 2) K-core — Liu et al. (51 runs)
-    // for _ in 0..RUNS {
-    //     let t = Instant::now();
-    //     AlgoLiuEtAl::new(&graph)?;
-    //     let us = t.elapsed().as_micros();
-    //     append_kcore(
-    //         &KCoreRecord {
-    //             dataset,
-    //             algo: "liu",
-    //             runtime_micros: us,
-    //             threads,
-    //         },
-    //         defaults::KCORE,
-    //     )?;
-    // }
-
-    // 3) K-truss — Burkhardt (50 runs)
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        AlgoBurkhardtEtAl::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_ktruss(
-            &KTrussRecord {
-                dataset,
-                algo: "burkhardt",
-                runtime_micros: us,
-                threads,
-            },
-            defaults::KTRUSS,
-        )?;
-    }
-
-    // // 4) K-truss — PKT (50 runs)
-    // for _ in 0..RUNS {
-    //     let t = Instant::now();
-    //     AlgoPKT::new(&graph)?;
-    //     let us = t.elapsed().as_micros();
-    //     append_ktruss(
-    //         &KTrussRecord {
-    //             dataset,
-    //             algo: "pkt",
-    //             runtime_micros: us,
-    //             threads,
-    //         },
-    //         defaults::KTRUSS,
-    //     )?;
-    // }
-
-    // // 5) Louvain (50 runs) — summary + per-pass rows (linked by run_id)
-    // for _ in 0..RUNS {
-    //     let run_id = louvain_new_run_id();
-    //     let mut pass_rows: Vec<LouvainPassRecord> = Vec::new();
-    //     let total_start = Instant::now();
-    //     let mut pass_idx: u32 = 0;
-    //
-    //     let l = AlgoGVELouvain::new(&graph)?;
-    //     let total_us = total_start.elapsed().as_micros();
-    //     for &(iters, coms, elapsed) in l.get_iters().iter() {
-    //         pass_rows.push(LouvainPassRecord {
-    //             run_id,
-    //             pass_idx,
-    //             iters_for_pass: iters,
-    //             coms_in_pass: coms,
-    //             runtime_micros: elapsed,
-    //         });
-    //         pass_idx += 1;
-    //     }
-    //
-    //     append_louvain_summary(
-    //         &LouvainSummaryRecord {
-    //             run_id,
-    //             dataset,
-    //             modularity: l.partition_modularity(),
-    //             runtime_micros: total_us,
-    //             levels: l.get_iters().len(),
-    //             passes_total: Some(pass_idx),
-    //             threads,
-    //         },
-    //         defaults::LOUV_SUM,
-    //     )?;
-    //     append_louvain_passes_bulk(&pass_rows, defaults::LOUV_PASS)?;
-    // }
-
-    // for _ in 0..RUNS {
-    //     let t = Instant::now();
-    //     let h = HyperBall4::new(&graph)?;
-    //     let us = t.elapsed().as_micros();
-    //     append_hyperball(
-    //         &HyperBallRecord {
-    //             dataset,
-    //             precision_p: 4,
-    //             iterations: h.get_iters(),
-    //             runtime_micros: us,
-    //             threads,
-    //         },
-    //         defaults::HYPERBALL,
-    //     )?;
-    // }
-    //
-    // println!("going for hyp 6");
-    //
-    // for _ in 0..RUNS {
-    //     let t = Instant::now();
-    //     let h = HyperBall6::new(&graph)?;
-    //     let us = t.elapsed().as_micros();
-    //     println!("+1");
-    //     append_hyperball(
-    //         &HyperBallRecord {
-    //             dataset,
-    //             precision_p: 6,
-    //             iterations: h.get_iters(),
-    //             runtime_micros: us,
-    //             threads,
-    //         },
-    //         defaults::HYPERBALL,
-    //     )?;
-    // }
-    // println!("going for hyp 8");
-    //
-    // for _ in 0..RUNS {
-    //     let t = Instant::now();
-    //     let h = HyperBall8::new(&graph).unwrap();
-    //     println!("+1");
-    //     let us = t.elapsed().as_micros();
-    //     append_hyperball(
-    //         &HyperBallRecord {
-    //             dataset,
-    //             precision_p: 8,
-    //             iterations: h.get_iters(),
-    //             runtime_micros: us,
-    //             threads,
-    //         },
-    //         defaults::HYPERBALL,
-    //     )?;
-    // }
-    // println!("going for hyp 10");
-    //
-    // for _ in 0..RUNS {
-    //     let t = Instant::now();
-    //     let h = HyperBall10::new(&graph).unwrap();
-    //     let us = t.elapsed().as_micros();
-    //     append_hyperball(
-    //         &HyperBallRecord {
-    //             dataset,
-    //             precision_p: 10,
-    //             iterations: h.get_iters(),
-    //             runtime_micros: us,
-    //             threads,
-    //         },
-    //         defaults::HYPERBALL,
-    //     )?;
-    //     println!("+1");
-    // }
-
-    println!("droping");
-    graph.drop_cache()?;
-    println!("dropped");
-
-    Ok(())
 }
 
 // Small helper to get a &str dataset label from a path

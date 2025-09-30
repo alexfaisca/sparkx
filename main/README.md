@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Memory Benchmarks
 
-To obtain our memory benchmarking results we made use of a custom `cargo` target which launches the process and records the memory usage frame by frame using `valgrind --tool=massif`, it may be deployed for a given dataset `graph.mtx` located at `datasets/graphs/` at the library's base directory by running:
+To obtain our memory benchmarking results we made use of a custom `cargo` target which launches the process and records the memory usage frame by frame using `valgrind --tool=massif`, it may be deployed for a given dataset `graph.mtx`, in directory `datasets/graphs/` at the library's base directory, by running:
 ```bash
 cargo cache --tool=massif --dataset=../datasets/graphs/graph.mtx -t target_profile
 ```
@@ -185,11 +185,16 @@ cargo cache --tool=massif --dataset=../datasets/graphs/graph.mtx -t target_profi
 
 ## Wall-Time Benchmarks
 
-For our wall-time benchmarks we made use of runtime target profiles enabled with `feature = "bench"`, they may be deployed for a given dataset `graph.mtx` located at `datasets/graphs/` at the library's base directory by running:
+For our wall-time benchmarks we made use of runtime target profiles enabled with `feature = "bench"`, they may be deployed for a given dataset `graph.mtx`, in directory `datasets/graphs/` at the library's base directory by running:
 ```bash
 cargo run --features bench --release -- -t16 -v -mf ./datasets/graphs/graph.mtx -e target_profile
 ```
-with target\_profile in [0, 2].
+
+| Value | Profile Name                          | Main Algorithms or Actions Included                                                                 |
+|-------|--------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| **0** | hyperball_profile | **HyperBall** validation --- the exact closeness centrality of every node of the graph is calculated and the Mean Absolute Error, Mean Absolute Percentual Error and Spearman's Rho of HyperBall's closeness centrality approximation are measured and logged. |
+| **1** | hk_relax_profile | **HK-Relax** validation --- the algorithm is run 10'000 times with variable `t` and `ε` parameters for random seed nodes in single--source mode, and the resulting communities are then filtered, parametrized and logged. |
+| **2** | general_benches | Runs all other algorithms multiple times, and parametrizes and logs each run. |
 
 # Plotting results
 Doc still in construction...
