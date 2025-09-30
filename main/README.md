@@ -17,18 +17,10 @@ Comes with CSV **benchmark writers** and **plotting scripts** to visualize runti
 - [Installation](#installation)
 - [Data formats](#data-formats)
 - [Quick start](#quick-start)
-- [Usage examples](#usage-examples)
   - [Load & inspect](#load--inspect)
   - [Run algorithms](#run-algorithms)
-  - [Interactive metalabel lookup](#interactive-metalabel-lookup)
-- [Benchmarking](#benchmarking)
-  - [CSV writers](#csv-writers)
-  - [End-to-end bench harness](#end-to-end-bench-harness)
 - [Plotting results](#plotting-results)
 - [Performance notes](#performance-notes)
-- [Safety & caveats](#safety--caveats)
-- [License](#license)
-- [Citation](#citation)
 
 ---
 
@@ -162,5 +154,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 ```
+# Plotting results
+Doc still in construction...
 
-
+# Performance notes
+Doc still in construction...
