@@ -272,7 +272,7 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
         time.elapsed()
     );
     println!("metadata:\n{}", graph_mmaped.metadata()?);
-
+    //
     // let time = Instant::now();
     // let mut _pkt = AlgoPKT::new(&graph_mmaped)?;
     // println!("k-truss pkt {:?}", time.elapsed());
@@ -295,7 +295,7 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     // println!("k-core liu et al {:?}", time.elapsed());
     // println!();
     // _liu_et_al.drop_cache()?;
-
+    //
     // let time = Instant::now();
     // let mut _louvain = AlgoGVELouvain::new(&graph_mmaped)?;
     // println!("found {} communities", _louvain.community_count());
@@ -306,11 +306,11 @@ fn sandbox_parse<N: graph::N, E: graph::E, Ix: graph::IndexType, P: AsRef<Path>>
     //     graph_mmaped.modularity(_louvain.communities(), _louvain.community_count())?
     // );
     // println!();
-
-    let time = Instant::now();
-    let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
-    println!("hyperball {:?}", time.elapsed());
-    hyperball.drop_cache()?;
+    //
+    // let time = Instant::now();
+    // let mut hyperball = HyperBallInner::<_, _, _, Precision6, 6>::new(&graph_mmaped)?;
+    // println!("hyperball {:?}", time.elapsed());
+    // hyperball.drop_cache()?;
 
     // _louvain.coalesce_isolated_nodes()?;
     // println!("found {} communities", _louvain.community_count());
@@ -1375,21 +1375,21 @@ pub fn run_general_benches<P: AsRef<Path>>(
         )?;
     }
 
-    // 2) K-core — Liu et al. (51 runs)
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        AlgoLiuEtAl::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_kcore(
-            &KCoreRecord {
-                dataset,
-                algo: "liu",
-                runtime_micros: us,
-                threads,
-            },
-            defaults::KCORE,
-        )?;
-    }
+    // // 2) K-core — Liu et al. (51 runs)
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     AlgoLiuEtAl::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     append_kcore(
+    //         &KCoreRecord {
+    //             dataset,
+    //             algo: "liu",
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::KCORE,
+    //     )?;
+    // }
 
     // 3) K-truss — Burkhardt (50 runs)
     for _ in 0..RUNS {
@@ -1407,56 +1407,56 @@ pub fn run_general_benches<P: AsRef<Path>>(
         )?;
     }
 
-    // 4) K-truss — PKT (50 runs)
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        AlgoPKT::new(&graph)?;
-        let us = t.elapsed().as_micros();
-        append_ktruss(
-            &KTrussRecord {
-                dataset,
-                algo: "pkt",
-                runtime_micros: us,
-                threads,
-            },
-            defaults::KTRUSS,
-        )?;
-    }
+    // // 4) K-truss — PKT (50 runs)
+    // for _ in 0..RUNS {
+    //     let t = Instant::now();
+    //     AlgoPKT::new(&graph)?;
+    //     let us = t.elapsed().as_micros();
+    //     append_ktruss(
+    //         &KTrussRecord {
+    //             dataset,
+    //             algo: "pkt",
+    //             runtime_micros: us,
+    //             threads,
+    //         },
+    //         defaults::KTRUSS,
+    //     )?;
+    // }
 
-    // 5) Louvain (50 runs) — summary + per-pass rows (linked by run_id)
-    for _ in 0..RUNS {
-        let run_id = louvain_new_run_id();
-        let mut pass_rows: Vec<LouvainPassRecord> = Vec::new();
-        let total_start = Instant::now();
-        let mut pass_idx: u32 = 0;
-
-        let l = AlgoGVELouvain::new(&graph)?;
-        let total_us = total_start.elapsed().as_micros();
-        for &(iters, coms, elapsed) in l.get_iters().iter() {
-            pass_rows.push(LouvainPassRecord {
-                run_id,
-                pass_idx,
-                iters_for_pass: iters,
-                coms_in_pass: coms,
-                runtime_micros: elapsed,
-            });
-            pass_idx += 1;
-        }
-
-        append_louvain_summary(
-            &LouvainSummaryRecord {
-                run_id,
-                dataset,
-                modularity: l.partition_modularity(),
-                runtime_micros: total_us,
-                levels: l.get_iters().len(),
-                passes_total: Some(pass_idx),
-                threads,
-            },
-            defaults::LOUV_SUM,
-        )?;
-        append_louvain_passes_bulk(&pass_rows, defaults::LOUV_PASS)?;
-    }
+    // // 5) Louvain (50 runs) — summary + per-pass rows (linked by run_id)
+    // for _ in 0..RUNS {
+    //     let run_id = louvain_new_run_id();
+    //     let mut pass_rows: Vec<LouvainPassRecord> = Vec::new();
+    //     let total_start = Instant::now();
+    //     let mut pass_idx: u32 = 0;
+    //
+    //     let l = AlgoGVELouvain::new(&graph)?;
+    //     let total_us = total_start.elapsed().as_micros();
+    //     for &(iters, coms, elapsed) in l.get_iters().iter() {
+    //         pass_rows.push(LouvainPassRecord {
+    //             run_id,
+    //             pass_idx,
+    //             iters_for_pass: iters,
+    //             coms_in_pass: coms,
+    //             runtime_micros: elapsed,
+    //         });
+    //         pass_idx += 1;
+    //     }
+    //
+    //     append_louvain_summary(
+    //         &LouvainSummaryRecord {
+    //             run_id,
+    //             dataset,
+    //             modularity: l.partition_modularity(),
+    //             runtime_micros: total_us,
+    //             levels: l.get_iters().len(),
+    //             passes_total: Some(pass_idx),
+    //             threads,
+    //         },
+    //         defaults::LOUV_SUM,
+    //     )?;
+    //     append_louvain_passes_bulk(&pass_rows, defaults::LOUV_PASS)?;
+    // }
 
     // for _ in 0..RUNS {
     //     let t = Instant::now();

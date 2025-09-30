@@ -152,8 +152,9 @@ def main():
 
         fig, ax = plt.subplots(figsize=(8, 4.8))
         ax.scatter(xs, ys, s=18)
-        ax.set_title(f"Massif peaks — target {tgt}  (x = {args.x})")
-        ax.set_xlabel("|V| + |E|" if args.x == "VE" else ("|V| + |E| · ln |E|" if args.x == "VElogE" else ("|V|" if args.x == "V" else "E")))
+        xlab = "|V| + |E|" if args.x == "VE" else ("|V| + |E| · ln |E|" if args.x == "VElogE" else ("|V|" if args.x == "V" else "E"))
+        ax.set_title(f"Massif peaks — target {tgt}  (x = {xlab})")
+        ax.set_xlabel(xlab)
         ax.set_ylabel("peak bytes")
         if args.logx: ax.set_xscale("log")
         if args.logy: ax.set_yscale("log")

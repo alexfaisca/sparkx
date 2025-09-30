@@ -2,7 +2,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-for ds in ./datasets/graphs/*.mtx; do
+for ds in ./datasets/graphs/synth*.mtx; do
 	[[ -f "$ds" ]] || continue
 	for t in {0..3}; do
 		echo ">> $(basename "$ds")  -t $t"

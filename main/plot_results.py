@@ -83,7 +83,7 @@ def load_sizes_mapping():
                 # skip zero placeholders (remove if you want them included)
                 # if v == 0 and e == 0:
                 #     continue
-                sizes[_norm_dataset_name(ds)] = (v if v == 0 else v * np.log(v), e)
+                sizes[_norm_dataset_name(ds)] = (v, e)
         break
     if not sizes:
         print("[WARN] No dataset sizes file found; rows without inline n_nodes/n_edges will be skipped.")
@@ -133,7 +133,7 @@ def get_size_for_row(row, sizes_map):
         return None
     return sizes_map.get(_norm_dataset_name(ds))
 
-def aggregate_by(points, sizes_map, extra_keys):
+def aggregate_by(points, sizes_map, t, extra_keys):
     """
     Group rows by (group_id=tuple(extra_keys values), dataset, threads).
     Compute mean runtime and 95% CI.
@@ -155,7 +155,18 @@ def aggregate_by(points, sizes_map, extra_keys):
             continue
 
         gid = tuple((row.get(k) or "") for k in extra_keys) if extra_keys else ("ALL",)
-        x = V + E
+        x = 0
+        if t == 0:
+            x = V + E
+        elif t == 1:
+            if V != 0:
+                x = V * np.log(V) + E
+            else:
+                x = E
+        elif t == 2:
+            x = E ** 1.5
+        else:
+            x = E
         buckets[(gid, _norm_dataset_name(ds), threads, x)].append(secs)
 
     series = defaultdict(list)
@@ -168,7 +179,7 @@ def aggregate_by(points, sizes_map, extra_keys):
         series[gid].sort(key=lambda t: t[0])
     return series
 
-def plot_series(series, title, filename_stub, y_label="runtime (s)", logx=True, logy=True):
+def plot_series(series, t, title, filename_stub, y_label="runtime (s)", logx=True, logy=True):
     ensure_dir(PLOTS_DIR)
 
     for gid, pts in series.items():
@@ -203,7 +214,14 @@ def plot_series(series, title, filename_stub, y_label="runtime (s)", logx=True, 
 
         if logx: ax.set_xscale("log")
         if logy: ax.set_yscale("log")
-        ax.set_xlabel("|V| + |E|")
+        if t == 0:
+            ax.set_xlabel("|V| + |E|")
+        elif t == 1:
+            ax.set_xlabel("|V| * log(|V|) + |E|")
+        elif t == 2:
+            ax.set_xlabel("|E|^1.5")
+        else:
+            ax.set_xlabel("|E|")
         ax.set_ylabel(y_label)
 
         pretty_gid = ", ".join([g for g in gid if g]) if gid else ""
@@ -230,27 +248,27 @@ def main():
     # K-CORE
     kcore_rows = read_csv_if_exists(os.path.join(RESULTS_DIR, "kcore.csv"))
     if kcore_rows:
-        kc_series = aggregate_by(kcore_rows, sizes_map, extra_keys=["algo"])
-        plot_series(kc_series, "k-core runtime vs |V| * log(|V|) + |E|", "kcore_runtime")
+        kc_series = aggregate_by(kcore_rows, sizes_map, 3, extra_keys=["algo"])
+        plot_series(kc_series, 3, "K-core runtime", "kcore_runtime")
 
     # K-TRUSS
     ktr_rows = read_csv_if_exists(os.path.join(RESULTS_DIR, "ktruss.csv"))
     if ktr_rows:
-        kt_series = aggregate_by(ktr_rows, sizes_map, extra_keys=["algo"])
-        plot_series(kt_series, "k-truss runtime vs |V| * log(|V|) + |E|", "ktruss_runtime")
+        kt_series = aggregate_by(ktr_rows, sizes_map, 2, extra_keys=["algo"])
+        plot_series(kt_series, 2, "K-truss runtime", "ktruss_runtime")
 
     # LOUVAIN
     louv_rows = read_csv_if_exists(os.path.join(RESULTS_DIR, "louvain.csv"))
     if louv_rows:
-        lv_series = aggregate_by(louv_rows, sizes_map, extra_keys=[])
-        plot_series(lv_series, "Louvain runtime vs |V| * log(|V|) + |E|", "louvain_runtime")
+        lv_series = aggregate_by(louv_rows, sizes_map, 1, extra_keys=[])
+        plot_series(lv_series, 1, "Louvain runtime", "louvain_runtime")
 
     # HYPERBALL
     hb_rows = read_csv_if_exists(os.path.join(RESULTS_DIR, "hyperball.csv"))
     if hb_rows:
         # one figure per precision_p
-        hb_series = aggregate_by(hb_rows, sizes_map, extra_keys=["precision_p"])
-        plot_series(hb_series, "HyperBall runtime vs |V|+|E|", "hyperball_runtime")
+        hb_series = aggregate_by(hb_rows, sizes_map, 3, extra_keys=["precision_p"])
+        plot_series(hb_series, 3, "HyperBall runtime", "hyperball_runtime")
 
     print(f"✓ Plots saved in: {os.path.abspath(PLOTS_DIR)}")
 
