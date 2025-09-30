@@ -194,7 +194,7 @@ cargo run --features bench --release -- -t16 -v -mf ./datasets/graphs/graph.mtx 
 |-------|--------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | **0** | hyperball_profile | **HyperBall** validation --- the exact closeness centrality of every node of the graph is calculated and the Mean Absolute Error, Mean Absolute Percentual Error and Spearman's Rho of HyperBall's closeness centrality approximation are measured and logged. |
 | **1** | hk_relax_profile | **HK-Relax** validation --- the algorithm is run 10'000 times with variable `t` and `ε` parameters for random seed nodes in single--source mode, and the resulting communities are then filtered, parametrized and logged. |
-| **2** | general_benches | Runs all other algorithms multiple times, and parametrizes and logs each run. |
+| **2** | general_profile | Runs all other algorithms multiple times, and parametrizes and logs each run. |
 
 # Plotting results
 Doc still in construction...
