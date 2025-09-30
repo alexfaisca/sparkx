@@ -1,4 +1,4 @@
-High-performance **Rust** library for large-scale static **graph analytics** built on a memory-mapped core. It includes fast implementations of:
+High-performance **Rust** library for large-scale **static sparse graphs analytics** built on a memory-mapped core. It includes fast implementations of:
 
 - **k-core decomposition** (Batagelj–Zaversnik sequential; Liu et al. parallel)
 - **k-truss decomposition** (Burkhardt et al. sequential; PKT parallel)
@@ -31,7 +31,7 @@ Comes with CSV **benchmark writers** and **plotting scripts** to visualize runti
 - Cache files + rich **metadata** (`Display` implemented)
 - Algorithms expose summaries and can **drop** local caches
 - Minimal, dependency-free **CSV appenders** to `results/`
-- Ready-to-use **plotting** scripts (Matplotlib)
+- Ready-to-use **plotting** scripts (with Matplotlib) for reproducibility
 
 ---
 
@@ -154,8 +154,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 ```
+
+# Reproducibility
+
+## Memory Benchmarks
+
+To obtain our memory benchmarking results we made use of a custom `cargo` target which launches the process and records the memory usage frame by frame using `valgrind --tool=massif`, it may be deployed for a given dataset `graph.mtx` located at `datasets/graphs/` at the library's base directory by running:
+```bash
+cargo cache --tool=massif --dataset=../datasets/graphs/graph.mtx -t target_profile
+```
+
+
+### `target_profile` Options
+
+| Value | Profile Name                          | Main Algorithms or Actions Included                                                                 |
+|-------|--------------------------------------------------|------------------------------------------------------------------------------------------------------|
+| **0** | cache_profile_0 | Runs all heap independent algorithms with `--pages-as-heap=no` to verify heap independence. |
+| **1** | cache_profile_1 | Runs **Hierholzer's Algorithm** with `--pages-as-heap=no` to measure heap memory usage. |
+| **2** | cache_profile_2 | Runs **HKRelax** for multiple seeds with `t = 45` and `ε = 0.01` with `--pages-as-heap=no` to measure heap memory usage. |
+| **3** | pages_profile_0 | Builds a graph from the given dataset with `--pages-as-heap=yes` to measure total memory usage. |
+| **4** | pages_profile_1 | Runs **Hierholzer's Algorithm** with `--pages-as-heap=yes` to measure total memory usage. |
+| **5** | pages_profile_2 | Computes the **k-cores** of a graph using **Batagelj & Zaversnik's Algorithm** with `--pages-as-heap=yes` to measure total memory usage. |
+| **6** | pages_profile_3 | Computes the **k-cores** of a graph using **Liu et al.'s Algorithm** with `--pages-as-heap=yes` to measure total memory usage. |
+| **7** | pages_profile_4 | Computes the **k-trusses** of a graph using **Burkhardt et al.'s Algorithm** with `--pages-as-heap=yes` to measure total memory usage. |
+| **8** | pages_profile_5 | Computes the **k-trusses** of a graph using **PKT** with `--pages-as-heap=yes` to measure total memory usage. |
+| **9** | pages_profile_6 | Computes the **Louvain partition** of a graph using **GVELouvain** with `--pages-as-heap=yes` to measure total memory usage. |
+| **10** | pages_profile_7 | Runs **HyperBall** with precision 6 with `--pages-as-heap=yes` to measure total memory usage. |
+
+
+
+## Wall-Time Benchmarks
+
+For our wall-time benchmarks we made use of runtime target profiles enabled with `feature = "bench"`, they may be deployed for a given dataset `graph.mtx` located at `datasets/graphs/` at the library's base directory by running:
+```bash
+cargo run --features bench --release -- -t16 -v -mf ./datasets/graphs/graph.mtx -e target_profile
+```
+with target\_profile in [0, 2].
+
 # Plotting results
 Doc still in construction...
 
 # Performance notes
 Doc still in construction...
+
