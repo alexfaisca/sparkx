@@ -188,7 +188,7 @@ fn run_cache(
                 "-v",
                 "-c",
                 &target.to_string(),
-                "-t32",
+                "-t1",
                 "-m",
                 "-f",
                 &dataset
@@ -240,7 +240,7 @@ fn run_cache(
                 "-v",
                 "-c",
                 &target.to_string(),
-                "-t32",
+                "-t1",
                 "-m",
                 "-f",
                 &dataset

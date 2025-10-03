@@ -162,7 +162,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Memory Benchmarks
 
-To obtain our memory benchmarking results we made use of a custom `cargo` target which launches the process and records the memory usage frame by frame using `valgrind --tool=massif`, it may be deployed for a given dataset `graph.mtx`, in directory `datasets/graphs/` at the library's base directory, by running:
+To obtain our memory benchmarking results we made use of a custom `cargo` target which launches the process and records the memory usage frame by frame using `valgrind --tool=massif`, to deploy it first run:
+
+```bash
+RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=-sha" cargo build --profile bench_cache
+```
+
+Then, to bench the memory usage of a given dataset `graph.mtx`, in directory `datasets/graphs/` at the library's base directory, run:
 ```bash
 cargo cache --tool=massif --dataset=../datasets/graphs/graph.mtx -t target_profile
 ```

@@ -7,9 +7,9 @@ edition = "2024"
 members = ["xtask", "."]
 
 [profile.bench_cache]
-inherits = "release" # or "dev"
-debug = 2            # generate full debuginfo
-strip = false        # ensure it isn't stripped after build
+inherits = "dev"  # or "dev"
+debug = 2         # generate full debuginfo
+strip = false     # ensure it isn't stripped after build
 opt-level = 3
 lto = "thin"
 codegen-units = 1
@@ -53,50 +53,3 @@ petgraph = "0.8.2"
 smallvec = "1.15.1"
 rayon = { version = "1.11.0", optional = true }
 dashmap = "6.1.0"
-
-[dev-dependencies]
-criterion-benches = { path = "./criterion-benches/" }
-criterion = "0.5.0"
-criterion-perf-events = "0.4.0"
-perf-event = "0.4.8"
-perfcnt = "0.8.0"
-
-[[bench]]
-name = "algo_batagelj_zaversnik" # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_burkhardt_et_al" # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_gve_louvain"     # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_hierholzer"      # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_hk_relax"        # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_hyperball"       # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_liu_et_al"       # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "algo_pkt"             # matches benches/algo_hierholzer.rs
-harness = false
-required-features = ["bench"]
