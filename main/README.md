@@ -14,6 +14,7 @@ Comes with CSV **benchmark writers** and **plotting scripts** to visualize runti
 ## Table of contents
 
 - [Features](#features)
+- [Pre-requisites](#pre-requisites)
 - [Installation](#installation)
 - [Data formats](#data-formats)
 - [Quick start](#quick-start)
@@ -40,8 +41,6 @@ Comes with CSV **benchmark writers** and **plotting scripts** to visualize runti
 
 ## Pre-requisites
 
-## Prerequisites
-
 - **Rust ≥ 1.87**
 
 If you don’t already have Rust installed or need to update to at least version 1.87, the recommended way is via [rustup](https://rustup.rs):
@@ -61,7 +60,7 @@ If the installation was successful, a version number ≥ 1.87 should be printed.
 ## Installation
 
 To install the `sparkx` library the following steps must be followed.
-Firstly, c
+Firstly, clone the library's GitHub repository (if you want to use the [OOTB Datasets](#ootb-datasets) made available via `build_datasets.sh` it is advisable you clone `sparkx` to the same directory you have cloned `GGCAT` into if you have previously done so):
 
 ```bash
 git clone git@github.com:alexfaisca/dbg_graph_analysis.git
@@ -92,7 +91,7 @@ Input: **GGCAT Output Files** (`.lz4`), **Matrix Market** (`.mtx`) and cached in
 
 ## OOTB Datasets
 
-A script to build datasets is provided for reproducibility and sandboxing purposes: `build_datasets.sh`. It builds all the datasets used for testing and benchmarking the library. It may be run in the following manner:
+A script to build datasets out-of-the-box is provided for reproducibility and sandboxing purposes: `build_datasets.sh`. It builds all the datasets used for testing and benchmarking the library. It may be run in the following manner:
 
 ```bash
 bash build_datasets.sh

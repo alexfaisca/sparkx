@@ -1,0 +1,12 @@
+dataset,file,V,E,x,peak_bytes,peak_h,adj_peak_bytes,adj_peak_h,arenas_at_adj_peak,stacks_at_adj_peak,adj_snapshot
+graph_1_10,3_graph_1_10.lz4_20251002T220449Z.cg.massif.out,1063,336,1399,178462720,170.20 MiB,10530816,10.04 MiB,0,0,1
+graph_1_5,3_graph_1_5.lz4_20251002T220415Z.cg.massif.out,512,4096,4608,178475008,170.21 MiB,10530816,10.04 MiB,0,0,1
+graph_3_10,3_graph_3_10.lz4_20251002T223026Z.cg.massif.out,138015,749588,887603,260243456,248.19 MiB,26677248,25.44 MiB,0,0,1
+graph_4_10,3_graph_4_10.lz4_20251002T222828Z.cg.massif.out,474615,3600020,4074635,339677184,323.94 MiB,72585216,69.22 MiB,0,0,1
+graph_4_10,3_graph_4_10.lz4_20251002T223017Z.cg.massif.out,474615,3600020,4074635,243720192,232.43 MiB,72585216,69.22 MiB,0,0,1
+graph_9_10,3_graph_9_10.lz4_20251002T222811Z.cg.massif.out,524796,4202434,4727230,253562880,241.82 MiB,81674240,77.89 MiB,0,0,1
+synth_dna_k10_edges8_4M,3_synth_dna_k10_edges8_4M.mtx_20251002T222608Z.cg.massif.out,1048576,8388604,9437180,1202262016,1.12 GiB,10469376,9.98 MiB,0,0,0
+synth_dna_k11_edges33_5M,3_synth_dna_k11_edges33_5M.mtx_20251002T222340Z.cg.massif.out,4194304,33554428,37748732,1453924352,1.35 GiB,10469376,9.98 MiB,0,0,0
+synth_gen_dbg_dna_k7_edges130k,3_synth_gen_dbg_dna_k7_edges130k.mtx_20251002T220655Z.cg.massif.out,16384,131068,147452,1185656832,1.10 GiB,10629120,10.14 MiB,270336,0,2
+synth_gen_dbg_protein20_k2_edges16k,3_synth_gen_dbg_protein20_k2_edges16k.mtx_20251002T220628Z.cg.massif.out,400,15980,16380,917049344,874.57 MiB,10629120,10.14 MiB,270336,0,2
+synth_gen_dbg_protein20_k2_edges16k,3_synth_gen_dbg_protein20_k2_edges16k.mtx_20251002T220630Z.cg.massif.out,400,15980,16380,783937536,747.62 MiB,10629120,10.14 MiB,270336,0,2
