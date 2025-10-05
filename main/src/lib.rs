@@ -1,5 +1,3 @@
-#![feature(once_cell_try)]
-
 pub mod shared_slice;
 
 #[cfg(any(test, feature = "bench"))]

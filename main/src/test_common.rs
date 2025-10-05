@@ -185,7 +185,7 @@ pub(crate) fn get_or_init_dataset_exact_value<N: graph::N, E: graph::E, Ix: grap
             Ok(lock)
         })?;
     test_entry
-        .get_or_try_init(|| -> Result<String, Box<dyn std::error::Error>> {
+        .get_or_init(|| -> Result<String, Box<dyn std::error::Error>> {
             if Path::new(&e_fn).exists() {
                 eprintln!("found exact vals for {:?} at {e_fn}", graph_path);
                 Ok(e_fn)

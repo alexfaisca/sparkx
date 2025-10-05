@@ -29,8 +29,6 @@ pub type HyperBall13<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision13, 6
 pub type HyperBall14<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision14, 6>;
 pub type HyperBall15<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision15, 6>;
 pub type HyperBall16<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision16, 6>;
-pub type HyperBall17<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision17, 6>;
-pub type HyperBall18<'a, N, E, Ix> = HyperBallInner<'a, N, E, Ix, Precision18, 6>;
 
 /// Enum for centralities' caching filenames' creation manager logic.
 #[allow(dead_code)]
