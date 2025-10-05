@@ -38,15 +38,49 @@ Comes with CSV **benchmark writers** and **plotting scripts** to visualize runti
 
 ---
 
-## Installation
+## Pre-requisites
 
-Build in release mode (recommended):
+## Prerequisites
+
+- **Rust ≥ 1.87**
+
+If you don’t already have Rust installed or need to update to at least version 1.87, the recommended way is via [rustup](https://rustup.rs):
 
 ```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+After installing Rust, restart your shell and verify:
+
+```bash
+rustc --version
+```
+
+If the installation was successful, a version number ≥ 1.87 should be printed.
+
+## Installation
+
+To install the `sparkx` library the following steps must be followed.
+Firstly, c
+
+```bash
+git clone git@github.com:alexfaisca/dbg_graph_analysis.git
+```
+
+In macOS, in the first installation, after cloning the repository, Apple's tool licensing must be accepted. You may do so by running:
+
+```bash
+sudo xcodebuild -license
+```
+
+After this, you may change directory into the repository and build the library (recommended in release mode):
+
+```bash
+cd dbg_graph_analysis
 cargo build --release
 ```
 
-Enable non-default features:
+The library has an assortment of non-default features. As an example, `feature = "rayon"` may be enabled by running the following command:
 
 ```bash
 cargo --features rayon build --release
