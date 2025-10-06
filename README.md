@@ -201,9 +201,14 @@ To obtain our memory benchmarking results we made use of a custom `cargo` target
 RUSTFLAGS="-C target-cpu=x86-64 -C target-feature=-sha" cargo build --profile bench_cache
 ```
 
-Then, to bench the memory usage of a given dataset `graph.mtx`, in directory `datasets/graphs/` at the library's base directory, run:
+Then, to bench the heap memory usage of a given dataset `graph.mtx`, in directory `datasets/graphs/` at the library's base directory, run:
 ```bash
-cargo cache --tool=massif --dataset=../datasets/graphs/graph.mtx -t target_profile
+cargo cache --tool=massif --dataset=./datasets/graphs/graph.mtx -t target_profile
+```
+
+And to bench the total memory usage, including memory mapped files, run:
+```bash
+GLIBC_TUNABLES=glibc.malloc.arena_max=1  cargo cache --tool=massif-pages --dataset=./datasets/graphs/graph.mtx -t target_profile
 ```
 
 
